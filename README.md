@@ -14,6 +14,7 @@ Built for editing, picture and sound, with timelines that travel to and from oth
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://rustup.rs)
 
 [Website](https://venturivideo.github.io/Venturi/) •
+[Documentation]([https://venturivideo.github.io/Venturi](https://kb.morrolinux.ovh/books/venturi-architecture)/) •
 [Download](https://github.com/VenturiVideo/Venturi/releases/latest) •
 [Features](#features) •
 [Build from source](docs/BUILDING.md) •
