@@ -2882,6 +2882,7 @@ enum ToolbarIcon {
     Effects,
     Curves,
     Mixer,
+    Color,
     Properties,
 }
 
@@ -2986,6 +2987,13 @@ fn paint_toolbar_icon(
                     color,
                 );
             }
+        }
+        // A color wheel with its puck off center.
+        ToolbarIcon::Color => {
+            painter.circle_stroke(c, 6.0, stroke);
+            painter.line_segment([c - egui::vec2(6.0, 0.0), c + egui::vec2(6.0, 0.0)], stroke);
+            painter.line_segment([c - egui::vec2(0.0, 6.0), c + egui::vec2(0.0, 6.0)], stroke);
+            painter.circle_filled(c + egui::vec2(2.6, -2.6), 2.0, color);
         }
         // Three slider tracks with their knobs.
         ToolbarIcon::Properties => {
@@ -3411,6 +3419,12 @@ impl VenturiApp {
                     &mut self.settings.panels.mixer_open,
                     ToolbarIcon::Mixer,
                     &t!("toolbar.mixer"),
+                );
+                toolbar_toggle(
+                    ui,
+                    &mut self.settings.panels.color_window_open,
+                    ToolbarIcon::Color,
+                    &t!("toolbar.color"),
                 );
                 if let Some(err) = &self.project_error {
                     ui.separator();
