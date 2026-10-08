@@ -961,6 +961,11 @@ impl Compositor {
         self.precision
     }
 
+    /// Whether `ProcessingPrecision::High` really composes in float here.
+    pub fn float_work_supported(&self) -> bool {
+        self.float_work
+    }
+
     /// GPU memory of the textures kept for reuse, i.e. the working set of
     /// the frames rendered so far; owned textures still held are not counted.
     pub fn pooled_texture_bytes(&self) -> u64 {

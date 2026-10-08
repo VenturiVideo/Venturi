@@ -211,3 +211,35 @@ otio.media_unreadable:
 project.untitled:
   en: "Untitled project"
   it: "Progetto senza titolo"
+
+project.settings_title:
+  en: "Project settings"
+  it: "Impostazioni progetto"
+
+project.precision:
+  en: "Processing precision"
+  it: "Precisione di elaborazione"
+
+project.precision_hint:
+  en: "Saved with the project: preview and export always use the same one."
+  it: "Salvata nel progetto: anteprima ed export usano sempre la stessa."
+
+project.precision_high:
+  en: "High: 16-bit float per channel (RGBA16F)"
+  it: "Alta: float a 16 bit per canale (RGBA16F)"
+
+project.precision_high_hint:
+  en: "No banding in gradients when effects are chained (blur, exposure, adjustment layers). Recommended for color correction."
+  it: "Niente scalini nelle sfumature quando gli effetti si sommano (sfocatura, esposizione, livelli di regolazione). Consigliata per la correzione colore."
+
+project.precision_standard:
+  en: "Standard: 8-bit integer per channel (RGBA8)"
+  it: "Standard: intero a 8 bit per canale (RGBA8)"
+
+project.precision_standard_hint:
+  en: "Half the graphics memory, faster on weak GPUs. Strong chains of effects can show banding."
+  it: "Metà della memoria grafica, più veloce sulle GPU deboli. Catene di effetti spinte possono mostrare scalini."
+
+project.precision_unsupported:
+  en: "This GPU cannot compose in 16-bit float: the preview uses 8 bits."
+  it: "Questa GPU non può comporre in float a 16 bit: l'anteprima usa 8 bit."

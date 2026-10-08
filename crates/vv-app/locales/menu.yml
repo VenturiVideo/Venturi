@@ -24,29 +24,13 @@ menu.save_as:
   en: "Save as..."
   it: "Salva con nome..."
 
-menu.precision:
-  en: "Processing precision"
-  it: "Precisione di elaborazione"
+menu.project:
+  en: "Project"
+  it: "Progetto"
 
-menu.precision_hint:
-  en: "Saved with the project: preview and export always use the same one."
-  it: "Salvata nel progetto: anteprima ed export usano sempre la stessa."
-
-menu.precision_high:
-  en: "High (recommended for color correction)"
-  it: "Alta (consigliata per la correzione colore)"
-
-menu.precision_high_hint:
-  en: "Effects are computed at 16 bits per channel: no banding in gradients when effects are chained (blur, exposure, adjustment layers)."
-  it: "Gli effetti sono calcolati a 16 bit per canale: niente scalini nelle sfumature quando gli effetti si sommano (sfocatura, esposizione, livelli di regolazione)."
-
-menu.precision_standard:
-  en: "Standard (lighter)"
-  it: "Standard (più leggera)"
-
-menu.precision_standard_hint:
-  en: "8 bits per channel: half the graphics memory, faster on weak GPUs. Strong chains of effects can show banding."
-  it: "8 bit per canale: metà della memoria grafica, più veloce sulle GPU deboli. Catene di effetti spinte possono mostrare scalini."
+menu.project_settings:
+  en: "Project settings..."
+  it: "Impostazioni progetto..."
 
 menu.import_media:
   en: "Import media..."

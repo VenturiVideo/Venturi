@@ -433,6 +433,7 @@ struct VenturiApp {
     settings_path: Option<PathBuf>,
     settings_dialog: Option<settings_dialog::SettingsDialog>,
     about_open: bool,
+    project_settings_open: bool,
     /// Serving MCP to agents (see `mcp_host`); follows the setting.
     mcp: Option<mcp_host::McpHost>,
     /// `Session::epoch` last caught up with: the agent may replace the
@@ -533,6 +534,7 @@ impl Default for VenturiApp {
             settings_path: None,
             settings_dialog: None,
             about_open: false,
+            project_settings_open: false,
             mcp: None,
             seen_epoch: 0,
             mcp_forced: false,
@@ -3607,6 +3609,7 @@ impl VenturiApp {
         self.show_export_dialog(ui);
         self.show_settings_dialog(ui.ctx());
         self.show_about_dialog(ui.ctx());
+        self.show_project_settings(ui.ctx());
         self.show_export_progress(ui);
         self.show_import_warnings(ui);
         self.show_otio_import_progress(ui);

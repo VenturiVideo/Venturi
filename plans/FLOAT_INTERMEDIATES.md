@@ -6,7 +6,7 @@ chain of passes (per-clip grade + blur + adjustment layer + compound clips)
 no longer rounds to 8 bits at every step.
 
 **Status:** phase 1 implemented on `feature/float-intermediates`, plus the
-phase 2 project setting (File → Processing precision), brought forward so
+phase 2 project setting (Project → Project settings → Processing precision), brought forward so
 the manual test (§4) can A/B without switching branch.
 
 **Sequence (decided):**

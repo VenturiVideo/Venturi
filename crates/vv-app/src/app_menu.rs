@@ -208,7 +208,6 @@ impl VenturiApp {
                             self.save_project_as();
                             ui.close();
                         }
-                        self.processing_precision_menu(ui);
                         ui.separator();
                         if ui
                             .button(
@@ -355,6 +354,16 @@ impl VenturiApp {
                             .clicked()
                         {
                             self.split_at_playhead();
+                            ui.close();
+                        }
+                    })
+                    .response,
+                );
+
+                bar_menus.push(
+                    ui.menu_button(t!("menu.project"), |ui| {
+                        if ui.button(t!("menu.project_settings")).clicked() {
+                            self.project_settings_open = true;
                             ui.close();
                         }
                     })
@@ -551,35 +560,46 @@ impl VenturiApp {
         }
     }
 
-    fn processing_precision_menu(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn show_project_settings(&mut self, ctx: &egui::Context) {
         use vv_core::ProcessingPrecision::{High, Standard};
         let current = self.session.project.precision;
+        let float_work = self.compositor.float_work_supported();
         let mut chosen = None;
-        ui.menu_button(t!("menu.precision"), |ui| {
-            for (precision, label, hint) in [
-                (
-                    High,
-                    t!("menu.precision_high"),
-                    t!("menu.precision_high_hint"),
-                ),
-                (
-                    Standard,
-                    t!("menu.precision_standard"),
-                    t!("menu.precision_standard_hint"),
-                ),
-            ] {
-                if ui
-                    .radio(precision == current, label)
-                    .on_hover_text(hint)
-                    .clicked()
-                    && precision != current
-                {
-                    chosen = Some(precision);
+        egui::Window::new(t!("project.settings_title"))
+            .open(&mut self.project_settings_open)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label(egui::RichText::new(t!("project.precision")).strong());
+                ui.label(egui::RichText::new(t!("project.precision_hint")).weak());
+                for (precision, label, hint) in [
+                    (
+                        High,
+                        t!("project.precision_high"),
+                        t!("project.precision_high_hint"),
+                    ),
+                    (
+                        Standard,
+                        t!("project.precision_standard"),
+                        t!("project.precision_standard_hint"),
+                    ),
+                ] {
+                    if ui
+                        .radio(precision == current, label)
+                        .on_hover_text(hint)
+                        .clicked()
+                        && precision != current
+                    {
+                        chosen = Some(precision);
+                    }
                 }
-            }
-        })
-        .response
-        .on_hover_text(t!("menu.precision_hint"));
+                if !float_work {
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        t!("project.precision_unsupported"),
+                    );
+                }
+            });
         if let Some(precision) = chosen {
             self.session
                 .apply(Box::new(vv_core::SetProcessingPrecision::new(precision)));
