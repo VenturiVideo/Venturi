@@ -141,6 +141,41 @@ fn a_grade_edit_on_an_animated_param_sets_a_keyframe() {
 }
 
 #[test]
+fn a_wheel_with_one_animated_param_keyframes_the_others() {
+    let (mut project, timeline, targets) = project_with_clips(&[true]);
+    let toggle = edits(&[(KeyframeEdit::Toggle(false), GradeParam::ShadowsX)]);
+    let commands = grade_commands(Some(&project.timelines[timeline]), &targets, &toggle);
+    apply(&mut project, commands);
+    let set = edits(&[(
+        KeyframeEdit::Set(KeyframeValue::Grade(GradeParam::ShadowsY, 0.5)),
+        GradeParam::ShadowsY,
+    )]);
+    let commands = grade_commands(Some(&project.timelines[timeline]), &targets, &set);
+    apply(&mut project, commands);
+    let track = grade_of(&project, timeline, 0).track(GradeParam::ShadowsY);
+    assert_eq!(track.keyframe_at(4).map(|k| k.0), Some(0.5));
+    assert_eq!(
+        track.default,
+        GradeParam::ShadowsY.neutral(),
+        "the rest of the clip keeps its value"
+    );
+}
+
+#[test]
+fn removing_a_wheel_keyframe_skips_the_params_without_one() {
+    let (mut project, timeline, targets) = project_with_clips(&[true]);
+    let toggle = edits(&[(KeyframeEdit::Toggle(false), GradeParam::ShadowsX)]);
+    let commands = grade_commands(Some(&project.timelines[timeline]), &targets, &toggle);
+    apply(&mut project, commands);
+    let remove = edits(&[
+        (KeyframeEdit::Toggle(true), GradeParam::ShadowsX),
+        (KeyframeEdit::Toggle(true), GradeParam::ShadowsY),
+    ]);
+    let commands = grade_commands(Some(&project.timelines[timeline]), &targets, &remove);
+    assert_eq!(commands.len(), 1);
+}
+
+#[test]
 fn a_preset_and_a_reset_replace_the_grade() {
     let (mut project, timeline, targets) = project_with_clips(&[true]);
     let section = GradeSectionResponse {

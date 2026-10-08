@@ -30,10 +30,7 @@ fn preset_label(preset: GradePreset) -> std::borrow::Cow<'static, str> {
 }
 
 pub(crate) fn grade_param_label(param: GradeParam) -> String {
-    let wheel = GradeWheel::ALL
-        .into_iter()
-        .find(|w| [w.x(), w.y(), w.luma(), w.saturation()].contains(&param));
-    match (param, wheel) {
+    match (param, GradeWheel::of(param)) {
         (GradeParam::LowRange, _) => t!("props.grade_low_range").to_string(),
         (GradeParam::HighRange, _) => t!("props.grade_high_range").to_string(),
         (GradeParam::Saturation, _) => t!("props.saturation").to_string(),
@@ -225,9 +222,19 @@ impl GradeSectionResponse {
     }
 }
 
+/// Whether `param` keyframes: a wheel's params share one keyframe row, so
+/// one animated param animates them all.
+fn animated(grade: &vv_core::GradeTracks, param: GradeParam) -> bool {
+    let animated = |p: &GradeParam| !grade.track(*p).is_constant();
+    match GradeWheel::of(param) {
+        Some(wheel) => wheel.params().iter().any(animated),
+        None => animated(&param),
+    }
+}
+
 /// The commands applying `section` to the color correction of every target
-/// that has one: a value is the track's default while it has no keyframes,
-/// a keyframe at the target's frame otherwise.
+/// that has one: a value is the track's default while its keyframe row has
+/// no keyframes, a keyframe at the target's frame otherwise.
 pub(crate) fn grade_commands(
     tl: Option<&vv_core::Timeline>,
     targets: &[PanelTarget],
@@ -256,15 +263,20 @@ pub(crate) fn grade_commands(
         let mut keyframes = Vec::new();
         for (edit, target) in &section.keyframes {
             match *edit {
-                KeyframeEdit::Set(KeyframeValue::Grade(param, v))
-                    if grade.track(param).is_constant() =>
-                {
+                KeyframeEdit::Set(KeyframeValue::Grade(param, v)) if !animated(grade, param) => {
                     grade.track_mut(param).default = v;
                 }
                 KeyframeEdit::Set(value) => {
                     keyframes.push(upsert_keyframe(clip_ref, t.source_frame, value));
                 }
                 KeyframeEdit::Toggle(true) => {
+                    // A wheel's row removes the keyframes of all its params:
+                    // only those that have one there.
+                    if let KeyframeTarget::Grade(param) = *target
+                        && grade.track(param).keyframe_at(t.source_frame).is_none()
+                    {
+                        continue;
+                    }
                     keyframes.push(remove_keyframe(clip_ref, t.source_frame, *target));
                 }
                 KeyframeEdit::Toggle(false) => {
@@ -479,12 +491,7 @@ fn wheel_block(
     width: f32,
     key: &dyn Fn(GradeParam) -> RowKeyframe,
 ) {
-    let params = [
-        wheel_kind.x(),
-        wheel_kind.y(),
-        wheel_kind.luma(),
-        wheel_kind.saturation(),
-    ];
+    let params = wheel_kind.params();
     let joint = joint_keyframe(params.map(key));
     ui.horizontal(|ui| {
         ui.set_width(width);

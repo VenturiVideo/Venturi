@@ -137,6 +137,15 @@ impl GradeWheel {
             Self::Offset => GradeParam::Saturation,
         }
     }
+
+    pub fn params(self) -> [GradeParam; 4] {
+        [self.x(), self.y(), self.luma(), self.saturation()]
+    }
+
+    /// The wheel `param` belongs to; `None` for the ranges.
+    pub fn of(param: GradeParam) -> Option<Self> {
+        Self::ALL.into_iter().find(|w| w.params().contains(&param))
+    }
 }
 
 /// Every `GradeParam` evaluated at one frame.
