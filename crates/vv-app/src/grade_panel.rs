@@ -290,12 +290,15 @@ pub(crate) fn grade_commands(
 /// The wheel moves of an auto balance of `grade` on the RGBA `pixels` of
 /// the viewer's frame, as edits of `section` (keyframes where animated).
 pub(crate) fn balance_edits(section: &mut GradeSectionResponse, grade: &GradeValue, pixels: &[u8]) {
+    // A quarter of a million pixels measure a frame's neutral surfaces well
+    // enough, whatever its resolution.
+    let pixels = pixels.as_chunks::<4>().0;
+    let step = (pixels.len() / 250_000).max(1);
     let balanced = vv_core::auto_balance(
         grade,
         pixels
-            .as_chunks::<4>()
-            .0
             .iter()
+            .step_by(step)
             .map(|p| [p[0], p[1], p[2]].map(|c| c as f32 / 255.0)),
     );
     for param in GradeParam::ALL {

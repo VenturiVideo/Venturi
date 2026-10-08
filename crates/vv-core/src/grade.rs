@@ -240,55 +240,112 @@ pub fn apply_grade(rgb: [f32; 3], grade: &GradeValue) -> [f32; 3] {
 }
 
 /// `grade` with the shadows, midtones and highlights wheels moved so that
-/// the mean color of each range of `pixels` (RGB 0–1, measured with `grade`
-/// already applied) becomes a neutral grey: gray world, per range. The
-/// ranges overlap, so a wheel also moves its neighbours' means: the three
-/// moves are solved together. Near-black and near-white pixels do not
-/// count; a range without pixels keeps its wheel. Measured after the grade,
-/// it corrects what is left, so applying it again refines what clipping and
-/// the wheels' reach leave.
+/// the surfaces of `pixels` (RGB 0–1, measured with `grade` already applied)
+/// that should be neutral become grey. Those are found per range as the
+/// pixels close in color to the range's median: a large colored object (a
+/// shirt, a poster) is left out instead of pulling the whole picture towards
+/// its opposite, as a plain mean would. The ranges overlap, so a wheel also
+/// moves its neighbours: the three moves are solved together. Near-black and
+/// near-white pixels do not count; a range without enough neutral pixels
+/// keeps its wheel. Measured after the grade, it corrects what is left.
 pub fn auto_balance(grade: &GradeValue, pixels: impl Iterator<Item = [f32; 3]>) -> GradeValue {
     const CLIPPED: f32 = 1.0 / 255.0;
+    // How far in Cb/Cr from the cast a pixel may be and still count as a
+    // neutral surface: a grey wall's noise, not skin or a colored object.
+    const NEUTRAL: f32 = 0.035;
     const RANGES: [GradeWheel; 3] = [
         GradeWheel::Shadows,
         GradeWheel::Midtones,
         GradeWheel::Highlights,
     ];
+    struct Sample {
+        chroma: [f32; 2],
+        weights: [f32; 3],
+        saturation: f32,
+    }
     let (low, high) = (
         grade.get(GradeParam::LowRange),
         grade.get(GradeParam::HighRange),
     );
     let saturations = RANGES.map(|w| grade.get(w.saturation()));
     let global_saturation = grade.get(GradeParam::Saturation);
-    // Per range r: Σ w_r, Σ w_r·Cb, Σ w_r·Cr, and how much a move of each
-    // wheel s shows in it: Σ w_r·w_s·saturation.
-    let mut weight = [0.0f64; 3];
-    let mut chroma = [[0.0f64; 2]; 3];
-    let mut effect = [[0.0f64; 3]; 3];
-    for rgb in pixels {
-        let y = luma(rgb);
-        if y <= CLIPPED || y >= 1.0 - CLIPPED {
-            continue;
-        }
-        let cb = ((rgb[2] - y) / 1.8556) as f64;
-        let cr = ((rgb[0] - y) / 1.5748) as f64;
-        let w = range_weights(y, low, high).map(|w| w as f64);
-        let saturation = w
-            .iter()
-            .zip(saturations)
-            .map(|(w, s)| w * s as f64)
-            .sum::<f64>()
-            * global_saturation as f64;
-        for r in 0..3 {
-            weight[r] += w[r];
-            chroma[r][0] += w[r] * cb;
-            chroma[r][1] += w[r] * cr;
-            for s in 0..3 {
-                effect[r][s] += w[r] * w[s] * saturation;
+    let samples: Vec<Sample> = pixels
+        .filter_map(|rgb| {
+            let y = luma(rgb);
+            if y <= CLIPPED || y >= 1.0 - CLIPPED {
+                return None;
+            }
+            let weights = range_weights(y, low, high);
+            let saturation = weights
+                .iter()
+                .zip(saturations)
+                .map(|(w, s)| w * s)
+                .sum::<f32>()
+                * global_saturation;
+            Some(Sample {
+                chroma: [(rgb[2] - y) / 1.8556, (rgb[0] - y) / 1.5748],
+                weights,
+                saturation,
+            })
+        })
+        .collect();
+
+    // The cast of each range: first the median color of its pixels, then
+    // the mean of the pixels near it, twice.
+    let mut casts = [[0.0f32; 2]; 3];
+    for (r, cast) in casts.iter_mut().enumerate() {
+        for (axis, value) in cast.iter_mut().enumerate() {
+            let mut values: Vec<f32> = samples
+                .iter()
+                .filter(|s| s.weights[r] >= 0.5)
+                .map(|s| s.chroma[axis])
+                .collect();
+            if !values.is_empty() {
+                let middle = values.len() / 2;
+                *value = *values.select_nth_unstable_by(middle, f32::total_cmp).1;
             }
         }
     }
-    // Ranges with (almost) no pixels, or desaturated, are left alone.
+    let neutral = |s: &Sample, casts: &[[f32; 2]; 3]| {
+        let expected =
+            [0, 1].map(|axis| (0..3).map(|r| s.weights[r] * casts[r][axis]).sum::<f32>());
+        let d = [s.chroma[0] - expected[0], s.chroma[1] - expected[1]];
+        d[0] * d[0] + d[1] * d[1] < NEUTRAL * NEUTRAL
+    };
+    for _ in 0..2 {
+        let mut sums = [[0.0f64; 3]; 3];
+        for s in samples.iter().filter(|s| neutral(s, &casts)) {
+            for (r, sum) in sums.iter_mut().enumerate() {
+                let w = s.weights[r] as f64;
+                sum[0] += w * s.chroma[0] as f64;
+                sum[1] += w * s.chroma[1] as f64;
+                sum[2] += w;
+            }
+        }
+        for (cast, sum) in casts.iter_mut().zip(sums) {
+            if sum[2] >= 1.0 {
+                *cast = [(sum[0] / sum[2]) as f32, (sum[1] / sum[2]) as f32];
+            }
+        }
+    }
+
+    // Per range r, over the neutral pixels: Σ w_r, Σ w_r·Cb, Σ w_r·Cr, and
+    // how much a move of each wheel s shows in it: Σ w_r·w_s·saturation.
+    let mut weight = [0.0f64; 3];
+    let mut chroma = [[0.0f64; 2]; 3];
+    let mut effect = [[0.0f64; 3]; 3];
+    for s in samples.iter().filter(|s| neutral(s, &casts)) {
+        let w = s.weights.map(|w| w as f64);
+        for r in 0..3 {
+            weight[r] += w[r];
+            chroma[r][0] += w[r] * s.chroma[0] as f64;
+            chroma[r][1] += w[r] * s.chroma[1] as f64;
+            for t in 0..3 {
+                effect[r][t] += w[r] * w[t] * s.saturation as f64;
+            }
+        }
+    }
+    // Ranges with (almost) no neutral pixels, or desaturated, are left alone.
     let solved: Vec<usize> = (0..3)
         .filter(|&r| weight[r] >= 1.0 && effect[r][r] / weight[r] >= 0.01)
         .collect();
@@ -298,7 +355,7 @@ pub fn auto_balance(grade: &GradeValue, pixels: impl Iterator<Item = [f32; 3]>) 
     }
     let matrix: Vec<Vec<f64>> = solved
         .iter()
-        .map(|&r| solved.iter().map(|&s| effect[r][s] / weight[r]).collect())
+        .map(|&r| solved.iter().map(|&t| effect[r][t] / weight[r]).collect())
         .collect();
     for component in 0..2 {
         let target: Vec<f64> = solved

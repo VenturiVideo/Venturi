@@ -184,3 +184,27 @@ fn solve_finds_the_exact_moves() {
     }
     assert!(solve(vec![vec![1.0, 2.0], vec![2.0, 4.0]], vec![1.0, 2.0]).is_none());
 }
+
+/// A warm grey wall behind a large orange shirt: the wall turns grey, and
+/// the shirt does not drag the picture towards blue.
+#[test]
+fn auto_balance_measures_the_neutral_surfaces_not_a_colored_object() {
+    let wall = |v: f32| [v + 0.04, v, v - 0.02];
+    let shirt = [0.85, 0.45, 0.12];
+    let pixels: Vec<[f32; 3]> = (0..600)
+        .map(|i| wall(0.3 + (i % 50) as f32 * 0.008))
+        .chain(std::iter::repeat_n(shirt, 400))
+        .collect();
+    let balanced = auto_balance(&GradeValue::NEUTRAL, pixels.iter().copied());
+    for v in [0.32, 0.5, 0.65] {
+        let grey = apply_grade(wall(v), &balanced);
+        let spread = grey.iter().cloned().fold(f32::MIN, f32::max)
+            - grey.iter().cloned().fold(f32::MAX, f32::min);
+        assert!(spread < 0.01, "wall at {v}: {grey:?}");
+    }
+    let orange = apply_grade(shirt, &balanced);
+    assert!(
+        orange[0] > orange[1] && orange[1] > orange[2],
+        "still orange: {orange:?}"
+    );
+}
