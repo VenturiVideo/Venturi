@@ -100,7 +100,7 @@ struct EffectStack {
     gain_db: Keyframed<f32>,
     color: Option<Keyframed<Rgba>>,   // SolidColor and Text
     title: Option<TitleParams>,       // Text only
-    filters: Vec<ClipFilter>,         // grayscale, exposure, box/gaussian blur, in order
+    filters: Vec<ClipFilter>,         // color correction, exposure, box/gaussian blur, in order
     transition_in: Option<Transition>, transition_out: Option<Transition>,
     blend_mode: BlendMode,            // 15 separable modes
     masks: Vec<ClipMask>,             // rectangle/ellipse/path, combined in order
@@ -404,8 +404,10 @@ Done:
   (`Clip::rate`), in preview and in export.
 - Text clips (`ClipSource::Text`): font, style, colour, alignment, shadow
   and background from the properties panel.
-- Opacity and 15 blend modes per clip; filters (grayscale, exposure, box
-  and gaussian blur with keyframable radius and direction); masks
+- Opacity and 15 blend modes per clip; filters (color correction with
+  shadows/midtones/highlights/offset wheels, per-range saturation and
+  ranges, black & white preset; exposure; box and gaussian blur with
+  keyframable radius and direction); masks
   (rectangle, ellipse, bezier path; feather, invert, add/subtract/intersect;
   handles and pen in the viewer), which on an adjustment clip limit where its
   filters apply; Push transitions on a clip's

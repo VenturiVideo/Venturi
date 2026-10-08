@@ -169,6 +169,50 @@ props.exposure_stops:
   en: "Stops"
   it: "Stop"
 
+props.grade_shadows:
+  en: "Shadows"
+  it: "Ombre"
+
+props.grade_midtones:
+  en: "Midtones"
+  it: "Toni medi"
+
+props.grade_highlights:
+  en: "Highlights"
+  it: "Alte luci"
+
+props.grade_offset:
+  en: "Offset"
+  it: "Offset"
+
+props.grade_luminance:
+  en: "Luminance"
+  it: "Luminanza"
+
+props.saturation:
+  en: "Saturation"
+  it: "Saturazione"
+
+props.grade_low_range:
+  en: "Shadows range"
+  it: "Soglia ombre"
+
+props.grade_high_range:
+  en: "Highlights range"
+  it: "Soglia alte luci"
+
+props.grade_preset:
+  en: "Preset"
+  it: "Preset"
+
+props.grade_neutral:
+  en: "Neutral"
+  it: "Neutro"
+
+props.grade_wheel_hint:
+  en: "Drag to shift the color of this range. Shift for fine control, double-click to reset."
+  it: "Trascina per spostare il colore di questa fascia. Shift per il controllo fine, doppio clic per azzerare."
+
 props.blur_direction:
   en: "Direction"
   it: "Direzione"

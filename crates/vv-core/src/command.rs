@@ -1,6 +1,7 @@
 //! Command pattern for undo/redo. Every command captures by itself the state
 //! needed to invert itself at the moment it is applied.
 
+use crate::grade::GradeParam;
 use crate::mask::{ClipMask, MaskParam};
 use crate::model::{
     AudioEffect, BlurDirection, ChannelStrip, Clip, ClipAttributes, ClipColor, ClipFilter, ClipId,
@@ -2191,6 +2192,8 @@ pub enum KeyframeValue {
     FilterRadius(FilterKind, f32),
     FilterDirection(FilterKind, BlurDirection),
     FilterAmount(FilterKind, f32),
+    /// Of the clip's color correction.
+    Grade(GradeParam, f32),
     /// Of the clip's mask at that index.
     Mask(usize, MaskParam, f32),
 }
@@ -2272,6 +2275,7 @@ pub enum KeyframeTarget {
     FilterRadius(FilterKind),
     FilterDirection(FilterKind),
     FilterAmount(FilterKind),
+    Grade(GradeParam),
     Mask(usize, MaskParam),
 }
 
@@ -2284,6 +2288,7 @@ impl KeyframeValue {
             Self::FilterRadius(kind, _) => KeyframeTarget::FilterRadius(kind),
             Self::FilterDirection(kind, _) => KeyframeTarget::FilterDirection(kind),
             Self::FilterAmount(kind, _) => KeyframeTarget::FilterAmount(kind),
+            Self::Grade(param, _) => KeyframeTarget::Grade(param),
             Self::Mask(index, param, _) => KeyframeTarget::Mask(index, param),
         }
     }
@@ -2291,6 +2296,10 @@ impl KeyframeValue {
 
 fn filter_mut(effects: &mut EffectStack, kind: FilterKind) -> Option<&mut ClipFilter> {
     effects.filters.iter_mut().find(|f| f.kind == kind)
+}
+
+fn grade_track_mut(effects: &mut EffectStack, param: GradeParam) -> Option<&mut Keyframed<f32>> {
+    filter_mut(effects, FilterKind::ColorCorrection).map(|f| f.grade.track_mut(param))
 }
 
 fn mask_track_mut(
@@ -2335,6 +2344,9 @@ fn take_keyframe(
         KeyframeTarget::FilterAmount(kind) => filter_mut(effects, kind)
             .and_then(|f| f.amount.remove_at(frame))
             .map(|(v, i)| (KeyframeValue::FilterAmount(kind, v), i)),
+        KeyframeTarget::Grade(param) => grade_track_mut(effects, param)
+            .and_then(|k| k.remove_at(frame))
+            .map(|(v, i)| (KeyframeValue::Grade(param, v), i)),
         KeyframeTarget::Mask(index, param) => mask_track_mut(effects, index, param)
             .and_then(|k| k.remove_at(frame))
             .map(|(v, i)| (KeyframeValue::Mask(index, param, v), i)),
@@ -2375,6 +2387,11 @@ fn put_keyframe(
                 filter.amount.upsert(frame, v, interpolation);
             }
         }
+        KeyframeValue::Grade(param, v) => {
+            if let Some(track) = grade_track_mut(effects, param) {
+                track.upsert(frame, v, interpolation);
+            }
+        }
         KeyframeValue::Mask(index, param, v) => {
             if let Some(track) = mask_track_mut(effects, index, param) {
                 track.upsert(frame, v, interpolation);
@@ -2406,6 +2423,9 @@ fn set_keyframe_interpolation(
             .and_then(|f| f.direction.set_interpolation(frame, interpolation)),
         KeyframeTarget::FilterAmount(kind) => {
             filter_mut(effects, kind).and_then(|f| f.amount.set_interpolation(frame, interpolation))
+        }
+        KeyframeTarget::Grade(param) => {
+            grade_track_mut(effects, param).and_then(|k| k.set_interpolation(frame, interpolation))
         }
         KeyframeTarget::Mask(index, param) => mask_track_mut(effects, index, param)
             .and_then(|k| k.set_interpolation(frame, interpolation)),

@@ -664,7 +664,7 @@ enum PendingAction {
     ApplyFilter {
         track_index: usize,
         clip_id: ClipId,
-        filter: vv_core::FilterKind,
+        filter: FilterEntry,
     },
     /// A transition of the Effects panel was dropped near an
     /// edge of this clip: it replaces the one already present on that edge
@@ -1696,15 +1696,15 @@ impl TimelineDrag {
 
     pub fn released(resp: &egui::Response) -> Option<Self> {
         // `take_payload` discards the payload even if the type does not match:
-        // the right type must be chosen before taking it. A `FilterKind`, a
+        // the right type must be chosen before taking it. A `FilterEntry`, a
         // `TransitionKind` or a whole `Transition` (duplication via
         // Alt+drag) is never a `TimelineDrag` (they are dropped only on
         // a clip, handled in the clip loop): if one of those is in
         // progress, exit immediately, otherwise the `MediaDragSet` branch below would
         // take and destroy it without being able to interpret it, and the
         // drop on the clip would no longer see anything (see the same oversight
-        // already made and repaired for `FilterKind`).
-        if egui::DragAndDrop::has_payload_of_type::<vv_core::FilterKind>(&resp.ctx)
+        // already made and repaired for the filters).
+        if egui::DragAndDrop::has_payload_of_type::<FilterEntry>(&resp.ctx)
             || egui::DragAndDrop::has_payload_of_type::<vv_core::TransitionKind>(&resp.ctx)
             || egui::DragAndDrop::has_payload_of_type::<vv_core::Transition>(&resp.ctx)
         {
@@ -1729,17 +1729,57 @@ impl TimelineDrag {
 /// generating a new one, and for this reason they stay outside `TimelineDrag`
 /// (no ghost on the empty zones, no new tracks). The type shared
 /// with `EffectStack::filters` (`vv_core::FilterKind`) remains the single source
-/// of truth on "which filters exist": here only their label.
-pub const ALL_FILTER_KINDS: [vv_core::FilterKind; 4] = [
-    vv_core::FilterKind::Grayscale,
-    vv_core::FilterKind::Exposure,
-    vv_core::FilterKind::BoxBlur,
-    vv_core::FilterKind::GaussianBlur,
+/// of truth on "which filters exist": here their entries and labels.
+pub const FILTER_ENTRIES: [FilterEntry; 5] = [
+    FilterEntry::plain(vv_core::FilterKind::ColorCorrection),
+    FilterEntry {
+        kind: vv_core::FilterKind::ColorCorrection,
+        preset: Some(vv_core::GradePreset::BlackAndWhite),
+    },
+    FilterEntry::plain(vv_core::FilterKind::Exposure),
+    FilterEntry::plain(vv_core::FilterKind::BoxBlur),
+    FilterEntry::plain(vv_core::FilterKind::GaussianBlur),
 ];
+
+/// A filter of the Effects panel, the drag payload: a kind and, for the
+/// color correction, possibly a preset (the one-click black and white).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FilterEntry {
+    pub kind: vv_core::FilterKind,
+    pub preset: Option<vv_core::GradePreset>,
+}
+
+impl FilterEntry {
+    const fn plain(kind: vv_core::FilterKind) -> Self {
+        Self { kind, preset: None }
+    }
+
+    pub fn label(self) -> std::borrow::Cow<'static, str> {
+        match self.preset {
+            Some(vv_core::GradePreset::BlackAndWhite) => t!("filter.black_and_white"),
+            _ => filter_label(self.kind),
+        }
+    }
+
+    /// The preset's non-neutral params onto `filter`, the others left as
+    /// they are: dropping "black and white" on a graded clip only
+    /// desaturates it.
+    pub fn apply_preset(self, filter: &mut vv_core::ClipFilter) {
+        let Some(preset) = self.preset else {
+            return;
+        };
+        let value = preset.value();
+        for param in vv_core::GradeParam::ALL {
+            if value.get(param) != param.neutral() {
+                *filter.grade.track_mut(param) = vv_core::Keyframed::constant(value.get(param));
+            }
+        }
+    }
+}
 
 pub fn filter_label(kind: vv_core::FilterKind) -> std::borrow::Cow<'static, str> {
     match kind {
-        vv_core::FilterKind::Grayscale => t!("filter.grayscale"),
+        vv_core::FilterKind::ColorCorrection => t!("filter.color_correction"),
         vv_core::FilterKind::BoxBlur => t!("filter.box_blur"),
         vv_core::FilterKind::GaussianBlur => t!("filter.gaussian_blur"),
         vv_core::FilterKind::Exposure => t!("filter.exposure"),
@@ -2319,7 +2359,7 @@ pub fn show_timeline(
                 // filter never lands on an empty space, but the cursor
                 // stays consistent anyway while passing over it).
                 if pointer_over_panel
-                    && egui::DragAndDrop::has_payload_of_type::<vv_core::FilterKind>(ui.ctx())
+                    && egui::DragAndDrop::has_payload_of_type::<FilterEntry>(ui.ctx())
                     && let Some(pos) = ui.input(|i| i.pointer.hover_pos())
                 {
                     paint_gear_icon(
@@ -2778,9 +2818,9 @@ pub fn show_timeline(
                     // before the block below even sees it.
                     if !visual.locked
                         && track_kinds[visual.track_index] == TrackKind::Video
-                        && egui::DragAndDrop::has_payload_of_type::<vv_core::FilterKind>(ui.ctx())
+                        && egui::DragAndDrop::has_payload_of_type::<FilterEntry>(ui.ctx())
                     {
-                        if resp.dnd_hover_payload::<vv_core::FilterKind>().is_some() {
+                        if resp.dnd_hover_payload::<FilterEntry>().is_some() {
                             painter.rect_stroke(
                                 clip_rect,
                                 4.0,
@@ -2788,7 +2828,7 @@ pub fn show_timeline(
                                 egui::StrokeKind::Inside,
                             );
                         }
-                        if let Some(filter) = resp.dnd_release_payload::<vv_core::FilterKind>() {
+                        if let Some(filter) = resp.dnd_release_payload::<FilterEntry>() {
                             pending = Some(PendingAction::ApplyFilter {
                                 track_index: visual.track_index,
                                 clip_id: visual.clip.id,
@@ -4818,7 +4858,7 @@ pub(crate) fn paint_bracket_icon(
 }
 
 /// Transitions of the Effects panel, in the order they appear there — see
-/// `ALL_FILTER_KINDS`, same idea.
+/// `FILTER_ENTRIES`, same idea.
 pub const ALL_TRANSITION_KINDS: [vv_core::TransitionKind; 1] = [vv_core::TransitionKind::Push];
 
 pub fn transition_kind_label(kind: vv_core::TransitionKind) -> std::borrow::Cow<'static, str> {
@@ -5406,10 +5446,15 @@ fn apply_pending_action(
                 .clip(track_index, clip_id)
                 .map(|clip| {
                     let mut filters = clip.effects.filters.clone();
-                    match filters.iter_mut().find(|f| f.kind == filter) {
-                        Some(existing) => existing.enabled = true,
-                        None => filters.push(vv_core::ClipFilter::new(filter)),
-                    }
+                    let own = match filters.iter().position(|f| f.kind == filter.kind) {
+                        Some(pos) => &mut filters[pos],
+                        None => {
+                            filters.push(vv_core::ClipFilter::new(filter.kind));
+                            filters.last_mut().unwrap()
+                        }
+                    };
+                    own.enabled = true;
+                    filter.apply_preset(own);
                     filters
                 });
             if let Some(filters) = new_filters {

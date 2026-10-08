@@ -1017,7 +1017,7 @@ pub const GAIN_DB_MAX: f32 = 30.0;
 /// `vv_render`, which does not know the meaning of each one, only its id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FilterKind {
-    Grayscale,
+    ColorCorrection,
     BoxBlur,
     GaussianBlur,
     Exposure,
@@ -1032,6 +1032,11 @@ impl FilterKind {
     /// Whether `ClipFilter::amount` applies to it.
     pub fn has_amount(self) -> bool {
         self == Self::Exposure
+    }
+
+    /// Whether `ClipFilter::grade` applies to it.
+    pub fn has_grade(self) -> bool {
+        self == Self::ColorCorrection
     }
 }
 
@@ -1084,17 +1089,66 @@ impl Lerp for BlurDirection {
 /// by the user (several filters on the same clip, in a sequence they choose);
 /// `enabled` suspends it without removing it from the sequence.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "StoredClipFilter")]
 pub struct ClipFilter {
     pub kind: FilterKind,
     pub enabled: bool,
     /// Blurs only: in timeline pixels, as seen with the clip at zoom 1.
-    #[serde(default = "default_blur_radius")]
     pub radius: Keyframed<f32>,
-    #[serde(default = "default_blur_direction")]
     pub direction: Keyframed<BlurDirection>,
     /// Exposure only: in stops.
-    #[serde(default = "default_filter_amount")]
     pub amount: Keyframed<f32>,
+    /// Color correction only.
+    pub grade: crate::GradeTracks,
+}
+
+/// `ClipFilter` as saved, older files included.
+#[derive(Deserialize)]
+struct StoredClipFilter {
+    kind: StoredFilterKind,
+    enabled: bool,
+    #[serde(default = "default_blur_radius")]
+    radius: Keyframed<f32>,
+    #[serde(default = "default_blur_direction")]
+    direction: Keyframed<BlurDirection>,
+    #[serde(default = "default_filter_amount")]
+    amount: Keyframed<f32>,
+    #[serde(default)]
+    grade: crate::GradeTracks,
+}
+
+/// `FilterKind` plus the kinds that no longer exist.
+#[derive(Deserialize)]
+enum StoredFilterKind {
+    /// Replaced by `ColorCorrection` with the black and white preset.
+    Grayscale,
+    ColorCorrection,
+    BoxBlur,
+    GaussianBlur,
+    Exposure,
+}
+
+impl From<StoredClipFilter> for ClipFilter {
+    fn from(stored: StoredClipFilter) -> Self {
+        let (kind, grade) = match stored.kind {
+            StoredFilterKind::Grayscale => (
+                FilterKind::ColorCorrection,
+                crate::GradeTracks::constant(crate::GradePreset::BlackAndWhite.value()),
+            ),
+            StoredFilterKind::ColorCorrection => (FilterKind::ColorCorrection, stored.grade),
+            StoredFilterKind::BoxBlur => (FilterKind::BoxBlur, stored.grade),
+            StoredFilterKind::GaussianBlur => (FilterKind::GaussianBlur, stored.grade),
+            StoredFilterKind::Exposure => (FilterKind::Exposure, stored.grade),
+        };
+        Self {
+            kind,
+            enabled: stored.enabled,
+            radius: stored.radius,
+            direction: stored.direction,
+            amount: stored.amount,
+            grade,
+        }
+    }
 }
 
 fn default_filter_amount() -> Keyframed<f32> {
@@ -1108,6 +1162,7 @@ pub struct FilterValue {
     pub radius: f32,
     pub direction: BlurDirection,
     pub amount: f32,
+    pub grade: crate::GradeValue,
 }
 
 impl FilterValue {
@@ -1117,18 +1172,20 @@ impl FilterValue {
             radius: DEFAULT_BLUR_RADIUS,
             direction: BlurDirection::Both,
             amount: 0.0,
+            grade: crate::GradeValue::NEUTRAL,
         }
     }
 }
 
 impl ClipFilter {
-    pub const fn new(kind: FilterKind) -> Self {
+    pub fn new(kind: FilterKind) -> Self {
         Self {
             kind,
             enabled: true,
             radius: Keyframed::constant(DEFAULT_BLUR_RADIUS),
             direction: Keyframed::constant(BlurDirection::Both),
             amount: Keyframed::constant(0.0),
+            grade: crate::GradeTracks::default(),
         }
     }
 
@@ -1138,6 +1195,7 @@ impl ClipFilter {
             radius: self.radius.value_at(frame),
             direction: self.direction.value_at(frame),
             amount: self.amount.value_at(frame),
+            grade: self.grade.value_at(frame),
         }
     }
 }
@@ -1401,6 +1459,7 @@ impl EffectStack {
         for filter in &mut self.filters {
             f(&mut filter.radius);
             f(&mut filter.amount);
+            filter.grade.tracks_mut().for_each(&mut f);
         }
         for mask in &mut self.masks {
             mask.tracks_mut().for_each(&mut f);

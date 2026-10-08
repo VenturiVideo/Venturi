@@ -80,7 +80,11 @@ effects.filters:
   en: "Filters"
   it: "Filtri"
 
-filter.grayscale:
+filter.color_correction:
+  en: "Color Correction"
+  it: "Correzione colore"
+
+filter.black_and_white:
   en: "Black & White"
   it: "Bianco e nero"
 

@@ -11,6 +11,7 @@ mod compressor_panel;
 mod eq_panel;
 mod export_dialog;
 mod forced_relink_dialog;
+mod grade_panel;
 mod hw_decode;
 mod i18n;
 mod keyframe_editor;
@@ -208,6 +209,9 @@ struct FilterPanelInfo {
     direction_key: RowKeyframe,
     amount: f32,
     amount_key: RowKeyframe,
+    grade: vv_core::GradeValue,
+    /// One per `GradeParam`, in the order of `ALL`.
+    grade_keys: Vec<RowKeyframe>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

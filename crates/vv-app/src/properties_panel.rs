@@ -1443,6 +1443,11 @@ impl VenturiApp {
                     direction_key: RowKeyframe::of(&f.direction, frame, in_clip),
                     amount: f.amount.value_at(frame),
                     amount_key: RowKeyframe::of(&f.amount, frame, in_clip),
+                    grade: f.grade.value_at(frame),
+                    grade_keys: vv_core::GradeParam::ALL
+                        .iter()
+                        .map(|p| RowKeyframe::of(f.grade.track(*p), frame, in_clip))
+                        .collect(),
                 })
                 .collect(),
             blend_mode: clip.effects.blend_mode,
@@ -2161,6 +2166,13 @@ impl VenturiApp {
                                                         reset_direction |= row.reset;
                                                         goto = goto.or(row.goto);
                                                     }
+                                                    let mut grade_section = None;
+                                                    if kind.has_grade() {
+                                                        let section = crate::grade_panel::grade_section(ui, &filter.grade, &filter.grade_keys);
+                                                        keyframes.extend(section.keyframes.iter().copied());
+                                                        goto = goto.or(section.goto);
+                                                        grade_section = Some(section);
+                                                    }
                                                     if let Some(source_frame) = goto {
                                                         pending_playhead = self
                                                             .timeline_id
@@ -2170,7 +2182,8 @@ impl VenturiApp {
                                                             })
                                                             .map(|c| c.timeline_frame_at(source_frame));
                                                     }
-                                                    if !reset && !reset_radius && !reset_direction && !reset_amount && keyframes.is_empty() && enabled == filter.enabled {
+                                                    let grade_untouched = grade_section.as_ref().is_none_or(|g| g.is_empty());
+                                                    if !reset && !reset_radius && !reset_direction && !reset_amount && keyframes.is_empty() && grade_untouched && enabled == filter.enabled {
                                                         continue;
                                                     }
                                                     let tl = self.timeline_id.map(|id| &self.session.project.timelines[id]);
@@ -2197,6 +2210,17 @@ impl VenturiApp {
                                                         if reset_amount {
                                                             own.amount = defaults.amount;
                                                         }
+                                                        if reset {
+                                                            own.grade = defaults.grade.clone();
+                                                        }
+                                                        if let Some(section) = &grade_section {
+                                                            if let Some(preset) = section.preset {
+                                                                own.grade = vv_core::GradeTracks::constant(preset.value());
+                                                            }
+                                                            for param in &section.reset {
+                                                                *own.grade.track_mut(*param) = vv_core::Keyframed::constant(param.neutral());
+                                                            }
+                                                        }
                                                         let mut pending_keyframes = Vec::new();
                                                         for (edit, target) in &keyframes {
                                                             let own = &mut new_filters[pos];
@@ -2211,6 +2235,9 @@ impl VenturiApp {
                                                                 KeyframeEdit::Set(vv_core::KeyframeValue::FilterAmount(_, v)) if own.amount.is_constant() => {
                                                                     own.amount.default = v;
                                                                 }
+                                                                KeyframeEdit::Set(vv_core::KeyframeValue::Grade(param, v)) if own.grade.track(param).is_constant() => {
+                                                                    own.grade.track_mut(param).default = v;
+                                                                }
                                                                 KeyframeEdit::Set(value) => {
                                                                     pending_keyframes.push(upsert_keyframe(clip_ref, t.source_frame, value));
                                                                 }
@@ -2224,6 +2251,9 @@ impl VenturiApp {
                                                                         }
                                                                         vv_core::KeyframeTarget::FilterAmount(_) => {
                                                                             vv_core::KeyframeValue::FilterAmount(kind, own.amount.value_at(t.source_frame))
+                                                                        }
+                                                                        vv_core::KeyframeTarget::Grade(param) => {
+                                                                            vv_core::KeyframeValue::Grade(*param, own.grade.track(*param).value_at(t.source_frame))
                                                                         }
                                                                         _ => vv_core::KeyframeValue::FilterDirection(kind, own.direction.value_at(t.source_frame)),
                                                                     };

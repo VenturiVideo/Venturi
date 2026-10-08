@@ -1,4 +1,5 @@
 use super::*;
+use crate::GradePreset;
 use crate::model::*;
 
 #[test]
@@ -126,8 +127,30 @@ fn unknown_clip_colors_load_as_no_color() {
 
 #[test]
 fn filters_saved_without_a_radius_load_with_the_default_one() {
-    let filter: ClipFilter = ron::from_str("(kind: Grayscale, enabled: true)").unwrap();
-    assert_eq!(filter, ClipFilter::new(FilterKind::Grayscale));
+    let filter: ClipFilter = ron::from_str("(kind: Exposure, enabled: true)").unwrap();
+    assert_eq!(filter, ClipFilter::new(FilterKind::Exposure));
+}
+
+#[test]
+fn the_old_grayscale_filter_loads_as_a_black_and_white_color_correction() {
+    let filter: ClipFilter = ron::from_str("(kind: Grayscale, enabled: false)").unwrap();
+    assert_eq!(filter.kind, FilterKind::ColorCorrection);
+    assert!(!filter.enabled);
+    assert_eq!(filter.grade.value_at(0), GradePreset::BlackAndWhite.value());
+}
+
+#[test]
+fn every_filter_kind_survives_save_and_load() {
+    use FilterKind::*;
+    for kind in [ColorCorrection, BoxBlur, GaussianBlur, Exposure] {
+        let filter = ClipFilter::new(kind);
+        let text = ron::to_string(&filter).unwrap();
+        assert_eq!(
+            ron::from_str::<ClipFilter>(&text).unwrap(),
+            filter,
+            "{kind:?}"
+        );
+    }
 }
 
 #[test]

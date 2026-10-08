@@ -630,24 +630,24 @@ fn a_solid_layer_covers_everything_below_it() {
     );
 }
 
-/// The black and white filter converts any kind of layer to luma,
-/// not just video.
+/// The black and white preset converts any kind of layer to luma, not just
+/// video.
 #[test]
-fn grayscale_flattens_a_solid_layer_to_its_luma() {
+fn black_and_white_flattens_a_solid_layer_to_its_luma() {
     let compositor = Compositor::new_headless();
     let out = compositor.render_layers(
         &[Layer {
             content: LayerContent::Solid(RED),
             transform: Transform::default(),
             opacity: 1.0,
-            filters: GRAYSCALE,
+            filters: BLACK_AND_WHITE,
             blend: BlendMode::Normal,
             masks: &[],
         }],
         OutputFrame::exact(4, 4),
     );
     let pixel = out.as_chunks::<4>().0[0];
-    assert_eq!(pixel[0], pixel[1], "grigio: R=G=B");
+    assert_eq!(pixel[0], pixel[1], "grey: R=G=B");
     assert_eq!(pixel[1], pixel[2]);
     assert!(
         pixel[0] > 0 && pixel[0] < 255,
@@ -1291,8 +1291,10 @@ fn adjustment(transform: Transform, opacity: f32, filters: &[vv_core::FilterValu
     }
 }
 
-const GRAYSCALE: &[vv_core::FilterValue] =
-    &[vv_core::FilterValue::new(vv_core::FilterKind::Grayscale)];
+const BLACK_AND_WHITE: &[vv_core::FilterValue] = &[vv_core::FilterValue {
+    grade: vv_core::GradePreset::BlackAndWhite.value(),
+    ..vv_core::FilterValue::new(vv_core::FilterKind::ColorCorrection)
+}];
 
 #[test]
 fn an_adjustment_filters_the_layers_below_but_not_those_above() {
@@ -1300,7 +1302,7 @@ fn an_adjustment_filters_the_layers_below_but_not_those_above() {
     let out = compositor.render_layers(
         &[
             Layer::new(LayerContent::Solid(RED), Transform::default()),
-            adjustment(Transform::default(), 1.0, GRAYSCALE),
+            adjustment(Transform::default(), 1.0, BLACK_AND_WHITE),
             Layer::new(
                 LayerContent::Solid(BLUE),
                 Transform {
@@ -1326,7 +1328,7 @@ fn an_adjustment_opacity_mixes_the_processed_stack_with_the_original() {
         let out = compositor.render_layers(
             &[
                 Layer::new(LayerContent::Solid(RED), Transform::default()),
-                adjustment(Transform::default(), opacity, GRAYSCALE),
+                adjustment(Transform::default(), opacity, BLACK_AND_WHITE),
             ],
             OutputFrame::exact(4, 4),
         );
@@ -1454,7 +1456,7 @@ fn an_adjustment_over_nothing_stays_transparent_in_a_transparent_render() {
                 ..Transform::default()
             },
             1.0,
-            GRAYSCALE,
+            BLACK_AND_WHITE,
         )],
         OutputFrame::exact(8, 8),
     );
@@ -1536,14 +1538,14 @@ fn render_blurred(filters: &[vv_core::FilterValue]) -> Vec<u8> {
 fn filter_chain_splits_the_per_pixel_filters_at_the_blurs() {
     use vv_core::FilterKind::*;
     let filters = [
-        vv_core::FilterValue::new(Grayscale),
+        vv_core::FilterValue::new(ColorCorrection),
         blur(BoxBlur, 3.0),
-        vv_core::FilterValue::new(Grayscale),
+        vv_core::FilterValue::new(ColorCorrection),
         blur(GaussianBlur, 0.0),
         blur(GaussianBlur, 2.0),
     ];
     let chain = FilterChain::new(&filters, false);
-    assert_eq!(chain.leading, [vv_core::FilterValue::new(Grayscale)]);
+    assert_eq!(chain.leading, [vv_core::FilterValue::new(ColorCorrection)]);
     assert_eq!(
         chain.blurs,
         [
@@ -1553,7 +1555,7 @@ fn filter_chain_splits_the_per_pixel_filters_at_the_blurs() {
                     radius: 3.0,
                     direction: vv_core::BlurDirection::Both,
                 },
-                vec![vv_core::FilterValue::new(Grayscale)]
+                vec![vv_core::FilterValue::new(ColorCorrection)]
             ),
             (
                 Blur {
@@ -1568,7 +1570,10 @@ fn filter_chain_splits_the_per_pixel_filters_at_the_blurs() {
     );
 
     let uniform = FilterChain::new(&filters, true);
-    assert_eq!(uniform.leading, [vv_core::FilterValue::new(Grayscale); 2]);
+    assert_eq!(
+        uniform.leading,
+        [vv_core::FilterValue::new(ColorCorrection); 2]
+    );
     assert!(uniform.blurs.is_empty(), "nothing to blur on a solid color");
 }
 
@@ -2072,7 +2077,7 @@ fn standard_precision_composes_like_high() {
                 },
             )
         },
-        adjustment(Transform::default(), 0.5, GRAYSCALE),
+        adjustment(Transform::default(), 0.5, BLACK_AND_WHITE),
     ];
     let output = OutputFrame::exact(16, 16);
     let standard = (
@@ -2091,4 +2096,157 @@ fn standard_precision_composes_like_high() {
             "{a:?}\n{b:?}"
         );
     }
+}
+
+/// CPU mirror of `apply_grade` in transform.wgsl.
+fn grade_reference(rgb: [f32; 3], grade: &vv_core::GradeValue) -> [f32; 3] {
+    use vv_core::{GradeParam, GradeWheel, LUMA_WEIGHTS};
+    let luma = |c: [f32; 3]| c.iter().zip(LUMA_WEIGHTS).map(|(c, w)| c * w).sum::<f32>();
+    let smoothstep = |e0: f32, e1: f32, x: f32| {
+        let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
+    let low = grade.get(GradeParam::LowRange);
+    let high = grade.get(GradeParam::HighRange).max(low);
+    let soft = (0.5 * low.min(high - low).min(1.0 - high)).max(0.001);
+    let y = luma(rgb);
+    let shadows = 1.0 - smoothstep(low - soft, low + soft, y);
+    let highlights = smoothstep(high - soft, high + soft, y);
+    let weights = [shadows, 1.0 - shadows - highlights, highlights, 1.0];
+    let mut c = rgb;
+    for (wheel, weight) in GradeWheel::ALL.iter().zip(weights) {
+        let shift = grade.wheel_shift(*wheel);
+        for i in 0..3 {
+            c[i] += weight * shift[i];
+        }
+    }
+    let saturation = (0..3)
+        .map(|i| weights[i] * grade.get(GradeWheel::ALL[i].saturation()))
+        .sum::<f32>()
+        * grade.get(GradeParam::Saturation);
+    let y = luma(c);
+    c.map(|v| (y + (v - y) * saturation).clamp(0.0, 1.0))
+}
+
+fn render_graded(compositor: &Compositor, color: [f32; 3], grade: vv_core::GradeValue) -> [u8; 4] {
+    let filters = [vv_core::FilterValue {
+        grade,
+        ..vv_core::FilterValue::new(vv_core::FilterKind::ColorCorrection)
+    }];
+    let out = compositor.render_layers(
+        &[Layer {
+            filters: &filters,
+            ..Layer::new(
+                LayerContent::Solid(vv_core::Rgba::from([color[0], color[1], color[2], 1.0])),
+                Transform::default(),
+            )
+        }],
+        OutputFrame::exact(4, 4),
+    );
+    out.as_chunks::<4>().0[0]
+}
+
+fn grade_with(params: &[(vv_core::GradeParam, f32)]) -> vv_core::GradeValue {
+    let mut grade = vv_core::GradeValue::NEUTRAL;
+    for (param, value) in params {
+        grade.set(*param, *value);
+    }
+    grade
+}
+
+#[test]
+fn the_color_correction_matches_its_reference_in_both_precisions() {
+    use vv_core::GradeParam::*;
+    let grades = [
+        grade_with(&[]),
+        grade_with(&[(ShadowsX, 0.7), (ShadowsY, -0.3), (ShadowsLuma, 0.2)]),
+        grade_with(&[(MidtonesY, 0.8), (MidtonesSat, 1.6), (LowRange, 0.2)]),
+        grade_with(&[
+            (HighlightsX, -0.5),
+            (HighlightsLuma, -0.3),
+            (HighRange, 0.8),
+        ]),
+        grade_with(&[(OffsetX, 0.3), (OffsetLuma, -0.1), (Saturation, 0.4)]),
+    ];
+    let colors = [
+        [0.05, 0.08, 0.1],
+        [0.5, 0.25, 0.75],
+        [0.9, 0.85, 0.7],
+        [0.3, 0.6, 0.2],
+    ];
+    for precision in [
+        vv_core::ProcessingPrecision::Standard,
+        vv_core::ProcessingPrecision::High,
+    ] {
+        let compositor = Compositor::new_headless_with_precision(precision);
+        for grade in &grades {
+            for color in colors {
+                let got = render_graded(&compositor, color, *grade);
+                let expected = grade_reference(color, grade).map(|c| (c * 255.0).round() as u8);
+                assert!(
+                    (0..3).all(|i| got[i].abs_diff(expected[i]) <= 2),
+                    "{precision:?} {color:?} {grade:?}: {got:?} vs {expected:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_neutral_color_correction_changes_nothing() {
+    let compositor = Compositor::new_headless();
+    for color in [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [0.2, 0.5, 0.9]] {
+        let got = render_graded(&compositor, color, vv_core::GradeValue::NEUTRAL);
+        let expected = color.map(|c| (c * 255.0).round() as u8);
+        assert!((0..3).all(|i| got[i].abs_diff(expected[i]) <= 1), "{got:?}");
+    }
+}
+
+#[test]
+fn the_shadows_wheel_lifts_the_shadows_and_leaves_the_highlights() {
+    use vv_core::GradeParam::ShadowsLuma;
+    let compositor = Compositor::new_headless();
+    let lift = grade_with(&[(ShadowsLuma, 0.3)]);
+    let dark = [0.1, 0.1, 0.1];
+    let bright = [0.9, 0.9, 0.9];
+    assert!(render_graded(&compositor, dark, lift)[1] > 26 + 30);
+    assert!(render_graded(&compositor, bright, lift)[1].abs_diff(230) <= 1);
+}
+
+/// The range weights sum to 1: the same luminance on the three ranges is the
+/// same as on the offset wheel.
+#[test]
+fn the_three_ranges_together_act_like_the_offset() {
+    use vv_core::GradeParam::*;
+    let compositor = Compositor::new_headless();
+    let ranges = grade_with(&[
+        (ShadowsLuma, 0.1),
+        (MidtonesLuma, 0.1),
+        (HighlightsLuma, 0.1),
+    ]);
+    let offset = grade_with(&[(OffsetLuma, 0.1)]);
+    for color in [[0.1, 0.2, 0.15], [0.45, 0.5, 0.4], [0.7, 0.75, 0.8]] {
+        let a = render_graded(&compositor, color, ranges);
+        let b = render_graded(&compositor, color, offset);
+        assert!((0..3).all(|i| a[i].abs_diff(b[i]) <= 1), "{a:?} vs {b:?}");
+    }
+}
+
+#[test]
+fn a_wheel_push_changes_the_hue_but_not_the_luma() {
+    use vv_core::GradeParam::{MidtonesX, MidtonesY};
+    let compositor = Compositor::new_headless();
+    let grey = [0.5, 0.5, 0.5];
+    let pushed = render_graded(
+        &compositor,
+        grey,
+        grade_with(&[(MidtonesX, -0.3), (MidtonesY, 0.9)]),
+    );
+    let luma: f32 = pushed[..3]
+        .iter()
+        .zip(vv_core::LUMA_WEIGHTS)
+        .map(|(c, w)| *c as f32 * w)
+        .sum();
+    assert!((luma - 127.5).abs() <= 1.5, "{pushed:?}");
+    assert!(pushed[0] > pushed[2] + 20, "towards red: {pushed:?}");
 }

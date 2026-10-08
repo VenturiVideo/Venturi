@@ -2366,3 +2366,68 @@ fn filter_keyframes_are_set_replaced_and_removed_with_undo() {
     history.undo(&mut project);
     assert!(filter(&project).radius.is_constant());
 }
+
+#[test]
+fn a_color_correction_param_takes_keyframes_and_undo_removes_them() {
+    let (mut project, timeline) = make_project_with_two_tracks();
+    let mut history = History::default();
+    let mut a = make_clip(&mut project, 0, 20);
+    a.effects
+        .filters
+        .push(ClipFilter::new(FilterKind::ColorCorrection));
+    let a_id = a.id;
+    history.do_command(
+        &mut project,
+        Box::new(command::InsertClip {
+            timeline,
+            track_index: 0,
+            clip: a,
+        }),
+    );
+
+    history.do_command(
+        &mut project,
+        Box::new(command::UpsertKeyframe::new(
+            timeline,
+            0,
+            a_id,
+            5,
+            command::KeyframeValue::Grade(GradeParam::MidtonesLuma, 0.25),
+            Interpolation::Linear,
+        )),
+    );
+    let grade = |project: &Project| {
+        project.timelines[timeline].tracks[0].clips[0]
+            .effects
+            .filters[0]
+            .grade
+            .track(GradeParam::MidtonesLuma)
+            .clone()
+    };
+    assert_eq!(
+        grade(&project).keyframe_at(5),
+        Some((0.25, Interpolation::Linear))
+    );
+
+    history.undo(&mut project);
+    assert!(grade(&project).is_constant());
+}
+
+#[test]
+fn shifting_the_effects_moves_the_color_correction_keyframes_too() {
+    let mut effects = EffectStack::default();
+    let mut filter = ClipFilter::new(FilterKind::ColorCorrection);
+    filter
+        .grade
+        .track_mut(GradeParam::ShadowsX)
+        .upsert(10, 0.5, Interpolation::Linear);
+    effects.filters.push(filter);
+    effects.shift_keyframes(-4);
+    assert_eq!(
+        effects.filters[0]
+            .grade
+            .track(GradeParam::ShadowsX)
+            .keyframe_at(6),
+        Some((0.5, Interpolation::Linear))
+    );
+}

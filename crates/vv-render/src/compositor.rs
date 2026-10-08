@@ -165,7 +165,7 @@ const MAX_LAYER_FILTERS: usize = 8;
 /// blurs never reach the uniform: see `FilterChain`.
 fn filter_shader_id(kind: vv_core::FilterKind) -> f32 {
     match kind {
-        vv_core::FilterKind::Grayscale => 1.0,
+        vv_core::FilterKind::ColorCorrection => 1.0,
         vv_core::FilterKind::Exposure => 2.0,
         vv_core::FilterKind::BoxBlur | vv_core::FilterKind::GaussianBlur => 0.0,
     }
@@ -622,6 +622,40 @@ impl WorkPipelines {
     }
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct GradeUniform {
+    /// Shadows, midtones, highlights, offset: RGB shift and saturation.
+    wheels: [[f32; 4]; 4],
+    /// x: shadows/midtones luma, y: midtones/highlights luma.
+    ranges: [f32; 4],
+}
+
+impl GradeUniform {
+    /// From the pass's color correction; a pass has at most one, since a clip
+    /// has at most one filter per kind.
+    fn new(filters: &[vv_core::FilterValue]) -> Self {
+        let grade = filters
+            .iter()
+            .find(|f| f.kind == vv_core::FilterKind::ColorCorrection)
+            .map_or(vv_core::GradeValue::NEUTRAL, |f| f.grade);
+        let mut wheels = [[0.0; 4]; 4];
+        for (slot, wheel) in wheels.iter_mut().zip(vv_core::GradeWheel::ALL) {
+            let [r, g, b] = grade.wheel_shift(wheel);
+            *slot = [r, g, b, grade.get(wheel.saturation())];
+        }
+        Self {
+            wheels,
+            ranges: [
+                grade.get(vv_core::GradeParam::LowRange),
+                grade.get(vv_core::GradeParam::HighRange),
+                0.0,
+                0.0,
+            ],
+        }
+    }
+}
+
 pub struct Compositor {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
@@ -793,6 +827,16 @@ impl Compositor {
                 plane_entry(6), // Backdrop (see `backdrop_tex` in the shader)
                 wgpu::BindGroupLayoutEntry {
                     binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
@@ -1757,6 +1801,7 @@ impl Compositor {
             [&y_view, &u_view, &v_view, &a_view, backdrop],
             &uniform,
             &MaskUniform::new(masks, transform, output),
+            &GradeUniform::new(filters),
         );
         planes.extend([y_texture, u_texture, v_texture, a_texture]);
         bind_group
@@ -1820,6 +1865,7 @@ impl Compositor {
             [rgba_view, &u_view, &v_view, &a_view, backdrop],
             &uniform,
             &MaskUniform::new(masks, transform, output),
+            &GradeUniform::new(filters),
         );
         planes.extend([u_texture, v_texture, a_texture]);
         bind_group
@@ -1832,6 +1878,7 @@ impl Compositor {
         views: [&wgpu::TextureView; 5],
         uniform: &TransformUniform,
         masks: &MaskUniform,
+        grade: &GradeUniform,
     ) -> wgpu::BindGroup {
         let uniform_buffer = self
             .device
@@ -1845,6 +1892,13 @@ impl Compositor {
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("vv-render mask uniform"),
                 contents: bytemuck::bytes_of(masks),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let grade_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("vv-render grade uniform"),
+                contents: bytemuck::bytes_of(grade),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1882,6 +1936,10 @@ impl Compositor {
                 wgpu::BindGroupEntry {
                     binding: 7,
                     resource: mask_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: grade_buffer.as_entire_binding(),
                 },
             ],
         })

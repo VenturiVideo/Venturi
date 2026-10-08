@@ -65,6 +65,17 @@ struct MaskUniform {
 
 @group(0) @binding(7) var<uniform> mask_uniform: MaskUniform;
 
+// See `GradeUniform` in compositor.rs.
+struct GradeUniform {
+    // Shadows, midtones, highlights, offset: xyz RGB shift, w saturation
+    // (global for the offset).
+    wheels: array<vec4<f32>, 4>,
+    // x: shadows/midtones luma, y: midtones/highlights luma.
+    ranges: vec4<f32>,
+};
+
+@group(0) @binding(8) var<uniform> grade: GradeUniform;
+
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -111,9 +122,8 @@ fn filter_id_at(filters: array<vec4<f32>, 2>, i: i32) -> f32 {
 // loop in `fs_main`) is the order chosen by the user. New per-pixel filters: a new
 // id (`filter_shader_id`) and a new branch here, nothing else in the pipeline.
 fn apply_filter(rgb: vec3<f32>, id: f32, param: f32) -> vec3<f32> {
-    if (id > 0.5 && id < 1.5) { // Grayscale
-        let luma = dot(rgb, vec3<f32>(0.299, 0.587, 0.114));
-        return vec3<f32>(luma, luma, luma);
+    if (id > 0.5 && id < 1.5) { // Color correction, parameters in `grade`
+        return apply_grade(rgb);
     }
     if (id > 1.5 && id < 2.5) { // Exposure, `param` in stops
         // Scaled in (approximately) linear light, as a camera would.
@@ -121,6 +131,32 @@ fn apply_filter(rgb: vec3<f32>, id: f32, param: f32) -> vec3<f32> {
         return clamp(pow(linear, vec3<f32>(1.0 / 2.2)), vec3<f32>(0.0), vec3<f32>(1.0));
     }
     return rgb;
+}
+
+const LUMA_709: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
+
+// Shadows/midtones/highlights weights of a pixel of luma `y`: soft, summing to 1.
+fn range_weights(y: f32) -> vec3<f32> {
+    let low = grade.ranges.x;
+    let high = max(grade.ranges.y, low);
+    let soft = max(0.5 * min(low, min(high - low, 1.0 - high)), 0.001);
+    let shadows = 1.0 - smoothstep(low - soft, low + soft, y);
+    let highlights = smoothstep(high - soft, high + soft, y);
+    return vec3<f32>(shadows, 1.0 - shadows - highlights, highlights);
+}
+
+fn apply_grade(rgb: vec3<f32>) -> vec3<f32> {
+    let w = range_weights(dot(rgb, LUMA_709));
+    var c = rgb
+        + w.x * grade.wheels[0].xyz
+        + w.y * grade.wheels[1].xyz
+        + w.z * grade.wheels[2].xyz
+        + grade.wheels[3].xyz;
+    let saturation = dot(w, vec3<f32>(grade.wheels[0].w, grade.wheels[1].w, grade.wheels[2].w))
+        * grade.wheels[3].w;
+    let luma = dot(c, LUMA_709);
+    c = vec3<f32>(luma) + (c - vec3<f32>(luma)) * saturation;
+    return clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
 fn yuv_to_rgb(y_sample: f32, u_sample: f32, v_sample: f32, matrix_id: i32, full_range: bool) -> vec3<f32> {

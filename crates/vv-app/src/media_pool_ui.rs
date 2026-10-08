@@ -124,11 +124,11 @@ pub(crate) fn effect_item(ui: &mut egui::Ui, generator: timeline_ui::Generator) 
 }
 
 /// Filter entry in the Effects panel: dragged onto an existing video clip
-/// (never onto empty space). The kind (`vv_core::FilterKind`) is the same one
+/// (never onto empty space). Its kind (`vv_core::FilterKind`) is the same one
 /// saved in `EffectStack::filters`: no double representation between editor
 /// and model.
-pub(crate) fn filter_item(ui: &mut egui::Ui, filter: vv_core::FilterKind) {
-    let label = timeline_ui::filter_label(filter);
+pub(crate) fn filter_item(ui: &mut egui::Ui, filter: timeline_ui::FilterEntry) {
+    let label = filter.label();
     let (rect, _) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), egui::Sense::hover());
     let id = ui.id().with(("filter_item", &label));
@@ -1314,7 +1314,7 @@ impl VenturiApp {
                 }
                 ui.add_space(8.0);
                 effects_section_header(ui, &t!("effects.filters"));
-                for filter in timeline_ui::ALL_FILTER_KINDS {
+                for filter in timeline_ui::FILTER_ENTRIES {
                     filter_item(ui, filter);
                 }
                 ui.add_space(8.0);

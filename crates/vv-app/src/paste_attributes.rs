@@ -492,11 +492,17 @@ fn merged_attributes(
                     .effects
                     .filters
                     .iter()
-                    .map(|f| vv_core::ClipFilter {
-                        radius: remap.apply(&f.radius),
-                        direction: remap.apply(&f.direction),
-                        amount: remap.apply(&f.amount),
-                        ..f.clone()
+                    .map(|f| {
+                        let mut filter = vv_core::ClipFilter {
+                            radius: remap.apply(&f.radius),
+                            direction: remap.apply(&f.direction),
+                            amount: remap.apply(&f.amount),
+                            ..f.clone()
+                        };
+                        for track in filter.grade.tracks_mut() {
+                            *track = remap.apply(track);
+                        }
+                        filter
                     })
                     .collect();
             }

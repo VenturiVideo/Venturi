@@ -332,3 +332,27 @@ fn pasted_filters_bring_their_keyframes_into_the_target_clip() {
     assert_eq!(filter.radius.keyframes()[0].0, 105);
     assert_eq!(filter.direction.keyframes()[0].0, 105);
 }
+
+#[test]
+fn pasted_color_corrections_bring_their_keyframes_into_the_target_clip() {
+    let mut source = source_clip();
+    let mut filter = vv_core::ClipFilter::new(vv_core::FilterKind::ColorCorrection);
+    filter
+        .grade
+        .track_mut(vv_core::GradeParam::HighlightsY)
+        .upsert(5, 0.4, Interpolation::Linear);
+    source.effects.filters.push(filter);
+    let target = clip(2, 100, 120);
+
+    let pasted = merged_attributes(
+        &source,
+        &target,
+        &HashSet::from([Attribute::Filters]),
+        KeyframeMode::MaintainTiming,
+    );
+
+    let track = pasted.effects.filters[0]
+        .grade
+        .track(vv_core::GradeParam::HighlightsY);
+    assert_eq!(track.keyframes()[0].0, 105);
+}
