@@ -5,6 +5,10 @@ use vv_core::{
     FrameIdx, GradeParam, GradePreset, GradeValue, GradeWheel, KeyframeTarget, KeyframeValue,
 };
 
+use crate::PanelTarget;
+use crate::properties_panel::{
+    BoxedCommand, remove_keyframe, set_filters, target_effects, upsert_keyframe,
+};
 use crate::properties_panel::{
     KeyframeEdit, RowKeyframe, drag_field, keyframe_arrow, keyframe_button, param_row, slider_field,
 };
@@ -217,6 +221,89 @@ impl GradeSectionResponse {
     pub(crate) fn is_empty(&self) -> bool {
         self.keyframes.is_empty() && self.reset.is_empty() && self.preset.is_none()
     }
+}
+
+/// The commands applying `section` to the color correction of every target
+/// that has one: a value is the track's default while it has no keyframes,
+/// a keyframe at the target's frame otherwise.
+pub(crate) fn grade_commands(
+    tl: Option<&vv_core::Timeline>,
+    targets: &[PanelTarget],
+    section: &GradeSectionResponse,
+) -> Vec<BoxedCommand> {
+    let mut commands = Vec::new();
+    if section.is_empty() {
+        return commands;
+    }
+    for t in targets {
+        let Some(effects) = target_effects(tl, t) else {
+            continue;
+        };
+        let Some(pos) = effects.filters.iter().position(|f| f.kind.has_grade()) else {
+            continue;
+        };
+        let clip_ref = (t.timeline, t.track_index, t.clip_id);
+        let mut filters = effects.filters.clone();
+        let grade = &mut filters[pos].grade;
+        if let Some(preset) = section.preset {
+            *grade = vv_core::GradeTracks::constant(preset.value());
+        }
+        for param in &section.reset {
+            *grade.track_mut(*param) = vv_core::Keyframed::constant(param.neutral());
+        }
+        let mut keyframes = Vec::new();
+        for (edit, target) in &section.keyframes {
+            match *edit {
+                KeyframeEdit::Set(KeyframeValue::Grade(param, v))
+                    if grade.track(param).is_constant() =>
+                {
+                    grade.track_mut(param).default = v;
+                }
+                KeyframeEdit::Set(value) => {
+                    keyframes.push(upsert_keyframe(clip_ref, t.source_frame, value));
+                }
+                KeyframeEdit::Toggle(true) => {
+                    keyframes.push(remove_keyframe(clip_ref, t.source_frame, *target));
+                }
+                KeyframeEdit::Toggle(false) => {
+                    if let KeyframeTarget::Grade(param) = *target {
+                        let value = grade.track(param).value_at(t.source_frame);
+                        keyframes.push(upsert_keyframe(
+                            clip_ref,
+                            t.source_frame,
+                            KeyframeValue::Grade(param, value),
+                        ));
+                    }
+                }
+            }
+        }
+        if filters != effects.filters {
+            commands.push(set_filters(clip_ref, filters));
+        }
+        commands.append(&mut keyframes);
+    }
+    commands
+}
+
+/// Adds a neutral color correction to the targets that have none.
+pub(crate) fn add_grade_commands(
+    tl: Option<&vv_core::Timeline>,
+    targets: &[PanelTarget],
+) -> Vec<BoxedCommand> {
+    targets
+        .iter()
+        .filter_map(|t| {
+            let effects = target_effects(tl, t)?;
+            if effects.filters.iter().any(|f| f.kind.has_grade()) {
+                return None;
+            }
+            let mut filters = effects.filters.clone();
+            filters.push(vv_core::ClipFilter::new(
+                vv_core::FilterKind::ColorCorrection,
+            ));
+            Some(set_filters((t.timeline, t.track_index, t.clip_id), filters))
+        })
+        .collect()
 }
 
 /// `keys` holds one `RowKeyframe` per `GradeParam`, in the order of `ALL`.

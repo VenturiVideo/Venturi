@@ -451,6 +451,11 @@ impl VenturiApp {
                             &mut self.settings.panels.inspector_open,
                             t!("menu.inspector"),
                         );
+                        ui.checkbox(
+                            &mut self.settings.panels.color_window_open,
+                            t!("menu.color_window"),
+                        )
+                        .on_hover_text(t!("menu.color_window_hint"));
                         ui.checkbox(&mut self.audiometer_enabled, t!("menu.audiometer"))
                             .on_hover_text(t!("menu.audiometer_hint"));
                         ui.separator();

@@ -4,7 +4,7 @@ Phase 4 of plans/FLOAT_INTERMEDIATES.md, after the color correction filter
 (plans/COLOR_CORRECTION.md). Branch: `feature/scopes`, from
 `feature/color-correction`.
 
-**Status:** in progress. Decisions (2026-10-08): the viewer's composed
+**Status:** implemented, waiting for the manual check in the app. Decisions (2026-10-08): the viewer's composed
 frame (§2), all four scopes in the first version (§3).
 
 ---

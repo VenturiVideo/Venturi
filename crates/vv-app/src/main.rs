@@ -7,6 +7,7 @@ extern crate rust_i18n;
 rust_i18n::i18n!("locales", fallback = "en");
 
 mod app_menu;
+mod color_window;
 mod compressor_panel;
 mod eq_panel;
 mod export_dialog;
@@ -259,6 +260,13 @@ struct VenturiApp {
     /// egui-wgpu device/queue, shared with the compositor: a texture from
     /// another device cannot be registered in egui. `None` in the tests.
     egui_render_state: Option<eframe::egui_wgpu::RenderState>,
+    /// The viewer's last composed frame, measured by the Color window's
+    /// scopes, and a counter bumped with each new one.
+    viewer_texture: Option<wgpu::Texture>,
+    viewer_generation: u64,
+    /// Created the first time the Color window shows them.
+    scopes: Option<vv_render::Scopes>,
+    scope_view: color_window::ScopeView,
     /// Video buffer of the media pool preview: a `RenderAhead` on a
     /// timeline with only the clip of the media, and the id of the media in there.
     browsing_render_ahead: Option<(render_ahead::RenderAhead, MediaId)>,
@@ -438,6 +446,10 @@ impl Default for VenturiApp {
             viewer_geometry: None,
             last_viewer_frame_kind: None,
             egui_render_state: None,
+            viewer_texture: None,
+            viewer_generation: 0,
+            scopes: None,
+            scope_view: color_window::ScopeView::default(),
             browsing_render_ahead: None,
             slip_viewer: None,
             proxy_worker: None,
@@ -1495,6 +1507,56 @@ impl VenturiApp {
         );
     }
 
+    /// Measures the viewer's frame for the Color window's scope slots, shown
+    /// on the next frame. Only what changed (frame, scope or size) is redrawn.
+    fn update_scopes(&mut self, ctx: &egui::Context) {
+        if !self.settings.panels.color_window_open {
+            return;
+        }
+        let (Some(render_state), Some(source)) =
+            (self.egui_render_state.clone(), self.viewer_texture.clone())
+        else {
+            return;
+        };
+        let scopes = self.scopes.get_or_insert_with(|| {
+            vv_render::Scopes::new(
+                std::sync::Arc::new(render_state.device.clone()),
+                std::sync::Arc::new(render_state.queue.clone()),
+            )
+        });
+        for slot in 0..2 {
+            let size = self.scope_view.sizes[slot];
+            if size.0 == 0 || size.1 == 0 {
+                continue;
+            }
+            let kind = self.settings.panels.color_scopes[slot];
+            let drawn = Some((kind, size, self.viewer_generation));
+            if self.scope_view.drawn[slot] == drawn {
+                continue;
+            }
+            let texture = scopes.render(&source, kind, slot, size);
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let mut renderer = render_state.renderer.write();
+            match self.scope_view.textures[slot] {
+                Some(id) => renderer.update_egui_texture_from_wgpu_texture(
+                    &render_state.device,
+                    &view,
+                    wgpu::FilterMode::Linear,
+                    id,
+                ),
+                None => {
+                    self.scope_view.textures[slot] = Some(renderer.register_native_texture(
+                        &render_state.device,
+                        &view,
+                        wgpu::FilterMode::Linear,
+                    ));
+                }
+            }
+            self.scope_view.drawn[slot] = drawn;
+            ctx.request_repaint();
+        }
+    }
+
     /// Undo, redo and opening a project change it too: checked before each
     /// composition rather than where it is set.
     fn sync_compositor_precision(&mut self) {
@@ -1553,6 +1615,8 @@ impl VenturiApp {
             }
         }
         drop(renderer);
+        self.viewer_texture = Some(texture);
+        self.viewer_generation += 1;
         let (width, height) = output.timeline_size;
         self.video_display_size = Some(egui::vec2(width as f32, height as f32));
         self.last_viewer_frame_kind = Some(ViewerFrameKind::Video);
@@ -3667,6 +3731,37 @@ impl VenturiApp {
             }
         }
 
+        if self.settings.panels.color_window_open {
+            let primary = video_targets.first().copied();
+            let grade = primary.map(|t| {
+                self.session.project.timelines[t.timeline]
+                    .clip(t.track_index, t.clip_id)
+                    .and_then(|clip| color_window::grade_info(clip, t.source_frame))
+            });
+            let response = color_window::show_color_window(
+                ui.ctx(),
+                &mut self.settings.panels.color_window_open,
+                &mut self.settings.panels.color_scopes,
+                &mut self.scope_view,
+                grade,
+            );
+            let tl = self
+                .timeline_id
+                .map(|id| &self.session.project.timelines[id]);
+            if let Some(section) = &response.grade {
+                pending_effects.extend(grade_panel::grade_commands(tl, &video_targets, section));
+            }
+            if response.add_grade {
+                pending_effects.extend(grade_panel::add_grade_commands(tl, &video_targets));
+            }
+            if let (Some(source_frame), Some(t)) = (response.goto, primary) {
+                pending_playhead = self.session.project.timelines[t.timeline]
+                    .clip(t.track_index, t.clip_id)
+                    .map(|c| c.timeline_frame_at(source_frame))
+                    .or(pending_playhead);
+            }
+        }
+
         if let Some(id) = preview_action {
             self.preview_media(id);
             // Pool preview: no active clip, and the playhead must not
@@ -3920,6 +4015,7 @@ impl VenturiApp {
 
         let pointer_down = ui.input(|i| i.pointer.any_down());
         self.apply_effect_changes(overlay_effects, pointer_down);
+        self.update_scopes(ui.ctx());
 
         if transport_action.toggle_play {
             self.toggle_playback();

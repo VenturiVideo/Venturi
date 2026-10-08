@@ -192,6 +192,14 @@ menu.view:
   en: "View"
   it: "Visualizza"
 
+menu.color_window:
+  en: "Color"
+  it: "Colore"
+
+menu.color_window_hint:
+  en: "Scopes of the viewer's picture and the color correction of the selected clip, in a window of their own."
+  it: "Scope dell'immagine del viewer e correzione colore della clip selezionata, in una finestra dedicata."
+
 menu.inspector:
   en: "Properties"
   it: "Proprietà"

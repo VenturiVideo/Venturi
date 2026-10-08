@@ -407,7 +407,9 @@ Done:
 - Opacity and 15 blend modes per clip; filters (color correction with
   shadows/midtones/highlights/offset wheels, per-range saturation and
   ranges, black & white preset; exposure; box and gaussian blur with
-  keyframable radius and direction); masks
+  keyframable radius and direction); a Color window with GPU scopes
+  (waveform, RGB parade, vectorscope, histogram) of the viewer's frame next
+  to the color wheels; masks
   (rectangle, ellipse, bezier path; feather, invert, add/subtract/intersect;
   handles and pen in the viewer), which on an adjustment clip limit where its
   filters apply; Push transitions on a clip's

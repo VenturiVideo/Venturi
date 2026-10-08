@@ -487,6 +487,9 @@ pub struct PanelLayout {
     pub inspector_open: bool,
     pub keyframe_editor_open: bool,
     pub mixer_open: bool,
+    pub color_window_open: bool,
+    /// What the Color window's two scope slots show.
+    pub color_scopes: [vv_render::ScopeKind; 2],
     pub left_column_width: f32,
     /// Share of the left column's height given to the media pool when the
     /// Effects panel is open too.
@@ -503,6 +506,11 @@ impl Default for PanelLayout {
             inspector_open: true,
             keyframe_editor_open: false,
             mixer_open: false,
+            color_window_open: false,
+            color_scopes: [
+                vv_render::ScopeKind::Waveform,
+                vv_render::ScopeKind::Vectorscope,
+            ],
             left_column_width: 260.0,
             media_pool_fraction: 0.5,
             inspector_width: 300.0,
@@ -661,6 +669,10 @@ struct PanelLayoutFile {
     #[serde(default)]
     mixer_open: Option<bool>,
     #[serde(default)]
+    color_window_open: Option<bool>,
+    #[serde(default)]
+    color_scopes: Option<[vv_render::ScopeKind; 2]>,
+    #[serde(default)]
     left_column_width: Option<f32>,
     #[serde(default)]
     media_pool_fraction: Option<f32>,
@@ -745,6 +757,11 @@ impl Settings {
                 .keyframe_editor_open
                 .unwrap_or(defaults.keyframe_editor_open),
             mixer_open: file.panels.mixer_open.unwrap_or(defaults.mixer_open),
+            color_window_open: file
+                .panels
+                .color_window_open
+                .unwrap_or(defaults.color_window_open),
+            color_scopes: file.panels.color_scopes.unwrap_or(defaults.color_scopes),
             left_column_width: file
                 .panels
                 .left_column_width
@@ -808,6 +825,8 @@ impl Settings {
                 inspector_open: Some(self.panels.inspector_open),
                 keyframe_editor_open: Some(self.panels.keyframe_editor_open),
                 mixer_open: Some(self.panels.mixer_open),
+                color_window_open: Some(self.panels.color_window_open),
+                color_scopes: Some(self.panels.color_scopes),
                 left_column_width: Some(self.panels.left_column_width),
                 media_pool_fraction: Some(self.panels.media_pool_fraction),
                 inspector_width: Some(self.panels.inspector_width),

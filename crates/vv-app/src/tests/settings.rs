@@ -116,6 +116,11 @@ fn save_then_load_keeps_custom_panel_layout_and_defaults_it_when_absent() {
         inspector_open: false,
         keyframe_editor_open: true,
         mixer_open: true,
+        color_window_open: true,
+        color_scopes: [
+            vv_render::ScopeKind::Histogram,
+            vv_render::ScopeKind::Parade,
+        ],
         left_column_width: 321.0,
         media_pool_fraction: 0.3,
         inspector_width: 456.0,
