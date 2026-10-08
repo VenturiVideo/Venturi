@@ -329,6 +329,82 @@ pub(crate) fn add_grade_commands(
         .collect()
 }
 
+#[derive(Clone, Copy)]
+enum PresetIcon {
+    Neutral,
+    BlackAndWhite,
+    AutoBalance,
+}
+
+/// A small button with a hand-drawn icon before its label.
+fn icon_button(ui: &mut egui::Ui, icon: PresetIcon, label: &str) -> egui::Response {
+    const ICON: f32 = 10.0;
+    const PADDING: f32 = 5.0;
+    let galley = ui.painter().layout_no_wrap(
+        label.to_owned(),
+        egui::TextStyle::Button.resolve(ui.style()),
+        egui::Color32::PLACEHOLDER,
+    );
+    let size = egui::vec2(
+        PADDING * 3.0 + ICON + galley.size().x,
+        galley.size().y + 4.0,
+    );
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let visuals = ui.style().interact(&response);
+    let painter = ui.painter();
+    painter.rect(
+        rect,
+        3.0,
+        visuals.weak_bg_fill,
+        visuals.bg_stroke,
+        egui::StrokeKind::Inside,
+    );
+    let color = visuals.text_color();
+    let c = egui::pos2(rect.left() + PADDING + ICON / 2.0, rect.center().y);
+    let stroke = egui::Stroke::new(1.2, color);
+    let r = ICON / 2.0;
+    match icon {
+        // A wheel with its puck at the center.
+        PresetIcon::Neutral => {
+            painter.circle_stroke(c, r, stroke);
+            painter.circle_filled(c, 1.6, color);
+        }
+        // Half black, half white.
+        PresetIcon::BlackAndWhite => {
+            painter.circle_filled(c, r, egui::Color32::from_gray(235));
+            let left: Vec<egui::Pos2> = (0..=16)
+                .map(|i| {
+                    let a = std::f32::consts::FRAC_PI_2 + i as f32 / 16.0 * std::f32::consts::PI;
+                    c + egui::vec2(a.cos(), -a.sin()) * r
+                })
+                .collect();
+            painter.add(egui::Shape::convex_polygon(
+                left,
+                egui::Color32::from_gray(20),
+                egui::Stroke::NONE,
+            ));
+            painter.circle_stroke(c, r, stroke);
+        }
+        // A wand with a spark at its tip.
+        PresetIcon::AutoBalance => {
+            let tip = c + egui::vec2(2.5, -2.5);
+            painter.line_segment([c + egui::vec2(-r, r), tip], egui::Stroke::new(1.6, color));
+            for (dx, dy) in [(0.0, -2.5), (0.0, 2.5), (-2.5, 0.0), (2.5, 0.0)] {
+                painter.line_segment([tip, tip + egui::vec2(dx, dy)], stroke);
+            }
+        }
+    }
+    painter.galley(
+        egui::pos2(
+            rect.left() + PADDING * 2.0 + ICON,
+            rect.center().y - galley.size().y / 2.0,
+        ),
+        galley,
+        color,
+    );
+    response
+}
+
 /// `keys` holds one `RowKeyframe` per `GradeParam`, in the order of `ALL`.
 pub(crate) fn grade_section(
     ui: &mut egui::Ui,
@@ -338,17 +414,22 @@ pub(crate) fn grade_section(
     let mut response = GradeSectionResponse::default();
     let key = |param: GradeParam| keys[param.index()];
 
-    ui.horizontal(|ui| {
+    // Wrapped: in a narrow inspector a single row would widen it.
+    ui.horizontal_wrapped(|ui| {
         ui.label(t!("props.grade_preset"));
         for preset in GradePreset::ALL {
-            if ui.small_button(preset_label(preset)).clicked() {
+            let icon = match preset {
+                GradePreset::Neutral => PresetIcon::Neutral,
+                GradePreset::BlackAndWhite => PresetIcon::BlackAndWhite,
+            };
+            if icon_button(ui, icon, &preset_label(preset)).clicked() {
                 response.preset = Some(preset);
             }
         }
-        response.auto_balance = ui
-            .small_button(t!("props.grade_auto_balance"))
-            .on_hover_text(t!("props.grade_auto_balance_hint"))
-            .clicked();
+        response.auto_balance =
+            icon_button(ui, PresetIcon::AutoBalance, &t!("props.grade_auto_balance"))
+                .on_hover_text(t!("props.grade_auto_balance_hint"))
+                .clicked();
     });
 
     ui.add_space(4.0);
