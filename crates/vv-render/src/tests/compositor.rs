@@ -1936,7 +1936,10 @@ fn render_pushed_gradient(compositor: &Compositor, down: f32, up: f32) -> Vec<u8
         ],
         OutputFrame::exact(256, 4),
     );
-    out.as_chunks::<4>().0[..256].iter().map(|px| px[1]).collect()
+    out.as_chunks::<4>().0[..256]
+        .iter()
+        .map(|px| px[1])
+        .collect()
 }
 
 /// Exposure −6 then +6 squeezes the gradient into about 40 levels in
@@ -2008,12 +2011,15 @@ fn the_dither_keeps_the_mean_of_a_flat_color() {
             pixels.iter().all(|px| (px[0] as f32 - level).abs() <= 1.5),
             "{level}: no wider than the triangular noise"
         );
-        assert!(pixels.iter().all(|px| px[3] == 255), "alpha is not dithered");
+        assert!(
+            pixels.iter().all(|px| px[3] == 255),
+            "alpha is not dithered"
+        );
     }
 }
 
 #[test]
-fn the_work_format_falls_back_to_8_bits_without_float_rendering() {
+fn float_work_needs_rendering_blending_and_filtering() {
     use wgpu::{TextureFormatFeatureFlags as Flags, TextureUsages as Usages};
     let features = |allowed_usages, flags| wgpu::TextureFormatFeatures {
         allowed_usages,
@@ -2021,11 +2027,68 @@ fn the_work_format_falls_back_to_8_bits_without_float_rendering() {
     };
     let all = Flags::BLENDABLE | Flags::FILTERABLE;
     let usages = Usages::RENDER_ATTACHMENT | Usages::TEXTURE_BINDING;
-    assert_eq!(work_format(features(usages, all)), PRECISE_WORK_FORMAT);
-    assert_eq!(
-        work_format(features(Usages::TEXTURE_BINDING, all)),
-        OUTPUT_FORMAT
+    assert!(float_work_supported(features(usages, all)));
+    assert!(!float_work_supported(features(
+        Usages::TEXTURE_BINDING,
+        all
+    )));
+    assert!(!float_work_supported(features(usages, Flags::FILTERABLE)));
+    assert!(!float_work_supported(features(usages, Flags::BLENDABLE)));
+}
+
+#[test]
+fn the_work_format_follows_the_precision_and_falls_back_to_8_bits() {
+    use ProcessingPrecision::*;
+    assert_eq!(work_format(High, true), PRECISE_WORK_FORMAT);
+    assert_eq!(work_format(High, false), OUTPUT_FORMAT);
+    assert_eq!(work_format(Standard, true), OUTPUT_FORMAT);
+}
+
+#[test]
+fn standard_precision_bands_the_chain_that_high_keeps_smooth() {
+    let mut compositor = Compositor::new_headless_with_precision(ProcessingPrecision::Standard);
+    let reference = render_pushed_gradient(&compositor, 0.0, 0.0);
+    let levels = |row: &[u8]| row.iter().collect::<std::collections::BTreeSet<_>>().len();
+    assert!(levels(&render_pushed_gradient(&compositor, -6.0, 6.0)) < levels(&reference) / 2);
+
+    compositor.set_precision(ProcessingPrecision::High);
+    let reference = render_pushed_gradient(&compositor, 0.0, 0.0);
+    assert!(levels(&render_pushed_gradient(&compositor, -6.0, 6.0)) + 10 >= levels(&reference));
+}
+
+/// The basic paths in 8 bits too: clear, solid, blend, adjustment, I420.
+#[test]
+fn standard_precision_composes_like_high() {
+    let mut compositor = Compositor::new_headless_with_precision(ProcessingPrecision::Standard);
+    let layers = [
+        Layer::new(LayerContent::Solid(RED), Transform::default()),
+        Layer {
+            blend: BlendMode::Screen,
+            ..Layer::new(
+                LayerContent::Solid(BLUE),
+                Transform {
+                    crop: [8.0, 0.0, 0.0, 0.0],
+                    ..Transform::default()
+                },
+            )
+        },
+        adjustment(Transform::default(), 0.5, GRAYSCALE),
+    ];
+    let output = OutputFrame::exact(16, 16);
+    let standard = (
+        compositor.render_layers(&layers, output),
+        compositor.render_layers_i420(&layers, output),
     );
-    assert_eq!(work_format(features(usages, Flags::FILTERABLE)), OUTPUT_FORMAT);
-    assert_eq!(work_format(features(usages, Flags::BLENDABLE)), OUTPUT_FORMAT);
+    compositor.set_precision(ProcessingPrecision::High);
+    let high = (
+        compositor.render_layers(&layers, output),
+        compositor.render_layers_i420(&layers, output),
+    );
+    for (a, b) in [(&standard.0, &high.0), (&standard.1, &high.1)] {
+        assert_eq!(a.len(), b.len());
+        assert!(
+            a.iter().zip(b).all(|(a, b)| a.abs_diff(*b) <= 2),
+            "{a:?}\n{b:?}"
+        );
+    }
 }

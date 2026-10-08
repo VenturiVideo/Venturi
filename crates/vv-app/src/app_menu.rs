@@ -208,6 +208,7 @@ impl VenturiApp {
                             self.save_project_as();
                             ui.close();
                         }
+                        self.processing_precision_menu(ui);
                         ui.separator();
                         if ui
                             .button(
@@ -550,6 +551,41 @@ impl VenturiApp {
         }
     }
 
+    fn processing_precision_menu(&mut self, ui: &mut egui::Ui) {
+        use vv_core::ProcessingPrecision::{High, Standard};
+        let current = self.session.project.precision;
+        let mut chosen = None;
+        ui.menu_button(t!("menu.precision"), |ui| {
+            for (precision, label, hint) in [
+                (
+                    High,
+                    t!("menu.precision_high"),
+                    t!("menu.precision_high_hint"),
+                ),
+                (
+                    Standard,
+                    t!("menu.precision_standard"),
+                    t!("menu.precision_standard_hint"),
+                ),
+            ] {
+                if ui
+                    .radio(precision == current, label)
+                    .on_hover_text(hint)
+                    .clicked()
+                    && precision != current
+                {
+                    chosen = Some(precision);
+                }
+            }
+        })
+        .response
+        .on_hover_text(t!("menu.precision_hint"));
+        if let Some(precision) = chosen {
+            self.session
+                .apply(Box::new(vv_core::SetProcessingPrecision::new(precision)));
+        }
+    }
+
     /// As in Blender: newest first, the dot on the current state and one
     /// click to jump to any point, forwards or backwards.
     fn undo_history_menu(&mut self, ui: &mut egui::Ui) {
@@ -645,6 +681,7 @@ fn command_label(label: vv_core::CommandLabel) -> std::borrow::Cow<'static, str>
         L::RenameFolder => t!("history.rename_folder"),
         L::MoveToFolder => t!("history.move_to_folder"),
         L::DeleteFolder => t!("history.delete_folder"),
+        L::ProcessingPrecision => t!("history.processing_precision"),
     }
 }
 

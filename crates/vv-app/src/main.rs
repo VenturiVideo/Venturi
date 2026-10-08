@@ -1491,6 +1491,16 @@ impl VenturiApp {
         );
     }
 
+    /// Undo, redo and opening a project change it too: checked before each
+    /// composition rather than where it is set.
+    fn sync_compositor_precision(&mut self) {
+        let precision = self.session.project.precision;
+        if self.compositor.precision() != precision {
+            self.compositor.set_precision(precision);
+            self.viewer_content = None;
+        }
+    }
+
     /// Composes `layers` and shows the resulting texture in the viewer, without
     /// readback. It does nothing without a shared device (tests).
     fn show_composited(
@@ -1498,6 +1508,7 @@ impl VenturiApp {
         layers: Vec<frame_provider::OwnedLayer>,
         output: vv_render::OutputFrame,
     ) {
+        self.sync_compositor_precision();
         let unchanged = self.video_texture_id.is_some()
             && self
                 .viewer_content
@@ -1556,6 +1567,7 @@ impl VenturiApp {
     /// that does not decode): the layer is dropped instead of freezing the
     /// preview. During a crossing transition both halves must be ready.
     fn timeline_video_layers(&mut self) -> Option<Vec<frame_provider::OwnedLayer>> {
+        self.sync_compositor_precision();
         let timeline = &self.session.project.timelines[self.timeline_id?];
         let still_filling = self
             .render_ahead
@@ -4031,6 +4043,7 @@ fn main() -> eframe::Result<()> {
                     &render_state.adapter,
                     std::sync::Arc::new(render_state.device.clone()),
                     std::sync::Arc::new(render_state.queue.clone()),
+                    app.session.project.precision,
                 );
                 app.egui_render_state = Some(render_state);
             }

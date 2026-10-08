@@ -350,7 +350,7 @@ pub fn export_timeline(
     // in the decode stage and sampled in the composition one,
     // so they must be on the same device. Headless, so as not to contend
     // with the UI's.
-    let compositor = vv_render::Compositor::new_headless();
+    let compositor = vv_render::Compositor::new_headless_with_precision(project.precision);
     {
         let mut p = progress.lock().unwrap();
         p.output_path = settings.output_path.clone();

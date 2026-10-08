@@ -2459,6 +2459,17 @@ fn visible_clip_at(track: &Track, frame: FrameIdx) -> Option<&Clip> {
         .filter(|c| !c.disabled)
 }
 
+/// Precision of the compositor's intermediate images. Per project, not an
+/// app preference: it changes the export.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProcessingPrecision {
+    /// 16-bit float: no banding along chains of effects.
+    #[default]
+    High,
+    /// 8 bits per channel: half the GPU memory and bandwidth.
+    Standard,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Project {
     pub media_pool: IdMap<MediaId, MediaItem>,
@@ -2477,6 +2488,8 @@ pub struct Project {
     /// `Project::touch_compound`.
     #[serde(default)]
     next_compound_generation: u64,
+    #[serde(default)]
+    pub precision: ProcessingPrecision,
 }
 
 impl Project {

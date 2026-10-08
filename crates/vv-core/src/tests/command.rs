@@ -307,3 +307,18 @@ fn moving_an_audio_effect_reorders_the_chain_and_undoes() {
     history.undo(&mut project);
     assert_eq!(targets(&project), [-1.0, -2.0, -3.0]);
 }
+
+#[test]
+fn the_processing_precision_is_an_undoable_step() {
+    let (mut project, _) = project();
+    let mut history = History::default();
+    history.do_command(
+        &mut project,
+        Box::new(SetProcessingPrecision::new(ProcessingPrecision::Standard)),
+    );
+    assert_eq!(project.precision, ProcessingPrecision::Standard);
+    history.undo(&mut project);
+    assert_eq!(project.precision, ProcessingPrecision::High);
+    history.redo(&mut project);
+    assert_eq!(project.precision, ProcessingPrecision::Standard);
+}

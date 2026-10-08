@@ -236,6 +236,10 @@ history.rename_timeline:
   en: "Rename timeline"
   it: "Rinomina timeline"
 
+history.processing_precision:
+  en: "Processing precision"
+  it: "Precisione di elaborazione"
+
 history.new_folder:
   en: "New folder"
   it: "Nuova cartella"

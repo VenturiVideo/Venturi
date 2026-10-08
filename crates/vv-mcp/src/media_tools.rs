@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::{OnceLock, mpsc};
 
 use serde_json::json;
-use vv_core::{FrameIdx, Project, TimelineId};
+use vv_core::{FrameIdx, ProcessingPrecision, Project, TimelineId};
 use vv_session::Session;
 use vv_session::analysis::{FLOOR_DB, Level};
 use vv_session::export::{ExportError, ExportSettings};
@@ -32,10 +32,15 @@ fn on_worker(session: &Session, work: impl FnOnce() -> ToolResult + Send + 'stat
     Dispatch::Deferred(Pending::Worker(rx))
 }
 
-/// Creating a GPU device takes long: one for every render.
-fn compositor() -> &'static vv_render::Compositor {
-    static COMPOSITOR: OnceLock<vv_render::Compositor> = OnceLock::new();
-    COMPOSITOR.get_or_init(vv_render::Compositor::new_headless)
+/// Creating a GPU device takes long: one per precision, not one per render.
+fn compositor(precision: ProcessingPrecision) -> &'static vv_render::Compositor {
+    static HIGH: OnceLock<vv_render::Compositor> = OnceLock::new();
+    static STANDARD: OnceLock<vv_render::Compositor> = OnceLock::new();
+    let cell = match precision {
+        ProcessingPrecision::High => &HIGH,
+        ProcessingPrecision::Standard => &STANDARD,
+    };
+    cell.get_or_init(|| vv_render::Compositor::new_headless_with_precision(precision))
 }
 
 fn export_error(e: ExportError) -> ToolError {
@@ -83,7 +88,7 @@ pub(crate) fn render_frame(session: &Session, args: RenderFrameArgs) -> Dispatch
             timeline,
             frame,
             (width, height),
-            compositor(),
+            compositor(snapshot.precision),
         )
         .map_err(export_error)?;
         Ok(ToolOutput {

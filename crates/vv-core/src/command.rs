@@ -6,8 +6,8 @@ use crate::model::{
     AudioEffect, BlurDirection, ChannelStrip, Clip, ClipAttributes, ClipColor, ClipFilter, ClipId,
     ClipSource, CrossTransition, EffectStack, FilterKind, FrameIdx, GAIN_DB_MAX, GAIN_DB_MIN,
     Interpolation, Keyframed, LinkGroupId, Marker, MarkerId, MediaId, MediaItem, MediaMeta,
-    Project, Rational, Rgba, Timeline, TimelineId, TitleParams, Track, TrackKind, Transform,
-    TransformParam, Transition,
+    ProcessingPrecision, Project, Rational, Rgba, Timeline, TimelineId, TitleParams, Track,
+    TrackKind, Transform, TransformParam, Transition,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
@@ -85,6 +85,7 @@ pub enum CommandLabel {
     RenameFolder,
     MoveToFolder,
     DeleteFolder,
+    ProcessingPrecision,
 }
 
 /// Several commands in a single history step.
@@ -3176,6 +3177,37 @@ pub fn compound_clip_commands(
         commands.push(Box::new(LinkClips::new(timeline_id, new_members)));
     }
     (media_id, commands)
+}
+
+#[derive(Debug)]
+pub struct SetProcessingPrecision {
+    precision: ProcessingPrecision,
+    old: RefCell<Option<ProcessingPrecision>>,
+}
+
+impl SetProcessingPrecision {
+    pub fn new(precision: ProcessingPrecision) -> Self {
+        Self {
+            precision,
+            old: RefCell::new(None),
+        }
+    }
+}
+
+impl Command for SetProcessingPrecision {
+    fn label(&self) -> CommandLabel {
+        CommandLabel::ProcessingPrecision
+    }
+
+    fn apply(&mut self, project: &mut Project) {
+        *self.old.borrow_mut() = Some(std::mem::replace(&mut project.precision, self.precision));
+    }
+
+    fn undo(&self, project: &mut Project) {
+        if let Some(old) = self.old.borrow_mut().take() {
+            project.precision = old;
+        }
+    }
 }
 
 #[cfg(test)]

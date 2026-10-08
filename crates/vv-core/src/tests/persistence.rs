@@ -180,3 +180,14 @@ fn media_folders_survive_save_and_load() {
     assert_eq!(loaded.folders[inner].parent, Some(outer));
     assert_eq!(loaded.media_pool[media].folder, Some(inner));
 }
+
+#[test]
+fn projects_saved_without_a_precision_load_with_high() {
+    let mut project = Project::default();
+    project.precision = ProcessingPrecision::Standard;
+    let text = ron::to_string(&project).unwrap();
+    let old = text.replace(",precision:Standard", "");
+    assert_ne!(old, text);
+    let project: Project = ron::from_str(&old).unwrap();
+    assert_eq!(project.precision, ProcessingPrecision::High);
+}

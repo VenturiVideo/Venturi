@@ -8,14 +8,14 @@
 //!   same device as egui.
 
 use std::sync::{Arc, Mutex};
-use vv_core::{BlendMode, ColorMatrix, Transform};
+use vv_core::{BlendMode, ColorMatrix, ProcessingPrecision, Transform};
 use wgpu::util::DeviceExt;
 
 /// What leaves the compositor (preview, readback): the work textures are
 /// resolved to it with dithering.
 const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-/// What the compositor composes into, so a chain of passes does not round to
-/// 8 bits at every step. See `work_format` for the fallback.
+/// What the compositor composes into with `ProcessingPrecision::High`, so a
+/// chain of passes does not round to 8 bits at every step. See `work_format`.
 const PRECISE_WORK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const BLACK: wgpu::Color = wgpu::Color {
     r: 0.0,
@@ -514,16 +514,122 @@ impl MaskUniform {
     }
 }
 
+/// The pipelines writing the work texture, for one work format.
+struct WorkPipelines {
+    format: wgpu::TextureFormat,
+    normal: wgpu::RenderPipeline,
+    /// Like `normal`, but in REPLACE: used by the compositing methods
+    /// other than Normal (see `blend_shader_id`).
+    blend: wgpu::RenderPipeline,
+    blur: wgpu::RenderPipeline,
+}
+
+impl WorkPipelines {
+    fn new(
+        device: &wgpu::Device,
+        bind_group_layout: &wgpu::BindGroupLayout,
+        format: wgpu::TextureFormat,
+    ) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("vv-render transform shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/transform.wgsl").into()),
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("vv-render transform pipeline layout"),
+            bind_group_layouts: &[Some(bind_group_layout)],
+            immediate_size: 0,
+        });
+
+        let transform_pipeline = |label, blend, format| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        // Normal: not REPLACE, because the uncovered areas (letterbox) come out with
+        // alpha 0 and must show the layer below. The other compositing
+        // methods read the layer below themselves (`backdrop_tex`) and
+        // write the already composed result.
+        let normal = transform_pipeline(
+            "vv-render transform pipeline",
+            Some(wgpu::BlendState::ALPHA_BLENDING),
+            format,
+        );
+        let blend = transform_pipeline(
+            "vv-render blend pipeline",
+            Some(wgpu::BlendState::REPLACE),
+            format,
+        );
+
+        let blur_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("vv-render blur shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/blur.wgsl").into()),
+        });
+        let blur = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("vv-render blur pipeline"),
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &blur_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &blur_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        Self {
+            format,
+            normal,
+            blend,
+            blur,
+        }
+    }
+}
+
 pub struct Compositor {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
-    pipeline: wgpu::RenderPipeline,
-    /// Like `pipeline`, but in REPLACE: used by the compositing methods
-    /// other than Normal (see `blend_shader_id`).
-    blend_pipeline: wgpu::RenderPipeline,
-    blur_pipeline: wgpu::RenderPipeline,
+    work: WorkPipelines,
+    precision: ProcessingPrecision,
+    /// Whether the adapter can compose in `PRECISE_WORK_FORMAT`.
+    float_work: bool,
     resolve_pipeline: wgpu::RenderPipeline,
-    work_format: wgpu::TextureFormat,
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     i420_pipeline: wgpu::ComputePipeline,
@@ -602,20 +708,23 @@ fn give_back(pool: &mut Vec<wgpu::Texture>, textures: impl IntoIterator<Item = w
     pool.drain(..excess);
 }
 
-/// `PRECISE_WORK_FORMAT` if the adapter can render, blend and filter it
-/// (`features` are its own), otherwise the 8-bit output format.
-fn work_format(features: wgpu::TextureFormatFeatures) -> wgpu::TextureFormat {
+/// Whether the adapter can render, blend and filter `PRECISE_WORK_FORMAT`
+/// (`features` are its own).
+fn float_work_supported(features: wgpu::TextureFormatFeatures) -> bool {
     let needed =
         wgpu::TextureFormatFeatureFlags::BLENDABLE | wgpu::TextureFormatFeatureFlags::FILTERABLE;
-    if features
+    features
         .allowed_usages
         .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
         && features.flags.contains(needed)
-    {
-        return PRECISE_WORK_FORMAT;
+}
+
+/// Without float support, `High` falls back to the 8-bit output format.
+fn work_format(precision: ProcessingPrecision, float_work: bool) -> wgpu::TextureFormat {
+    match precision {
+        ProcessingPrecision::High if float_work => PRECISE_WORK_FORMAT,
+        _ => OUTPUT_FORMAT,
     }
-    eprintln!("vv-render: {PRECISE_WORK_FORMAT:?} unsupported, composing in {OUTPUT_FORMAT:?}");
-    OUTPUT_FORMAT
 }
 
 /// wgpu refuses a device asking for more than the adapter offers, and the
@@ -636,12 +745,15 @@ impl Compositor {
         adapter: &wgpu::Adapter,
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
+        precision: ProcessingPrecision,
     ) -> Self {
-        let work_format = work_format(adapter.get_texture_format_features(PRECISE_WORK_FORMAT));
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("vv-render transform shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/transform.wgsl").into()),
-        });
+        let float_work =
+            float_work_supported(adapter.get_texture_format_features(PRECISE_WORK_FORMAT));
+        if !float_work {
+            eprintln!(
+                "vv-render: {PRECISE_WORK_FORMAT:?} unsupported, composing in {OUTPUT_FORMAT:?}"
+            );
+        }
 
         // Three input textures (Y/U/V, bindings 0-2) instead of a single
         // RGBA one: the YUV→RGB conversion happens in the shader
@@ -692,84 +804,11 @@ impl Compositor {
                 },
             ],
         });
-
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("vv-render transform pipeline layout"),
-            bind_group_layouts: &[Some(&bind_group_layout)],
-            immediate_size: 0,
-        });
-
-        let transform_pipeline = |label, blend, format| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_main"),
-                    buffers: &[],
-                    compilation_options: Default::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs_main"),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: Default::default(),
-                }),
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
-        // Normal: not REPLACE, because the uncovered areas (letterbox) come out with
-        // alpha 0 and must show the layer below. The other compositing
-        // methods read the layer below themselves (`backdrop_tex`) and
-        // write the already composed result.
-        let pipeline = transform_pipeline(
-            "vv-render transform pipeline",
-            Some(wgpu::BlendState::ALPHA_BLENDING),
-            work_format,
+        let work = WorkPipelines::new(
+            &device,
+            &bind_group_layout,
+            work_format(precision, float_work),
         );
-        let blend_pipeline = transform_pipeline(
-            "vv-render blend pipeline",
-            Some(wgpu::BlendState::REPLACE),
-            work_format,
-        );
-
-        let blur_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("vv-render blur shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/blur.wgsl").into()),
-        });
-        let blur_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("vv-render blur pipeline"),
-            layout: None,
-            vertex: wgpu::VertexState {
-                module: &blur_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &blur_shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: work_format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
 
         let resolve_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("vv-render resolve shader"),
@@ -839,11 +878,10 @@ impl Compositor {
         Self {
             device,
             queue,
-            pipeline,
-            blend_pipeline,
-            blur_pipeline,
+            work,
+            precision,
+            float_work,
             resolve_pipeline,
-            work_format,
             bind_group_layout,
             sampler,
             i420_pipeline,
@@ -857,10 +895,32 @@ impl Compositor {
         self.adapter_name.as_deref()
     }
 
+    pub fn precision(&self) -> ProcessingPrecision {
+        self.precision
+    }
+
+    /// The textures already handed out keep their format: an owned one
+    /// still works as a `LayerContent::Texture`.
+    pub fn set_precision(&mut self, precision: ProcessingPrecision) {
+        if precision == self.precision {
+            return;
+        }
+        self.precision = precision;
+        let format = work_format(precision, self.float_work);
+        if format != self.work.format {
+            self.work = WorkPipelines::new(&self.device, &self.bind_group_layout, format);
+            self.scratch.lock().unwrap().clear();
+        }
+    }
+
+    pub fn new_headless() -> Self {
+        Self::new_headless_with_precision(ProcessingPrecision::default())
+    }
+
     /// Creates an independent wgpu device (headless, no surface) to
     /// use the compositor outside an eframe/egui-wgpu context — useful
     /// for the app today and for the tests.
-    pub fn new_headless() -> Self {
+    pub fn new_headless_with_precision(precision: ProcessingPrecision) -> Self {
         let (adapter, (device, queue)) = pollster::block_on(async {
             let instance = wgpu::Instance::default();
             let adapter = instance
@@ -879,7 +939,7 @@ impl Compositor {
         });
         Self {
             adapter_name: Some(adapter.get_info().name),
-            ..Self::new(&adapter, Arc::new(device), Arc::new(queue))
+            ..Self::new(&adapter, Arc::new(device), Arc::new(queue), precision)
         }
     }
 
@@ -1157,9 +1217,9 @@ impl Compositor {
                 view
             };
             let pipeline = if blend == BlendMode::Normal && !is_adjustment {
-                &self.pipeline
+                &self.work.normal
             } else {
-                &self.blend_pipeline
+                &self.work.blend
             };
             let chain = FilterChain::new(filters, matches!(content, LayerContent::Solid(_)));
             if let Some((_, trailing)) = chain.blurs.last() {
@@ -1499,7 +1559,12 @@ impl Compositor {
         let current_view = current.create_view(&wgpu::TextureViewDescriptor::default());
         let mut load = wgpu::LoadOp::Clear(TRANSPARENT);
         for group in &groups {
-            self.pass(encoder, &current_view, load, Some((group, &self.pipeline)));
+            self.pass(
+                encoder,
+                &current_view,
+                load,
+                Some((group, &self.work.normal)),
+            );
             load = wgpu::LoadOp::Load;
         }
 
@@ -1536,7 +1601,7 @@ impl Compositor {
                     encoder,
                     &target.create_view(&wgpu::TextureViewDescriptor::default()),
                     wgpu::LoadOp::Clear(TRANSPARENT),
-                    Some((&group, &self.pipeline)),
+                    Some((&group, &self.work.normal)),
                 );
                 intermediates.push(Some(std::mem::replace(&mut current, target)));
             }
@@ -1561,7 +1626,7 @@ impl Compositor {
         let source_view = source.create_view(&wgpu::TextureViewDescriptor::default());
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("vv-render blur bind group"),
-            layout: &self.blur_pipeline.get_bind_group_layout(0),
+            layout: &self.work.blur.get_bind_group_layout(0),
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -1581,7 +1646,7 @@ impl Compositor {
             encoder,
             &target.create_view(&wgpu::TextureViewDescriptor::default()),
             wgpu::LoadOp::Clear(TRANSPARENT),
-            Some((&bind_group, &self.blur_pipeline)),
+            Some((&bind_group, &self.work.blur)),
         );
     }
 
@@ -1849,9 +1914,9 @@ impl Compositor {
             &mut self.scratch.lock().unwrap(),
             output_w,
             output_h,
-            self.work_format,
+            self.work.format,
         )
-        .unwrap_or_else(|| self.new_output_texture(output_w, output_h, self.work_format))
+        .unwrap_or_else(|| self.new_output_texture(output_w, output_h, self.work.format))
     }
 
     fn output_texture(&self, output_w: u32, output_h: u32) -> wgpu::Texture {
