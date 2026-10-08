@@ -160,6 +160,22 @@ pub(crate) fn masks_section(
                     {
                         removed = Some(index);
                     }
+                    if index + 1 < masks.len()
+                        && ui
+                            .small_button("⏷")
+                            .on_hover_text(t!("mask.move_down"))
+                            .clicked()
+                    {
+                        swap = Some(index);
+                    }
+                    if index > 0
+                        && ui
+                            .small_button("⏶")
+                            .on_hover_text(t!("mask.move_up"))
+                            .clicked()
+                    {
+                        swap = Some(index - 1);
+                    }
                     ui.checkbox(&mut own.invert, t!("mask.invert"));
                 });
             });
