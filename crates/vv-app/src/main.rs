@@ -1635,22 +1635,28 @@ impl VenturiApp {
                 continue;
             }
             let texture = scopes.render(&source, kind, slot, size);
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let mut renderer = render_state.renderer.write();
-            match self.scope_view.textures[slot] {
-                Some(id) => renderer.update_egui_texture_from_wgpu_texture(
-                    &render_state.device,
-                    &view,
-                    wgpu::FilterMode::Linear,
-                    id,
-                ),
-                None => {
-                    self.scope_view.textures[slot] = Some(renderer.register_native_texture(
+            // `Scopes` redraws a slot's texture in place while its size holds.
+            let registered = &mut self.scope_view.textures[slot];
+            if registered.as_ref().is_none_or(|(_, t)| *t != texture) {
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                let mut renderer = render_state.renderer.write();
+                let id = match registered {
+                    Some((id, _)) => {
+                        renderer.update_egui_texture_from_wgpu_texture(
+                            &render_state.device,
+                            &view,
+                            wgpu::FilterMode::Linear,
+                            *id,
+                        );
+                        *id
+                    }
+                    None => renderer.register_native_texture(
                         &render_state.device,
                         &view,
                         wgpu::FilterMode::Linear,
-                    ));
-                }
+                    ),
+                };
+                *registered = Some((id, texture));
             }
             self.scope_view.drawn[slot] = drawn;
             ctx.request_repaint();

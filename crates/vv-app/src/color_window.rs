@@ -9,7 +9,8 @@ use crate::grade_panel::{GradeInfo, GradeSectionResponse};
 /// The scopes as shown, and what the window asks of them for the next frame.
 #[derive(Default)]
 pub(crate) struct ScopeView {
-    pub(crate) textures: [Option<egui::TextureId>; 2],
+    /// Per slot, the egui id and the texture registered under it.
+    pub(crate) textures: [Option<(egui::TextureId, vv_render::wgpu::Texture)>; 2],
     /// Pixel size wanted per slot; zero for a slot not shown.
     pub(crate) sizes: [(u32, u32); 2],
     pub(crate) drawn: [Option<DrawnScope>; 2],
@@ -99,11 +100,11 @@ pub(crate) fn show_color_window(
                                 egui::FontId::proportional(12.0),
                                 egui::Color32::from_white_alpha(110),
                             );
-                        } else if let Some(id) = view.textures[slot]
+                        } else if let Some((id, _)) = &view.textures[slot]
                             && view.drawn[slot].is_some_and(|(kind, ..)| kind == *kind_slot)
                         {
                             painter.image(
-                                id,
+                                *id,
                                 rect,
                                 egui::Rect::from_min_max(
                                     egui::pos2(0.0, 0.0),
