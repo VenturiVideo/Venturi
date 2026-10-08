@@ -2102,17 +2102,12 @@ fn standard_precision_composes_like_high() {
 fn grade_reference(rgb: [f32; 3], grade: &vv_core::GradeValue) -> [f32; 3] {
     use vv_core::{GradeParam, GradeWheel, LUMA_WEIGHTS};
     let luma = |c: [f32; 3]| c.iter().zip(LUMA_WEIGHTS).map(|(c, w)| c * w).sum::<f32>();
-    let smoothstep = |e0: f32, e1: f32, x: f32| {
-        let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
-        t * t * (3.0 - 2.0 * t)
-    };
-    let low = grade.get(GradeParam::LowRange);
-    let high = grade.get(GradeParam::HighRange).max(low);
-    let soft = (0.5 * low.min(high - low).min(1.0 - high)).max(0.001);
-    let y = luma(rgb);
-    let shadows = 1.0 - smoothstep(low - soft, low + soft, y);
-    let highlights = smoothstep(high - soft, high + soft, y);
-    let weights = [shadows, 1.0 - shadows - highlights, highlights, 1.0];
+    let [shadows, midtones, highlights] = vv_core::range_weights(
+        luma(rgb),
+        grade.get(GradeParam::LowRange),
+        grade.get(GradeParam::HighRange),
+    );
+    let weights = [shadows, midtones, highlights, 1.0];
     let mut c = rgb;
     for (wheel, weight) in GradeWheel::ALL.iter().zip(weights) {
         let shift = grade.wheel_shift(*wheel);
@@ -2249,4 +2244,65 @@ fn a_wheel_push_changes_the_hue_but_not_the_luma() {
         .sum();
     assert!((luma - 127.5).abs() <= 1.5, "{pushed:?}");
     assert!(pushed[0] > pushed[2] + 20, "towards red: {pushed:?}");
+}
+
+/// A blue cast over a whole gradient: once balanced, every range's mean
+/// color is grey.
+#[test]
+fn auto_balance_removes_a_cast_from_the_render() {
+    let compositor = Compositor::new_headless();
+    let mut frame = gradient_frame();
+    frame.u.fill(140);
+    frame.v.fill(122);
+    let render = |grade: vv_core::GradeValue| {
+        let filters = [vv_core::FilterValue {
+            grade,
+            ..vv_core::FilterValue::new(vv_core::FilterKind::ColorCorrection)
+        }];
+        let out = compositor.render_layers(
+            &[Layer {
+                filters: &filters,
+                ..Layer::new(
+                    LayerContent::Video {
+                        frame: frame.as_yuv_frame(),
+                        source_size: (256, 4),
+                    },
+                    Transform::default(),
+                )
+            }],
+            OutputFrame::exact(256, 4),
+        );
+        out.as_chunks::<4>()
+            .0
+            .iter()
+            .map(|p| [p[0], p[1], p[2]].map(|c| c as f32 / 255.0))
+            .collect::<Vec<_>>()
+    };
+    // Mean |Cb| + |Cr| of the unclipped pixels.
+    let cast = |pixels: &[[f32; 3]]| {
+        let chroma: Vec<f32> = pixels
+            .iter()
+            .filter(|p| p.iter().all(|c| *c > 0.02 && *c < 0.98))
+            .map(|p| {
+                let y: f32 = p
+                    .iter()
+                    .zip(vv_core::LUMA_WEIGHTS)
+                    .map(|(c, w)| c * w)
+                    .sum();
+                ((p[2] - y) / 1.8556).abs() + ((p[0] - y) / 1.5748).abs()
+            })
+            .collect();
+        chroma.iter().sum::<f32>() / chroma.len() as f32
+    };
+    let before = render(vv_core::GradeValue::NEUTRAL);
+    let mut grade = vv_core::auto_balance(&vv_core::GradeValue::NEUTRAL, before.iter().copied());
+    grade = vv_core::auto_balance(&grade, render(grade).into_iter());
+    let after = render(grade);
+    assert!(cast(&before) > 0.04, "a visible cast: {}", cast(&before));
+    assert!(
+        cast(&after) < cast(&before) * 0.25,
+        "{} -> {}",
+        cast(&before),
+        cast(&after)
+    );
 }

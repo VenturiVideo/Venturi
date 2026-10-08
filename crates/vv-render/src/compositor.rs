@@ -1125,7 +1125,7 @@ impl Compositor {
     /// Reads an RGBA8 texture (`OUTPUT_FORMAT`) into a dense `Vec<u8>`,
     /// removing the row padding `wgpu` requires on the destination
     /// buffer.
-    fn read_rgba_texture(&self, texture: &wgpu::Texture, width: u32, height: u32) -> Vec<u8> {
+    pub fn read_rgba_texture(&self, texture: &wgpu::Texture, width: u32, height: u32) -> Vec<u8> {
         let unpadded_bytes_per_row = width * 4;
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(align) * align;

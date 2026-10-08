@@ -217,6 +217,14 @@ props.grade_neutral:
   en: "Neutral"
   it: "Neutro"
 
+props.grade_auto_balance:
+  en: "Auto balance"
+  it: "Bilanciamento auto"
+
+props.grade_auto_balance_hint:
+  en: "Moves the shadows, midtones and highlights wheels so that each range of the viewer's picture averages to a neutral grey. Click again to refine."
+  it: "Sposta le ruote di ombre, toni medi e alte luci perché ogni fascia dell'immagine nel viewer sia in media un grigio neutro. Clicca di nuovo per rifinire."
+
 props.grade_wheel_hint:
   en: "Drag to shift the color of this range. Shift for fine control, double-click to reset."
   it: "Trascina per spostare il colore di questa fascia. Shift per il controllo fine, doppio clic per azzerare."

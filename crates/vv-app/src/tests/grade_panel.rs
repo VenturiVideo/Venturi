@@ -176,3 +176,26 @@ fn adding_a_grade_skips_the_clips_that_have_one() {
         GradeValue::NEUTRAL
     );
 }
+
+#[test]
+fn a_balance_edits_only_the_wheels_it_moves() {
+    let cast = [120u8, 128, 150, 255];
+    let pixels: Vec<u8> = std::iter::repeat_n(cast, 64).flatten().collect();
+    let mut section = GradeSectionResponse::default();
+    balance_edits(&mut section, &GradeValue::NEUTRAL, &pixels);
+    let params: Vec<GradeParam> = section
+        .keyframes
+        .iter()
+        .filter_map(|(edit, _)| match edit {
+            KeyframeEdit::Set(KeyframeValue::Grade(param, _)) => Some(*param),
+            _ => None,
+        })
+        .collect();
+    assert!(params.contains(&GradeParam::MidtonesX));
+    assert!(params.contains(&GradeParam::MidtonesY));
+    assert!(
+        params
+            .iter()
+            .all(|p| ![GradeParam::OffsetX, GradeParam::Saturation].contains(p))
+    );
+}

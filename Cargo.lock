@@ -4548,6 +4548,7 @@ dependencies = [
  "bytemuck",
  "cosmic-text",
  "pollster 1.0.1",
+ "serde",
  "vv-core",
  "wgpu",
 ]

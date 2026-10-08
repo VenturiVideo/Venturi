@@ -1507,6 +1507,21 @@ impl VenturiApp {
         );
     }
 
+    /// Adds to `section` the wheel moves balancing the viewer's frame; nothing
+    /// without one (tests, nothing composed yet).
+    fn balance_on_viewer(
+        &self,
+        section: &mut grade_panel::GradeSectionResponse,
+        grade: &vv_core::GradeValue,
+    ) {
+        if let Some(texture) = &self.viewer_texture {
+            let pixels =
+                self.compositor
+                    .read_rgba_texture(texture, texture.width(), texture.height());
+            grade_panel::balance_edits(section, grade, &pixels);
+        }
+    }
+
     /// Measures the viewer's frame for the Color window's scope slots, shown
     /// on the next frame. Only what changed (frame, scope or size) is redrawn.
     fn update_scopes(&mut self, ctx: &egui::Context) {
@@ -3738,13 +3753,19 @@ impl VenturiApp {
                     .clip(t.track_index, t.clip_id)
                     .and_then(|clip| color_window::grade_info(clip, t.source_frame))
             });
-            let response = color_window::show_color_window(
+            let grade_value = grade.as_ref().and_then(|g| g.as_ref()).map(|g| g.value);
+            let mut response = color_window::show_color_window(
                 ui.ctx(),
                 &mut self.settings.panels.color_window_open,
                 &mut self.settings.panels.color_scopes,
                 &mut self.scope_view,
                 grade,
             );
+            if let (Some(section), Some(value)) = (&mut response.grade, grade_value)
+                && section.auto_balance
+            {
+                self.balance_on_viewer(section, &value);
+            }
             let tl = self
                 .timeline_id
                 .map(|id| &self.session.project.timelines[id]);

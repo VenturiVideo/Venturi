@@ -199,6 +199,8 @@ pub(crate) struct GradeSectionResponse {
     /// Params back to neutral, keyframes dropped.
     pub(crate) reset: Vec<GradeParam>,
     pub(crate) preset: Option<GradePreset>,
+    /// Balance on the viewer's frame asked: see `balance_edits`.
+    pub(crate) auto_balance: bool,
     /// Source frame to move the playhead to (keyframe arrow clicked).
     pub(crate) goto: Option<FrameIdx>,
 }
@@ -285,6 +287,24 @@ pub(crate) fn grade_commands(
     commands
 }
 
+/// The wheel moves of an auto balance of `grade` on the RGBA `pixels` of
+/// the viewer's frame, as edits of `section` (keyframes where animated).
+pub(crate) fn balance_edits(section: &mut GradeSectionResponse, grade: &GradeValue, pixels: &[u8]) {
+    let balanced = vv_core::auto_balance(
+        grade,
+        pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|p| [p[0], p[1], p[2]].map(|c| c as f32 / 255.0)),
+    );
+    for param in GradeParam::ALL {
+        if balanced.get(param) != grade.get(param) {
+            section.set(param, balanced.get(param));
+        }
+    }
+}
+
 /// Adds a neutral color correction to the targets that have none.
 pub(crate) fn add_grade_commands(
     tl: Option<&vv_core::Timeline>,
@@ -322,6 +342,10 @@ pub(crate) fn grade_section(
                 response.preset = Some(preset);
             }
         }
+        response.auto_balance = ui
+            .small_button(t!("props.grade_auto_balance"))
+            .on_hover_text(t!("props.grade_auto_balance_hint"))
+            .clicked();
     });
 
     ui.add_space(4.0);
