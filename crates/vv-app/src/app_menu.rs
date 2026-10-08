@@ -623,6 +623,7 @@ fn command_label(label: vv_core::CommandLabel) -> std::borrow::Cow<'static, str>
         L::RemoveMedia => t!("history.remove_media"),
         L::RelinkMedia => t!("history.relink_media"),
         L::Filters => t!("history.filters"),
+        L::Masks => t!("history.masks"),
         L::BlendMode => t!("history.blend_mode"),
         L::Transition => t!("history.transition"),
         L::MakeCompoundClip => t!("history.make_compound_clip"),

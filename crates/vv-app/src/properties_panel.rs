@@ -2239,6 +2239,37 @@ impl VenturiApp {
                                                 }
                                             }
 
+                                            if let Some(clip) = self.timeline_id.and_then(|tid| {
+                                                self.session.project.timelines[tid].clip(primary.track_index, primary.clip_id)
+                                            }) {
+                                                let in_clip = |f: &FrameIdx| (clip.source_in()..clip.source_out()).contains(f);
+                                                let focused = self
+                                                    .mask_focus
+                                                    .filter(|(id, _)| *id == primary.clip_id)
+                                                    .map(|(_, index)| index);
+                                                let section = crate::mask_panel::masks_section(
+                                                    ui,
+                                                    &clip.effects.masks,
+                                                    primary.source_frame,
+                                                    in_clip,
+                                                    crate::mask_panel::layer_size(source_size, timeline_size),
+                                                    focused,
+                                                );
+                                                let goto = section.goto.map(|f| clip.timeline_frame_at(f));
+                                                if let Some(focus) = section.focus {
+                                                    self.mask_focus = focus.map(|index| (primary.clip_id, index));
+                                                }
+                                                if let Some(masks) = section.masks {
+                                                    pending_effects.push(Box::new(vv_core::set_clip_masks(
+                                                        primary.timeline,
+                                                        primary.track_index,
+                                                        primary.clip_id,
+                                                        masks,
+                                                    )));
+                                                }
+                                                pending_playhead = pending_playhead.or(goto);
+                                            }
+
                                             // The color applies only to generator
                                             // clips: the other selected video
                                             // clips stay out of it.

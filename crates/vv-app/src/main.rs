@@ -14,6 +14,7 @@ mod forced_relink_dialog;
 mod hw_decode;
 mod i18n;
 mod keyframe_editor;
+mod mask_panel;
 mod mcp_host;
 mod media_pool;
 mod media_pool_ui;
@@ -289,6 +290,9 @@ struct VenturiApp {
     /// Opened on the first change made with the pointer down, closed on
     /// release: a drag is a single undo step.
     edit_drag_group: Option<vv_core::GroupMark>,
+    /// The mask of that clip whose handles the viewer shows instead of the
+    /// transform's.
+    mask_focus: Option<(ClipId, usize)>,
 
     /// Last handled playhead: it tells the one moved by the clock (no seek)
     /// from the one moved by the user.
@@ -441,6 +445,7 @@ impl Default for VenturiApp {
             active_clip: None,
             compositor: vv_render::Compositor::new_headless(),
             edit_drag_group: None,
+            mask_focus: None,
             last_synced_playhead: 0,
             browsing_media: None,
             browse_playhead: 0,
@@ -3705,6 +3710,7 @@ impl VenturiApp {
                         opacity: 1.0,
                         filters: Vec::new(),
                         blend: vv_core::BlendMode::Normal,
+                        masks: Vec::new(),
                     };
                     self.show_composited(vec![layer], output);
                 }

@@ -19,6 +19,7 @@ pub(crate) enum Attribute {
     CropSoftness,
     Flip,
     Filters,
+    Masks,
     Transitions,
     Volume,
 }
@@ -31,17 +32,19 @@ pub(crate) enum Section {
     Crop,
     Blending,
     Filters,
+    Masks,
     Transitions,
     Audio,
     Clip,
 }
 
 impl Section {
-    const ALL: [Section; 7] = [
+    const ALL: [Section; 8] = [
         Section::Transform,
         Section::Crop,
         Section::Blending,
         Section::Filters,
+        Section::Masks,
         Section::Transitions,
         Section::Audio,
         Section::Clip,
@@ -53,6 +56,7 @@ impl Section {
             Section::Crop => t!("props.cropping"),
             Section::Blending => t!("props.composite"),
             Section::Filters => t!("props.filters"),
+            Section::Masks => t!("props.masks"),
             Section::Transitions => t!("props.transition"),
             Section::Audio => t!("props.tab_audio"),
             Section::Clip => t!("paste_attr.clip"),
@@ -70,7 +74,7 @@ impl Section {
 }
 
 impl Attribute {
-    const ALL: [Attribute; 14] = [
+    const ALL: [Attribute; 15] = [
         Attribute::Zoom,
         Attribute::Position,
         Attribute::Rotation,
@@ -81,6 +85,7 @@ impl Attribute {
         Attribute::BlendMode,
         Attribute::Opacity,
         Attribute::Filters,
+        Attribute::Masks,
         Attribute::Transitions,
         Attribute::Volume,
         Attribute::Fades,
@@ -97,6 +102,7 @@ impl Attribute {
             Attribute::Crop | Attribute::CropSoftness => Section::Crop,
             Attribute::BlendMode | Attribute::Opacity => Section::Blending,
             Attribute::Filters => Section::Filters,
+            Attribute::Masks => Section::Masks,
             Attribute::Transitions => Section::Transitions,
             Attribute::Volume => Section::Audio,
             Attribute::Fades | Attribute::Speed => Section::Clip,
@@ -117,6 +123,7 @@ impl Attribute {
             Attribute::CropSoftness => t!("props.softness"),
             Attribute::Flip => t!("props.flip"),
             Attribute::Filters => t!("props.filters"),
+            Attribute::Masks => t!("props.masks"),
             Attribute::Transitions => t!("props.transition"),
             Attribute::Volume => t!("props.volume"),
         }
@@ -492,6 +499,15 @@ fn merged_attributes(
                         ..f.clone()
                     })
                     .collect();
+            }
+            Attribute::Masks => {
+                attributes.effects.masks = source.effects.masks.clone();
+                for mask in &mut attributes.effects.masks {
+                    for track in mask.tracks_mut() {
+                        *track = remap.apply(track);
+                    }
+                    mask.path = remap.apply(&mask.path);
+                }
             }
             Attribute::Transitions => {
                 let clamped = |t: &Option<vv_core::Transition>| {

@@ -827,6 +827,84 @@ pub(crate) fn set_clip_color(session: &mut Session, args: SetClipColorArgs) -> T
     )
 }
 
+pub(crate) fn set_clip_masks(session: &mut Session, args: SetClipMasksArgs) -> ToolResult {
+    let timeline = ids::timeline_id(&session.project, &args.timeline_id)?;
+    ids::check_revision(session, timeline, args.if_revision.as_deref())?;
+    let (track, id) = ids::clip_ref(&session.project, timeline, &args.clip_id)?;
+    ensure_kind(&session.project, timeline, track, TrackKind::Video)?;
+    ensure_unlocked(&session.project, timeline, track)?;
+    let resolution = session.project.timelines[timeline].resolution;
+    let masks = args
+        .masks
+        .iter()
+        .map(|m| clip_mask(m, resolution))
+        .collect::<Result<Vec<_>>>()?;
+    let refs = [(track, id)];
+    one_step(session, timeline, Some(CommandLabel::Masks), |s| {
+        s.history.do_command(
+            &mut s.project,
+            Box::new(vv_core::set_clip_masks(timeline, track, id, masks)),
+        );
+        Ok(json!({ "clips": clips_json(&s.project, timeline, &refs) }))
+    })
+}
+
+fn clip_mask(arg: &MaskArg, resolution: (u32, u32)) -> Result<vv_core::ClipMask> {
+    use vv_core::{MaskParam as P, MaskShape};
+    let shape = match arg.shape {
+        MaskShapeArg::Rectangle => MaskShape::Rectangle,
+        MaskShapeArg::Ellipse => MaskShape::Ellipse,
+        MaskShapeArg::Path => MaskShape::Path,
+    };
+    let mut mask = vv_core::ClipMask::new(shape, resolution);
+    mask.invert = arg.invert;
+    mask.mode = match arg.mode.unwrap_or(MaskModeArg::Add) {
+        MaskModeArg::Add => vv_core::MaskMode::Add,
+        MaskModeArg::Subtract => vv_core::MaskMode::Subtract,
+        MaskModeArg::Intersect => vv_core::MaskMode::Intersect,
+    };
+    if arg.size.is_some_and(|[w, h]| w < 0.0 || h < 0.0) {
+        return fail("`size` cannot be negative");
+    }
+    if arg.feather.is_some_and(|f| f < 0.0) || arg.roundness.is_some_and(|r| r < 0.0) {
+        return fail("`feather` and `roundness` cannot be negative");
+    }
+    if arg.opacity.is_some_and(|o| !(0.0..=100.0).contains(&o)) {
+        return fail("`opacity` must be between 0 and 100");
+    }
+    let values = [
+        (P::CenterX, arg.center.map(|c| c[0])),
+        (P::CenterY, arg.center.map(|c| c[1])),
+        (P::Width, arg.size.map(|s| s[0])),
+        (P::Height, arg.size.map(|s| s[1])),
+        (P::Rotation, arg.rotation),
+        (P::Roundness, arg.roundness),
+        (P::Feather, arg.feather),
+        (P::Expansion, arg.expansion),
+        (P::Opacity, arg.opacity),
+    ];
+    for (param, value) in values {
+        if let Some(value) = value {
+            mask.track_mut(param).default = value;
+        }
+    }
+    match (&arg.points, shape) {
+        (Some(points), MaskShape::Path) => {
+            if points.len() < 3 {
+                return fail("a path needs at least 3 points");
+            }
+            mask.path.default.points = points
+                .iter()
+                .map(|p| vv_core::PathPoint::corner(*p))
+                .collect();
+        }
+        (None, MaskShape::Path) => return fail("a path mask needs `points`"),
+        (Some(_), _) => return fail("`points` is only for a path mask"),
+        (None, _) => {}
+    }
+    Ok(mask)
+}
+
 pub(crate) fn set_transition(session: &mut Session, args: SetTransitionArgs) -> ToolResult {
     let timeline = ids::timeline_id(&session.project, &args.timeline_id)?;
     ids::check_revision(session, timeline, args.if_revision.as_deref())?;

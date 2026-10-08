@@ -176,6 +176,10 @@ history.filters:
   en: "Clip filters"
   it: "Filtri clip"
 
+history.masks:
+  en: "Clip masks"
+  it: "Maschere clip"
+
 history.transition:
   en: "Transition"
   it: "Transizione"

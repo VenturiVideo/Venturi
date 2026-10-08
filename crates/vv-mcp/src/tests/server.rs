@@ -35,7 +35,7 @@ async fn tools_are_listed_with_schemas_and_errors_are_tool_errors() {
     let info = client.peer_info().unwrap();
     assert_eq!(info.server_info.as_ref().unwrap().name, "venturi");
     let tools = client.list_all_tools().await.unwrap();
-    assert_eq!(tools.len(), 39);
+    assert_eq!(tools.len(), 40);
     let delete_ranges = tools.iter().find(|t| t.name == "delete_ranges").unwrap();
     assert!(delete_ranges.input_schema.contains_key("properties"));
 

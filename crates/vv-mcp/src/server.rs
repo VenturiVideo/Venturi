@@ -244,6 +244,13 @@ impl VenturiServer {
     }
 
     #[tool(
+        description = "Sets the masks of a video clip: rectangles, ellipses or polygons, soft-edged with `feather`, possibly inverted. On an adjustment clip they limit where its filters apply (e.g. blur or darken only a region, or everything but it); on any other clip, where the clip shows. Replaces the clip's masks; `get_clip` reports them under `effects.masks`."
+    )]
+    async fn set_clip_masks(&self, Parameters(args): Parameters<SetClipMasksArgs>) -> ToolReturn {
+        self.call(ToolCall::SetClipMasks(args)).await
+    }
+
+    #[tool(
         description = "Sets or removes (`kind: none`) the transition on one edge of video clips: `push` slides the clip in from, or out to, the edge of the frame over what is below. Options not given keep the value already on that edge, else the defaults. `get_clip` reports it as `transition_in`/`transition_out`."
     )]
     async fn set_transition(&self, Parameters(args): Parameters<SetTransitionArgs>) -> ToolReturn {

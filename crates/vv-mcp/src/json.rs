@@ -233,6 +233,9 @@ fn effect_names(clip: &Clip) -> Vec<&'static str> {
     if !effects.filters.is_empty() {
         names.push("filters");
     }
+    if !effects.masks.is_empty() {
+        names.push("masks");
+    }
     if effects.transition_in.is_some() {
         names.push("transition_in");
     }

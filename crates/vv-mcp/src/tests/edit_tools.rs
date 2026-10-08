@@ -738,3 +738,88 @@ fn transitions_longer_than_the_clip_are_cut_with_a_warning() {
         "`curve` must be between 0 and 1"
     );
 }
+
+fn mask(shape: MaskShapeArg) -> MaskArg {
+    MaskArg {
+        shape,
+        invert: false,
+        mode: None,
+        center: None,
+        size: None,
+        rotation: None,
+        roundness: None,
+        feather: None,
+        expansion: None,
+        opacity: None,
+        points: None,
+    }
+}
+
+#[test]
+fn masks_are_set_reported_and_validated() {
+    let mut session = Session::default();
+    let timeline = with_timeline(&mut session);
+    let clip = solid(&mut session, &timeline, 0, 50);
+    let set = |masks| {
+        ToolCall::SetClipMasks(SetClipMasksArgs {
+            timeline_id: timeline.clone(),
+            if_revision: None,
+            clip_id: clip.clone(),
+            masks,
+        })
+    };
+
+    let result = ok(
+        &mut session,
+        set(vec![
+            MaskArg {
+                center: Some([100.0, -50.0]),
+                size: Some([300.0, 200.0]),
+                feather: Some(20.0),
+                invert: true,
+                ..mask(MaskShapeArg::Ellipse)
+            },
+            MaskArg {
+                mode: Some(MaskModeArg::Subtract),
+                points: Some(vec![[0.0, 0.0], [10.0, 0.0], [0.0, 10.0]]),
+                ..mask(MaskShapeArg::Path)
+            },
+        ]),
+    );
+    assert!(
+        result["clips"][0]["effects"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("masks"))
+    );
+    let masks = &clip_effects(&mut session, &timeline, &clip)["masks"];
+    assert_eq!(masks[0]["shape"], "Ellipse");
+    assert_eq!(masks[0]["invert"], true);
+    assert_eq!(masks[1]["mode"], "Subtract");
+    assert_eq!(
+        masks[1]["path"]["default"]["points"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    assert_eq!(ok(&mut session, ToolCall::Undo)["undone"], "Masks");
+    ok(&mut session, ToolCall::Redo);
+
+    assert!(error(&mut session, set(vec![mask(MaskShapeArg::Path)])).contains("points"));
+    assert!(
+        error(
+            &mut session,
+            set(vec![MaskArg {
+                opacity: Some(150.0),
+                ..mask(MaskShapeArg::Rectangle)
+            }])
+        )
+        .contains("opacity")
+    );
+    ok(&mut session, set(Vec::new()));
+    assert_eq!(
+        clip_effects(&mut session, &timeline, &clip)["masks"],
+        json!([])
+    );
+}

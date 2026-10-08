@@ -1301,6 +1301,8 @@ pub struct EffectStack {
     pub transition_out: Option<Transition>,
     #[serde(default)]
     pub blend_mode: BlendMode,
+    #[serde(default)]
+    pub masks: Vec<crate::mask::ClipMask>,
 }
 
 impl Default for EffectStack {
@@ -1314,6 +1316,7 @@ impl Default for EffectStack {
             transition_in: None,
             transition_out: None,
             blend_mode: BlendMode::default(),
+            masks: Vec::new(),
         }
     }
 }
@@ -1328,6 +1331,9 @@ impl EffectStack {
         for f in &mut self.filters {
             f.direction.drop_before(start);
         }
+        for m in &mut self.masks {
+            m.path.drop_before(start);
+        }
     }
 
     /// See `Keyframed::drop_from`, on every animatable parameter.
@@ -1339,6 +1345,9 @@ impl EffectStack {
         for f in &mut self.filters {
             f.direction.drop_from(end);
         }
+        for m in &mut self.masks {
+            m.path.drop_from(end);
+        }
     }
 
     /// See `Keyframed::shift`, on every animatable parameter.
@@ -1349,6 +1358,9 @@ impl EffectStack {
         }
         for f in &mut self.filters {
             f.direction.shift(delta);
+        }
+        for m in &mut self.masks {
+            m.path.shift(delta);
         }
     }
 
@@ -1376,6 +1388,9 @@ impl EffectStack {
         for f in &mut self.filters {
             f.direction.rescale_times(from, to);
         }
+        for m in &mut self.masks {
+            m.path.rescale_times(from, to);
+        }
     }
 
     fn for_each_f32_track(&mut self, mut f: impl FnMut(&mut Keyframed<f32>)) {
@@ -1386,6 +1401,9 @@ impl EffectStack {
         for filter in &mut self.filters {
             f(&mut filter.radius);
             f(&mut filter.amount);
+        }
+        for mask in &mut self.masks {
+            mask.tracks_mut().for_each(&mut f);
         }
     }
 

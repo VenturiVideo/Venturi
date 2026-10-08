@@ -138,6 +138,7 @@ Every call below is one undo step.
 | `add_adjustment_clip(timeline_id, at, duration?, track?)` | |
 | `link_clips`, `unlink_clips(timeline_id, clip_ids)` | Unlinking dissolves the whole group |
 | `set_clip_color(timeline_id, clip_ids, color)` | The clips' color on the timeline, to tag them (e.g. takes to review): a palette color or `none` for the default. Reported as `clip_color` |
+| `set_clip_masks(timeline_id, clip_id, masks)` | Video clips. Replaces the masks: `rectangle`, `ellipse` or `path` (`points`, at least 3), each with `center`, `size`, `rotation`, `roundness`, `feather`, `expansion`, `opacity` (0-100), `invert` and `mode` (`add`, `subtract`, `intersect`). Pixels of the timeline from the clip's center, Y up. On an adjustment clip they limit where its filters apply. Reported by `get_clip` under `effects.masks` |
 | `add_marker(timeline_id, at, duration?, note?, color?)`, `edit_marker`, `delete_marker` | Marker color from the palette, default yellow |
 | `undo`, `redo` | Return the name of the step |
 

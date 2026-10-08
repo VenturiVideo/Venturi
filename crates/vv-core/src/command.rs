@@ -1,6 +1,7 @@
 //! Command pattern for undo/redo. Every command captures by itself the state
 //! needed to invert itself at the moment it is applied.
 
+use crate::mask::{ClipMask, MaskParam};
 use crate::model::{
     AudioEffect, BlurDirection, ChannelStrip, Clip, ClipAttributes, ClipColor, ClipFilter, ClipId,
     ClipSource, CrossTransition, EffectStack, FilterKind, FrameIdx, GAIN_DB_MAX, GAIN_DB_MIN,
@@ -62,6 +63,7 @@ pub enum CommandLabel {
     RemoveMedia,
     RelinkMedia,
     Filters,
+    Masks,
     BlendMode,
     Transition,
     MakeCompoundClip,
@@ -1917,6 +1919,23 @@ pub fn set_clip_filters(
     )
 }
 
+/// Replaces the whole mask list, like `set_clip_filters`.
+pub fn set_clip_masks(
+    timeline: TimelineId,
+    track_index: usize,
+    clip_id: ClipId,
+    value: Vec<ClipMask>,
+) -> SetClipValue<Vec<ClipMask>> {
+    SetClipValue::new(
+        timeline,
+        track_index,
+        clip_id,
+        CommandLabel::Masks,
+        value,
+        |c| &mut c.effects.masks,
+    )
+}
+
 /// Compositing method of the clip's layer.
 pub fn set_clip_blend_mode(
     timeline: TimelineId,
@@ -2171,6 +2190,8 @@ pub enum KeyframeValue {
     FilterRadius(FilterKind, f32),
     FilterDirection(FilterKind, BlurDirection),
     FilterAmount(FilterKind, f32),
+    /// Of the clip's mask at that index.
+    Mask(usize, MaskParam, f32),
 }
 
 /// Inserts or replaces a keyframe of an animatable parameter.
@@ -2250,6 +2271,7 @@ pub enum KeyframeTarget {
     FilterRadius(FilterKind),
     FilterDirection(FilterKind),
     FilterAmount(FilterKind),
+    Mask(usize, MaskParam),
 }
 
 impl KeyframeValue {
@@ -2261,12 +2283,21 @@ impl KeyframeValue {
             Self::FilterRadius(kind, _) => KeyframeTarget::FilterRadius(kind),
             Self::FilterDirection(kind, _) => KeyframeTarget::FilterDirection(kind),
             Self::FilterAmount(kind, _) => KeyframeTarget::FilterAmount(kind),
+            Self::Mask(index, param, _) => KeyframeTarget::Mask(index, param),
         }
     }
 }
 
 fn filter_mut(effects: &mut EffectStack, kind: FilterKind) -> Option<&mut ClipFilter> {
     effects.filters.iter_mut().find(|f| f.kind == kind)
+}
+
+fn mask_track_mut(
+    effects: &mut EffectStack,
+    index: usize,
+    param: MaskParam,
+) -> Option<&mut Keyframed<f32>> {
+    effects.masks.get_mut(index).map(|m| m.track_mut(param))
 }
 
 /// A keyframe named by parameter and frame: the currency with which the keyframe
@@ -2303,6 +2334,9 @@ fn take_keyframe(
         KeyframeTarget::FilterAmount(kind) => filter_mut(effects, kind)
             .and_then(|f| f.amount.remove_at(frame))
             .map(|(v, i)| (KeyframeValue::FilterAmount(kind, v), i)),
+        KeyframeTarget::Mask(index, param) => mask_track_mut(effects, index, param)
+            .and_then(|k| k.remove_at(frame))
+            .map(|(v, i)| (KeyframeValue::Mask(index, param, v), i)),
     }
 }
 
@@ -2340,6 +2374,11 @@ fn put_keyframe(
                 filter.amount.upsert(frame, v, interpolation);
             }
         }
+        KeyframeValue::Mask(index, param, v) => {
+            if let Some(track) = mask_track_mut(effects, index, param) {
+                track.upsert(frame, v, interpolation);
+            }
+        }
     }
 }
 
@@ -2367,6 +2406,8 @@ fn set_keyframe_interpolation(
         KeyframeTarget::FilterAmount(kind) => {
             filter_mut(effects, kind).and_then(|f| f.amount.set_interpolation(frame, interpolation))
         }
+        KeyframeTarget::Mask(index, param) => mask_track_mut(effects, index, param)
+            .and_then(|k| k.set_interpolation(frame, interpolation)),
     }
 }
 
