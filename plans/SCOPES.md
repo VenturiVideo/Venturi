@@ -11,7 +11,7 @@ frame (§2), all four scopes in the first version (§3).
 
 ## 1. What the user gets
 
-A **Color window** (View menu, and a button in the inspector's color
+A **Color window** (toolbar toggle next to the Mixer, and a button in the inspector's color
 correction header): a floating `egui::Window` like the mixer, open state
 persisted in `settings.panels` like `mixer_open`.
 
@@ -82,7 +82,8 @@ bins), so adding the last two costs little once the first is done.
   same code: the per-target application now inline in
   `properties_panel.rs` (filter section, the `KeyframeEdit` match) moves
   into a function both call.
-- View menu entry + inspector header button; locales en/it.
+- Toolbar toggle (like the Mixer, not in the View menu) + inspector header
+  button; locales en/it.
 
 ## 6. Tests
 
