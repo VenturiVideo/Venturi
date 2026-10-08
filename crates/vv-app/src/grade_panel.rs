@@ -295,18 +295,9 @@ fn wheel_block(
         }
         let next = keyframe_arrow(ui, false, joint.next, &t!("props.next_keyframe"));
         response.goto = response.goto.or(prev.or(next));
-        let label = ui
-            .add(
-                egui::Label::new(egui::RichText::new(wheel_label(wheel_kind)).strong())
-                    .truncate()
-                    .sense(egui::Sense::click()),
-            )
-            .on_hover_text(format!(
-                "{}\n{}",
-                wheel_label(wheel_kind),
-                t!("props.reset_hint")
-            ));
-        if label.double_clicked() {
+        let name = wheel_label(wheel_kind);
+        let label = egui::Label::new(egui::RichText::new(name.as_ref()).strong()).truncate();
+        if reset_label(ui, label, &name) {
             response.reset.extend(params);
         }
     });
@@ -336,7 +327,9 @@ fn wheel_block(
             (wheel_kind.luma(), t!("props.grade_luminance_short")),
             (wheel_kind.saturation(), t!("props.grade_saturation_short")),
         ] {
-            ui.label(label).on_hover_text(grade_param_label(param));
+            if reset_label(ui, egui::Label::new(label), &grade_param_label(param)) {
+                response.reset.push(param);
+            }
             let mut value = grade.get(param) as f64;
             let range = param.range();
             if drag_field(
@@ -351,6 +344,22 @@ fn wheel_block(
             }
         }
     });
+}
+
+/// A label that resets its control like `param_row`'s: double click, or the
+/// context menu.
+fn reset_label(ui: &mut egui::Ui, label: egui::Label, name: &str) -> bool {
+    let response = ui
+        .add(label.sense(egui::Sense::click()))
+        .on_hover_text(format!("{name}\n{}", t!("props.reset_hint")));
+    let mut reset = response.double_clicked();
+    response.context_menu(|ui| {
+        if ui.button(t!("props.reset_param")).clicked() {
+            reset = true;
+            ui.close();
+        }
+    });
+    reset
 }
 
 fn scalar_row(
