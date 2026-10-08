@@ -5,8 +5,8 @@ voiceover.needs_save_title:
   it: "Salva il progetto per registrare"
 
 voiceover.needs_save:
-  en: "Recordings go into the %{dir} folder next to the project file, and this project has not been saved yet. Save it, then record; or choose another folder in Settings → Recording."
-  it: "Le registrazioni vanno nella cartella %{dir} accanto al file del progetto, e questo progetto non è ancora stato salvato. Salvalo, poi registra; oppure scegli un'altra cartella in Impostazioni → Registrazione."
+  en: "Recordings go into the %{dir} folder next to the project file, and this project has not been saved yet. Save it, then record; or choose another folder in Settings › Recording."
+  it: "Le registrazioni vanno nella cartella %{dir} accanto al file del progetto, e questo progetto non è ancora stato salvato. Salvalo, poi registra; oppure scegli un'altra cartella in Impostazioni › Registrazione."
 
 voiceover.save_project:
   en: "Save project…"

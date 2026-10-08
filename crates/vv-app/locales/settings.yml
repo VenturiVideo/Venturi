@@ -202,8 +202,8 @@ action.toggle_playback:
   en: Play/pause
   it: Play/pausa
 action.fast_playback:
-  en: Fast play (1x → 2x → 4x → 8x)
-  it: Play veloce (1x → 2x → 4x → 8x)
+  en: Fast play (1x › 2x › 4x › 8x)
+  it: Play veloce (1x › 2x › 4x › 8x)
 action.step_backward:
   en: Previous frame
   it: Frame precedente
