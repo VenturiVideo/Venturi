@@ -1220,6 +1220,13 @@ impl Compositor {
         output: OutputFrame,
         clear: wgpu::Color,
     ) -> wgpu::Texture {
+        if self.work.format == OUTPUT_FORMAT {
+            // Already 8 bits: nothing to resolve.
+            let target = self.output_texture(output.width, output.height);
+            let texture = self.compose_into(target, layers, output, clear);
+            give_back(&mut self.pool.lock().unwrap().outputs, [texture.clone()]);
+            return texture;
+        }
         let work = self.compose(layers, output, clear);
         let resolved = self.resolve(&work);
         give_back(&mut self.scratch.lock().unwrap(), [work]);
@@ -1259,7 +1266,22 @@ impl Compositor {
     /// The stack composed into a work texture from the scratch pool, which
     /// the caller gives back.
     fn compose(&self, layers: &[Layer], output: OutputFrame, clear: wgpu::Color) -> wgpu::Texture {
-        let output_texture = self.scratch_texture(output.width, output.height);
+        self.compose_into(
+            self.scratch_texture(output.width, output.height),
+            layers,
+            output,
+            clear,
+        )
+    }
+
+    /// The stack composed into `output_texture`, in the work format.
+    fn compose_into(
+        &self,
+        output_texture: wgpu::Texture,
+        layers: &[Layer],
+        output: OutputFrame,
+        clear: wgpu::Color,
+    ) -> wgpu::Texture {
         let output_view = output_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut planes = Vec::new();
         // Placeholder for the backdrop slot of the Normal layers, which do not
