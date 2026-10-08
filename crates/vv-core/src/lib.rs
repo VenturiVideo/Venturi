@@ -2,6 +2,7 @@ pub mod command;
 pub mod edit;
 pub mod id_map;
 mod legacy_slotmap;
+pub mod mask;
 pub mod model;
 pub mod otio;
 pub mod persistence;
@@ -18,8 +19,9 @@ pub use command::{
     SpeedFit, SplitClip, TrackFlag, TrimClip, TrimEdge, UnlinkClip, UpsertKeyframe,
     compound_clip_commands, cut_overlaps, insert_overwriting, make_room_for_ranges,
     plan_compound_clip, reset_clip_gain, set_clip_blend_mode, set_clip_filters, set_clip_flip,
-    set_clip_gain, set_clip_title, set_clip_transform_param, set_clip_transition,
+    set_clip_gain, set_clip_masks, set_clip_title, set_clip_transform_param, set_clip_transition,
 };
+pub use mask::*;
 pub use model::*;
 pub use otio::{
     MeasureTitle, OtioError, OtioImport, OtioWarning, TitleMetrics, export_otio, import_otio,

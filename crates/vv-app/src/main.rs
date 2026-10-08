@@ -14,6 +14,8 @@ mod forced_relink_dialog;
 mod hw_decode;
 mod i18n;
 mod keyframe_editor;
+mod mask_overlay;
+mod mask_panel;
 mod mcp_host;
 mod media_pool;
 mod media_pool_ui;
@@ -204,6 +206,8 @@ struct FilterPanelInfo {
     radius_key: RowKeyframe,
     direction: vv_core::BlurDirection,
     direction_key: RowKeyframe,
+    amount: f32,
+    amount_key: RowKeyframe,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -287,6 +291,10 @@ struct VenturiApp {
     /// Opened on the first change made with the pointer down, closed on
     /// release: a drag is a single undo step.
     edit_drag_group: Option<vv_core::GroupMark>,
+    /// The mask of that clip whose handles the viewer shows instead of the
+    /// transform's.
+    mask_focus: Option<(ClipId, usize)>,
+    mask_overlay: mask_overlay::MaskOverlayState,
 
     /// Last handled playhead: it tells the one moved by the clock (no seek)
     /// from the one moved by the user.
@@ -439,6 +447,8 @@ impl Default for VenturiApp {
             active_clip: None,
             compositor: vv_render::Compositor::new_headless(),
             edit_drag_group: None,
+            mask_focus: None,
+            mask_overlay: Default::default(),
             last_synced_playhead: 0,
             browsing_media: None,
             browse_playhead: 0,
@@ -2096,6 +2106,35 @@ impl VenturiApp {
             self.overlay_drag = None;
             return;
         };
+        let clip =
+            self.session.project.timelines[timeline_id].clip(target.track_index, target.clip_id);
+        let focused_mask = self
+            .mask_focus
+            .filter(|(id, _)| *id == target.clip_id)
+            .and_then(|(_, index)| Some((index, clip?.effects.masks.get(index)?)));
+        if let Some((index, mask)) = focused_mask {
+            self.overlay_drag = None;
+            if let Some(edited) = mask_overlay::show(
+                ui,
+                rect,
+                area,
+                info.timeline_size,
+                &info.transform,
+                mask,
+                target.source_frame,
+                &mut self.mask_overlay,
+            ) {
+                let mut masks = clip.map(|c| c.effects.masks.clone()).unwrap_or_default();
+                masks[index] = edited;
+                pending.push(Box::new(vv_core::set_clip_masks(
+                    timeline_id,
+                    target.track_index,
+                    target.clip_id,
+                    masks,
+                )));
+            }
+            return;
+        }
         let Some(new) = viewer_overlay::show(
             ui,
             rect,
@@ -3703,6 +3742,7 @@ impl VenturiApp {
                         opacity: 1.0,
                         filters: Vec::new(),
                         blend: vv_core::BlendMode::Normal,
+                        masks: Vec::new(),
                     };
                     self.show_composited(vec![layer], output);
                 }

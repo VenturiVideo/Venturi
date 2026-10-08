@@ -135,8 +135,26 @@ fn rows(effects: &EffectStack) -> Vec<KeyframeTarget> {
         if !filter.direction.is_constant() {
             rows.push(KeyframeTarget::FilterDirection(filter.kind));
         }
+        if !filter.amount.is_constant() {
+            rows.push(KeyframeTarget::FilterAmount(filter.kind));
+        }
+    }
+    for (index, mask) in effects.masks.iter().enumerate() {
+        for param in vv_core::MaskParam::ALL {
+            if !mask.track(param).is_constant() {
+                rows.push(KeyframeTarget::Mask(index, param));
+            }
+        }
     }
     rows
+}
+
+fn mask_track(
+    effects: &EffectStack,
+    index: usize,
+    param: vv_core::MaskParam,
+) -> Option<&vv_core::Keyframed<f32>> {
+    Some(effects.masks.get(index)?.track(param))
 }
 
 fn filter(effects: &EffectStack, kind: vv_core::FilterKind) -> Option<&vv_core::ClipFilter> {
@@ -165,6 +183,12 @@ fn frames_of(effects: &EffectStack, target: KeyframeTarget) -> Vec<FrameIdx> {
         KeyframeTarget::FilterDirection(kind) => filter(effects, kind)
             .map(|f| f.direction.keyframes().iter().map(|k| k.0).collect())
             .unwrap_or_default(),
+        KeyframeTarget::FilterAmount(kind) => filter(effects, kind)
+            .map(|f| f.amount.keyframes().iter().map(|k| k.0).collect())
+            .unwrap_or_default(),
+        KeyframeTarget::Mask(index, param) => mask_track(effects, index, param)
+            .map(|k| k.keyframes().iter().map(|k| k.0).collect())
+            .unwrap_or_default(),
     }
 }
 
@@ -179,6 +203,8 @@ fn scalar_at(
         KeyframeTarget::TransformParam(p) => effects.transform.track(p).keyframe_at(frame),
         KeyframeTarget::Gain => effects.gain_db.keyframe_at(frame),
         KeyframeTarget::FilterRadius(kind) => filter(effects, kind)?.radius.keyframe_at(frame),
+        KeyframeTarget::FilterAmount(kind) => filter(effects, kind)?.amount.keyframe_at(frame),
+        KeyframeTarget::Mask(index, param) => mask_track(effects, index, param)?.keyframe_at(frame),
         KeyframeTarget::Color | KeyframeTarget::FilterDirection(_) => None,
     }
 }
@@ -193,6 +219,12 @@ fn scalar_keyframes(
         KeyframeTarget::Gain => effects.gain_db.keyframes().to_vec(),
         KeyframeTarget::FilterRadius(kind) => filter(effects, kind)
             .map(|f| f.radius.keyframes().to_vec())
+            .unwrap_or_default(),
+        KeyframeTarget::FilterAmount(kind) => filter(effects, kind)
+            .map(|f| f.amount.keyframes().to_vec())
+            .unwrap_or_default(),
+        KeyframeTarget::Mask(index, param) => mask_track(effects, index, param)
+            .map(|k| k.keyframes().to_vec())
             .unwrap_or_default(),
         KeyframeTarget::Color | KeyframeTarget::FilterDirection(_) => Vec::new(),
     }
@@ -220,6 +252,10 @@ fn scalar_value_at(effects: &EffectStack, target: KeyframeTarget, frame: FrameId
         KeyframeTarget::TransformParam(p) => Some(effects.transform.track(p).value_at(frame)),
         KeyframeTarget::Gain => Some(effects.gain_db.value_at(frame)),
         KeyframeTarget::FilterRadius(kind) => Some(filter(effects, kind)?.radius.value_at(frame)),
+        KeyframeTarget::FilterAmount(kind) => Some(filter(effects, kind)?.amount.value_at(frame)),
+        KeyframeTarget::Mask(index, param) => {
+            Some(mask_track(effects, index, param)?.value_at(frame))
+        }
         KeyframeTarget::Color | KeyframeTarget::FilterDirection(_) => None,
     }
 }
@@ -253,6 +289,13 @@ fn target_label(target: KeyframeTarget) -> String {
             "{} {}",
             crate::timeline_ui::filter_label(kind),
             t!("props.blur_direction")
+        ),
+        KeyframeTarget::FilterAmount(kind) => crate::timeline_ui::filter_label(kind).to_string(),
+        KeyframeTarget::Mask(index, param) => format!(
+            "{} {} {}",
+            t!("props.mask"),
+            index + 1,
+            crate::mask_panel::mask_param_label(param)
         ),
     }
 }
@@ -938,6 +981,8 @@ fn keyframe_value(target: KeyframeTarget, value: f32) -> vv_core::KeyframeValue 
         KeyframeTarget::TransformParam(p) => vv_core::KeyframeValue::TransformParam(p, value),
         KeyframeTarget::Gain => vv_core::KeyframeValue::Gain(value),
         KeyframeTarget::FilterRadius(kind) => vv_core::KeyframeValue::FilterRadius(kind, value),
+        KeyframeTarget::FilterAmount(kind) => vv_core::KeyframeValue::FilterAmount(kind, value),
+        KeyframeTarget::Mask(index, param) => vv_core::KeyframeValue::Mask(index, param, value),
         // Without a curve one does not get here: they are edited from the Properties panel.
         KeyframeTarget::Color | KeyframeTarget::FilterDirection(_) => {
             vv_core::KeyframeValue::Gain(value)

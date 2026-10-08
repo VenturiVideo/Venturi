@@ -1020,6 +1020,7 @@ pub enum FilterKind {
     Grayscale,
     BoxBlur,
     GaussianBlur,
+    Exposure,
 }
 
 impl FilterKind {
@@ -1027,7 +1028,16 @@ impl FilterKind {
     pub fn is_blur(self) -> bool {
         matches!(self, Self::BoxBlur | Self::GaussianBlur)
     }
+
+    /// Whether `ClipFilter::amount` applies to it.
+    pub fn has_amount(self) -> bool {
+        self == Self::Exposure
+    }
 }
+
+/// Bounds of `ClipFilter::amount` for `Exposure`, in stops.
+pub const EXPOSURE_MIN: f32 = -5.0;
+pub const EXPOSURE_MAX: f32 = 5.0;
 
 /// Bounds of `ClipFilter::radius`, in timeline pixels.
 pub const BLUR_RADIUS_MAX: f32 = 250.0;
@@ -1082,6 +1092,13 @@ pub struct ClipFilter {
     pub radius: Keyframed<f32>,
     #[serde(default = "default_blur_direction")]
     pub direction: Keyframed<BlurDirection>,
+    /// Exposure only: in stops.
+    #[serde(default = "default_filter_amount")]
+    pub amount: Keyframed<f32>,
+}
+
+fn default_filter_amount() -> Keyframed<f32> {
+    Keyframed::constant(0.0)
 }
 
 /// A `ClipFilter` evaluated at one frame: what the rendering needs.
@@ -1090,6 +1107,7 @@ pub struct FilterValue {
     pub kind: FilterKind,
     pub radius: f32,
     pub direction: BlurDirection,
+    pub amount: f32,
 }
 
 impl FilterValue {
@@ -1098,6 +1116,7 @@ impl FilterValue {
             kind,
             radius: DEFAULT_BLUR_RADIUS,
             direction: BlurDirection::Both,
+            amount: 0.0,
         }
     }
 }
@@ -1109,6 +1128,7 @@ impl ClipFilter {
             enabled: true,
             radius: Keyframed::constant(DEFAULT_BLUR_RADIUS),
             direction: Keyframed::constant(BlurDirection::Both),
+            amount: Keyframed::constant(0.0),
         }
     }
 
@@ -1117,6 +1137,7 @@ impl ClipFilter {
             kind: self.kind,
             radius: self.radius.value_at(frame),
             direction: self.direction.value_at(frame),
+            amount: self.amount.value_at(frame),
         }
     }
 }
@@ -1280,6 +1301,8 @@ pub struct EffectStack {
     pub transition_out: Option<Transition>,
     #[serde(default)]
     pub blend_mode: BlendMode,
+    #[serde(default)]
+    pub masks: Vec<crate::mask::ClipMask>,
 }
 
 impl Default for EffectStack {
@@ -1293,6 +1316,7 @@ impl Default for EffectStack {
             transition_in: None,
             transition_out: None,
             blend_mode: BlendMode::default(),
+            masks: Vec::new(),
         }
     }
 }
@@ -1307,6 +1331,9 @@ impl EffectStack {
         for f in &mut self.filters {
             f.direction.drop_before(start);
         }
+        for m in &mut self.masks {
+            m.path.drop_before(start);
+        }
     }
 
     /// See `Keyframed::drop_from`, on every animatable parameter.
@@ -1318,6 +1345,9 @@ impl EffectStack {
         for f in &mut self.filters {
             f.direction.drop_from(end);
         }
+        for m in &mut self.masks {
+            m.path.drop_from(end);
+        }
     }
 
     /// See `Keyframed::shift`, on every animatable parameter.
@@ -1328,6 +1358,9 @@ impl EffectStack {
         }
         for f in &mut self.filters {
             f.direction.shift(delta);
+        }
+        for m in &mut self.masks {
+            m.path.shift(delta);
         }
     }
 
@@ -1355,6 +1388,9 @@ impl EffectStack {
         for f in &mut self.filters {
             f.direction.rescale_times(from, to);
         }
+        for m in &mut self.masks {
+            m.path.rescale_times(from, to);
+        }
     }
 
     fn for_each_f32_track(&mut self, mut f: impl FnMut(&mut Keyframed<f32>)) {
@@ -1364,6 +1400,10 @@ impl EffectStack {
         f(&mut self.gain_db);
         for filter in &mut self.filters {
             f(&mut filter.radius);
+            f(&mut filter.amount);
+        }
+        for mask in &mut self.masks {
+            mask.tracks_mut().for_each(&mut f);
         }
     }
 

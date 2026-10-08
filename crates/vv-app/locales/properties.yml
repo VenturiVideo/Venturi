@@ -165,6 +165,9 @@ props.corner_radius:
 props.blur_radius:
   en: "Radius"
   it: "Raggio"
+props.exposure_stops:
+  en: "Stops"
+  it: "Stop"
 
 props.blur_direction:
   en: "Direction"
@@ -461,3 +464,99 @@ props.appearance:
 props.placement:
   en: "Placement"
   it: "Posizionamento"
+
+props.masks:
+  en: "Masks"
+  it: "Maschere"
+
+props.mask:
+  en: "Mask"
+  it: "Maschera"
+
+mask.add:
+  en: "Add"
+  it: "Aggiungi"
+
+mask.rectangle:
+  en: "Rectangle"
+  it: "Rettangolo"
+
+mask.ellipse:
+  en: "Ellipse"
+  it: "Ellisse"
+
+mask.path:
+  en: "Path"
+  it: "Tracciato"
+
+mask.mode:
+  en: "Mode"
+  it: "Modalità"
+
+mask.mode_add:
+  en: "Add"
+  it: "Aggiungi"
+
+mask.mode_subtract:
+  en: "Subtract"
+  it: "Sottrai"
+
+mask.mode_intersect:
+  en: "Intersect"
+  it: "Interseca"
+
+mask.invert:
+  en: "Invert"
+  it: "Inverti"
+
+mask.delete:
+  en: "Delete mask"
+  it: "Elimina maschera"
+
+mask.move_up:
+  en: "Move up"
+  it: "Sposta su"
+
+mask.move_down:
+  en: "Move down"
+  it: "Sposta giù"
+
+mask.focus_hint:
+  en: "Click to edit the mask in the viewer"
+  it: "Clic per modificare la maschera nel viewer"
+
+mask.shape:
+  en: "Shape"
+  it: "Forma"
+
+mask.points:
+  en: "%{count} points"
+  it: "%{count} punti"
+
+mask.center_x:
+  en: "Center X"
+  it: "Centro X"
+
+mask.center_y:
+  en: "Center Y"
+  it: "Centro Y"
+
+mask.width:
+  en: "Width"
+  it: "Larghezza"
+
+mask.height:
+  en: "Height"
+  it: "Altezza"
+
+mask.roundness:
+  en: "Roundness"
+  it: "Arrotondamento"
+
+mask.feather:
+  en: "Feather"
+  it: "Sfumatura"
+
+mask.expansion:
+  en: "Expansion"
+  it: "Espansione"

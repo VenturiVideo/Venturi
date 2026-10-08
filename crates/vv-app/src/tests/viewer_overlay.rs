@@ -116,3 +116,17 @@ fn crop_cannot_go_negative_or_past_the_opposite_side() {
     let t = drag_transform(&start, &b, Handle::Crop(-1.0, 0.0), [-50.0, 0.0], false);
     assert_eq!(t.crop[0], 0.0);
 }
+
+#[test]
+fn frame_to_clip_inverts_clip_to_frame() {
+    let t = Transform {
+        zoom: [1.5, 0.75],
+        position: [40.0, -12.0],
+        rotation: 25.0,
+        anchor: [10.0, 5.0],
+        ..Transform::default()
+    };
+    let p = [-30.0, 70.0];
+    let back = frame_to_clip(&t, clip_to_frame(&t, p));
+    assert!((back[0] - p[0]).abs() < 1e-3 && (back[1] - p[1]).abs() < 1e-3);
+}

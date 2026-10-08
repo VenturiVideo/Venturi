@@ -34,6 +34,7 @@ pub enum ToolCall {
     DeleteMarker(MarkerArgs),
     GetMarkers(TimelineArgs),
     SetClipColor(SetClipColorArgs),
+    SetClipMasks(SetClipMasksArgs),
     SetTransition(SetTransitionArgs),
     RenderFrame(RenderFrameArgs),
     GetAudioLevels(AudioLevelsArgs),
@@ -78,6 +79,7 @@ impl ToolCall {
             ToolCall::DeleteMarker(_) => "delete_marker",
             ToolCall::GetMarkers(_) => "get_markers",
             ToolCall::SetClipColor(_) => "set_clip_color",
+            ToolCall::SetClipMasks(_) => "set_clip_masks",
             ToolCall::SetTransition(_) => "set_transition",
             ToolCall::RenderFrame(_) => "render_frame",
             ToolCall::GetAudioLevels(_) => "get_audio_levels",
@@ -465,6 +467,75 @@ pub struct SetClipColorArgs {
     /// How the clips look on the timeline, to tag them (e.g. takes to
     /// review). It does not change the picture.
     pub color: ClipColorArg,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
+pub struct SetClipMasksArgs {
+    pub timeline_id: String,
+    /// The timeline's `revision` from your last read: the call is refused
+    /// if the timeline changed since (e.g. the user edited it meanwhile).
+    #[serde(default)]
+    pub if_revision: Option<String>,
+    /// A video clip. On an adjustment clip the masks limit where its
+    /// filters apply; on any other clip, where the clip shows.
+    pub clip_id: String,
+    /// Replaces the clip's masks; empty removes them. They combine in
+    /// order, each by its `mode`.
+    pub masks: Vec<MaskArg>,
+}
+
+/// Coordinates are pixels of the timeline from the center of the clip as
+/// it shows at zoom 1, Y up; the clip's transform moves the mask with it.
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
+pub struct MaskArg {
+    pub shape: MaskShapeArg,
+    /// Show (or process) outside the shape instead of inside.
+    #[serde(default)]
+    pub invert: bool,
+    /// How it combines with the masks before it (default `add`).
+    #[serde(default)]
+    pub mode: Option<MaskModeArg>,
+    /// Default `[0, 0]`.
+    #[serde(default)]
+    pub center: Option<[f32; 2]>,
+    /// Rectangle and ellipse: `[width, height]`. Default half the timeline.
+    #[serde(default)]
+    pub size: Option<[f32; 2]>,
+    /// Degrees, clockwise.
+    #[serde(default)]
+    pub rotation: Option<f32>,
+    /// Rectangle: corner radius in pixels.
+    #[serde(default)]
+    pub roundness: Option<f32>,
+    /// Width in pixels of the soft edge.
+    #[serde(default)]
+    pub feather: Option<f32>,
+    /// Pixels the shape grows (negative: shrinks).
+    #[serde(default)]
+    pub expansion: Option<f32>,
+    /// 0-100, default 100.
+    #[serde(default)]
+    pub opacity: Option<f32>,
+    /// Path: the vertices `[x, y]` of the closed polygon, relative to
+    /// `center`. At least 3.
+    #[serde(default)]
+    pub points: Option<Vec<[f32; 2]>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum MaskShapeArg {
+    Rectangle,
+    Ellipse,
+    Path,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum MaskModeArg {
+    Add,
+    Subtract,
+    Intersect,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]

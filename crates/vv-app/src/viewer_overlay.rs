@@ -105,13 +105,13 @@ impl ClipBox {
     }
 }
 
-fn rotate_cw(v: [f32; 2], degrees: f32) -> [f32; 2] {
+pub(crate) fn rotate_cw(v: [f32; 2], degrees: f32) -> [f32; 2] {
     let (sn, cs) = degrees.to_radians().sin_cos();
     [v[0] * cs + v[1] * sn, -v[0] * sn + v[1] * cs]
 }
 
 /// From a point of the clip to the frame (timeline pixels from the center, Y up).
-fn clip_to_frame(t: &Transform, p: [f32; 2]) -> [f32; 2] {
+pub(crate) fn clip_to_frame(t: &Transform, p: [f32; 2]) -> [f32; 2] {
     let scaled = [
         t.zoom[0] * (p[0] - t.anchor[0]),
         t.zoom[1] * (p[1] - t.anchor[1]),
@@ -121,6 +121,22 @@ fn clip_to_frame(t: &Transform, p: [f32; 2]) -> [f32; 2] {
         t.position[0] + t.anchor[0] + r[0],
         t.position[1] + t.anchor[1] + r[1],
     ]
+}
+
+/// Inverse of `clip_to_frame`.
+pub(crate) fn frame_to_clip(t: &Transform, f: [f32; 2]) -> [f32; 2] {
+    let r = rotate_cw(
+        [
+            f[0] - t.position[0] - t.anchor[0],
+            f[1] - t.position[1] - t.anchor[1],
+        ],
+        -t.rotation,
+    );
+    let zoom = |axis: usize| {
+        let z = t.zoom[axis];
+        if z.abs() < MIN_ZOOM { MIN_ZOOM } else { z }
+    };
+    [r[0] / zoom(0) + t.anchor[0], r[1] / zoom(1) + t.anchor[1]]
 }
 
 /// The new transform from dragging `handle` by `delta` (timeline pixels,
@@ -187,7 +203,7 @@ fn drag_transform(
 
 /// Clockwise angle (degrees) taking `from` onto `to`, vectors from the pivot
 /// with Y up, in the range (-180, 180].
-fn clockwise_turn(from: [f32; 2], to: [f32; 2]) -> f32 {
+pub(crate) fn clockwise_turn(from: [f32; 2], to: [f32; 2]) -> f32 {
     let d = (from[1].atan2(from[0]) - to[1].atan2(to[0])).to_degrees();
     (d + 180.0).rem_euclid(360.0) - 180.0
 }
@@ -357,13 +373,13 @@ pub fn show(
     changed
 }
 
-fn distance_to_segment(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
+pub(crate) fn distance_to_segment(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
     let ab = b - a;
     let t = ((p - a).dot(ab) / ab.length_sq().max(1e-6)).clamp(0.0, 1.0);
     p.distance(a + ab * t)
 }
 
-fn point_in_convex(p: egui::Pos2, polygon: &[egui::Pos2]) -> bool {
+pub(crate) fn point_in_convex(p: egui::Pos2, polygon: &[egui::Pos2]) -> bool {
     let mut sign = 0.0;
     for (i, a) in polygon.iter().enumerate() {
         let b = polygon[(i + 1) % polygon.len()];

@@ -439,6 +439,7 @@ fn video_layer(frame: Arc<FrameYuv420>, opacity: f32) -> OwnedLayer {
         opacity,
         filters: Vec::new(),
         blend: vv_core::BlendMode::Normal,
+        masks: Vec::new(),
     }
 }
 

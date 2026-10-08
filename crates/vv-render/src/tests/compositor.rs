@@ -642,6 +642,7 @@ fn grayscale_flattens_a_solid_layer_to_its_luma() {
             opacity: 1.0,
             filters: GRAYSCALE,
             blend: BlendMode::Normal,
+            masks: &[],
         }],
         OutputFrame::exact(4, 4),
     );
@@ -652,6 +653,36 @@ fn grayscale_flattens_a_solid_layer_to_its_luma() {
         pixel[0] > 0 && pixel[0] < 255,
         "luma of red, neither black nor white"
     );
+}
+
+#[test]
+fn exposure_scales_the_color_by_stops_in_linear_light() {
+    let compositor = Compositor::new_headless();
+    let grey = vv_core::Rgba {
+        r: 0.5,
+        g: 0.5,
+        b: 0.5,
+        a: 1.0,
+    };
+    let render = |stops: f32| {
+        let filters = [vv_core::FilterValue {
+            amount: stops,
+            ..vv_core::FilterValue::new(vv_core::FilterKind::Exposure)
+        }];
+        let out = compositor.render_layers(
+            &[Layer {
+                filters: &filters,
+                ..Layer::new(LayerContent::Solid(grey), Transform::default())
+            }],
+            OutputFrame::exact(4, 4),
+        );
+        out.as_chunks::<4>().0[0][0]
+    };
+    let expected = |stops: f32| (0.5f32.powf(2.2) * stops.exp2()).powf(1.0 / 2.2) * 255.0;
+    assert!((render(0.0) as f32 - 127.5).abs() <= 2.0);
+    assert!((render(-1.0) as f32 - expected(-1.0)).abs() <= 2.0);
+    assert!((render(1.0) as f32 - expected(1.0)).abs() <= 2.0);
+    assert_eq!(render(5.0), 255, "clipped to white");
 }
 
 #[test]
@@ -775,6 +806,7 @@ fn a_semitransparent_texture_layer_is_not_faded_twice() {
             opacity: 0.5,
             filters: &[],
             blend: BlendMode::Normal,
+            masks: &[],
         }],
         output,
     );
@@ -889,6 +921,7 @@ fn layer_opacity_blends_with_what_is_below() {
                 opacity: 0.5,
                 filters: &[],
                 blend: BlendMode::Normal,
+                masks: &[],
             },
         ],
         OutputFrame::exact(4, 4),
@@ -916,6 +949,7 @@ fn layer_opacity_blends_with_what_is_below() {
                 opacity: 0.0,
                 filters: &[],
                 blend: BlendMode::Normal,
+                masks: &[],
             },
         ],
         OutputFrame::exact(4, 4),
@@ -1173,6 +1207,7 @@ fn a_blend_mode_combines_the_layer_with_what_is_below() {
                     opacity: 1.0,
                     filters: &[],
                     blend: mode,
+                    masks: &[],
                 },
             ],
             output,
@@ -1207,6 +1242,7 @@ fn a_blended_layer_leaves_the_backdrop_where_it_does_not_cover() {
                 opacity: 1.0,
                 filters: &[],
                 blend: BlendMode::Screen,
+                masks: &[],
             },
         ],
         output,
@@ -1229,6 +1265,7 @@ fn the_first_layer_can_be_blended_over_the_clear() {
             opacity: 1.0,
             filters: &[],
             blend: BlendMode::Screen,
+            masks: &[],
         }],
         output,
     );
@@ -1243,6 +1280,7 @@ fn adjustment(transform: Transform, opacity: f32, filters: &[vv_core::FilterValu
         opacity,
         filters,
         blend: BlendMode::Normal,
+        masks: &[],
     }
 }
 
@@ -1498,7 +1536,7 @@ fn filter_chain_splits_the_per_pixel_filters_at_the_blurs() {
         blur(GaussianBlur, 2.0),
     ];
     let chain = FilterChain::new(&filters, false);
-    assert_eq!(chain.leading, [Grayscale]);
+    assert_eq!(chain.leading, [vv_core::FilterValue::new(Grayscale)]);
     assert_eq!(
         chain.blurs,
         [
@@ -1508,7 +1546,7 @@ fn filter_chain_splits_the_per_pixel_filters_at_the_blurs() {
                     radius: 3.0,
                     direction: vv_core::BlurDirection::Both,
                 },
-                vec![Grayscale]
+                vec![vv_core::FilterValue::new(Grayscale)]
             ),
             (
                 Blur {
@@ -1523,7 +1561,7 @@ fn filter_chain_splits_the_per_pixel_filters_at_the_blurs() {
     );
 
     let uniform = FilterChain::new(&filters, true);
-    assert_eq!(uniform.leading, [Grayscale, Grayscale]);
+    assert_eq!(uniform.leading, [vv_core::FilterValue::new(Grayscale); 2]);
     assert!(uniform.blurs.is_empty(), "nothing to blur on a solid color");
 }
 
@@ -1625,4 +1663,226 @@ fn an_adjustment_blurs_the_stack_below() {
         .collect();
     assert!(row[0] <= 2 && row[15] >= 253, "{row:?}");
     assert!(row[7] > 50 && row[8] < 205, "{row:?}");
+}
+
+fn rect_mask(center: [f32; 2], size: [f32; 2]) -> vv_core::MaskValue {
+    vv_core::MaskValue {
+        shape: vv_core::MaskShape::Rectangle,
+        invert: false,
+        mode: vv_core::MaskMode::Add,
+        center,
+        size,
+        rotation: 0.0,
+        roundness: 0.0,
+        feather: 0.0,
+        expansion: 0.0,
+        opacity: 1.0,
+        polygon: Vec::new(),
+    }
+}
+
+/// A red solid over the black clear, masked; 32x16 so that pixel `(x, y)`
+/// is the layer point `(x + 0.5 - 16, 8 - y - 0.5)`.
+fn render_masked_red(masks: &[vv_core::MaskValue], transform: Transform) -> Vec<[u8; 4]> {
+    let compositor = Compositor::new_headless();
+    let out = compositor.render_layers(
+        &[Layer {
+            masks,
+            ..Layer::new(LayerContent::Solid(RED), transform)
+        }],
+        OutputFrame::exact(32, 16),
+    );
+    out.as_chunks::<4>().0.to_vec()
+}
+
+fn at(pixels: &[[u8; 4]], x: usize, y: usize) -> [u8; 4] {
+    pixels[y * 32 + x]
+}
+
+#[test]
+fn a_rectangle_mask_shows_the_layer_only_inside_it() {
+    let pixels = render_masked_red(&[rect_mask([0.0, 0.0], [16.0, 8.0])], Transform::default());
+    assert_close_rgba(at(&pixels, 16, 8), [255, 0, 0, 255]);
+    assert_close_rgba(at(&pixels, 9, 5), [255, 0, 0, 255]);
+    assert_close_rgba(at(&pixels, 6, 8), [0, 0, 0, 255]);
+    assert_close_rgba(at(&pixels, 16, 2), [0, 0, 0, 255]);
+}
+
+#[test]
+fn the_mask_center_is_in_layer_pixels_with_y_up() {
+    let pixels = render_masked_red(&[rect_mask([8.0, 4.0], [4.0, 4.0])], Transform::default());
+    assert_close_rgba(at(&pixels, 24, 4), [255, 0, 0, 255]);
+    assert_close_rgba(at(&pixels, 24, 12), [0, 0, 0, 255]);
+    assert_close_rgba(at(&pixels, 8, 4), [0, 0, 0, 255]);
+}
+
+#[test]
+fn the_mask_moves_with_the_layer() {
+    let moved = Transform {
+        position: [8.0, 0.0],
+        ..Transform::default()
+    };
+    let pixels = render_masked_red(&[rect_mask([0.0, 0.0], [4.0, 4.0])], moved);
+    assert_close_rgba(at(&pixels, 24, 8), [255, 0, 0, 255]);
+    assert_close_rgba(at(&pixels, 16, 8), [0, 0, 0, 255]);
+}
+
+#[test]
+fn an_inverted_mask_shows_the_layer_outside_it() {
+    let mask = vv_core::MaskValue {
+        invert: true,
+        ..rect_mask([0.0, 0.0], [16.0, 8.0])
+    };
+    let pixels = render_masked_red(&[mask], Transform::default());
+    assert_close_rgba(at(&pixels, 16, 8), [0, 0, 0, 255]);
+    assert_close_rgba(at(&pixels, 2, 1), [255, 0, 0, 255]);
+}
+
+#[test]
+fn an_ellipse_mask_leaves_out_the_corners_of_its_box() {
+    let mask = vv_core::MaskValue {
+        shape: vv_core::MaskShape::Ellipse,
+        ..rect_mask([0.0, 0.0], [32.0, 16.0])
+    };
+    let pixels = render_masked_red(&[mask], Transform::default());
+    assert_close_rgba(at(&pixels, 16, 8), [255, 0, 0, 255]);
+    assert_close_rgba(at(&pixels, 2, 8), [255, 0, 0, 255]);
+    assert_close_rgba(at(&pixels, 1, 1), [0, 0, 0, 255]);
+}
+
+#[test]
+fn a_rotated_rectangle_mask_turns_clockwise() {
+    let mask = vv_core::MaskValue {
+        rotation: 90.0,
+        ..rect_mask([0.0, 0.0], [24.0, 4.0])
+    };
+    let pixels = render_masked_red(&[mask], Transform::default());
+    assert_close_rgba(at(&pixels, 16, 2), [255, 0, 0, 255]);
+    assert_close_rgba(at(&pixels, 6, 8), [0, 0, 0, 255]);
+}
+
+#[test]
+fn a_path_mask_fills_its_polygon() {
+    // Triangle pointing up, base along the bottom half.
+    let mask = vv_core::MaskValue {
+        shape: vv_core::MaskShape::Path,
+        polygon: vec![[-12.0, -6.0], [12.0, -6.0], [0.0, 6.0]],
+        ..rect_mask([0.0, 0.0], [0.0, 0.0])
+    };
+    let pixels = render_masked_red(&[mask], Transform::default());
+    assert_close_rgba(at(&pixels, 16, 10), [255, 0, 0, 255]);
+    assert_close_rgba(at(&pixels, 6, 3), [0, 0, 0, 255]);
+    assert_close_rgba(at(&pixels, 26, 3), [0, 0, 0, 255]);
+}
+
+#[test]
+fn feather_ramps_the_coverage_across_the_outline() {
+    let mask = vv_core::MaskValue {
+        feather: 8.0,
+        ..rect_mask([0.0, 0.0], [16.0, 64.0])
+    };
+    let pixels = render_masked_red(&[mask], Transform::default());
+    let red = |x| at(&pixels, x, 8)[0] as i32;
+    // Outline at x = 8 (pixel 24, center 24.5 → distance 0.5).
+    assert!(
+        (red(24) - 128).abs() < 40,
+        "about half on the edge: {}",
+        red(24)
+    );
+    assert!(red(18) > 250 && red(30) < 5);
+    assert!(red(22) > red(24) && red(24) > red(26));
+}
+
+#[test]
+fn a_subtract_mask_cuts_a_hole_in_the_one_above() {
+    let hole = vv_core::MaskValue {
+        mode: vv_core::MaskMode::Subtract,
+        ..rect_mask([0.0, 0.0], [8.0, 4.0])
+    };
+    let pixels = render_masked_red(
+        &[rect_mask([0.0, 0.0], [24.0, 12.0]), hole],
+        Transform::default(),
+    );
+    assert_close_rgba(at(&pixels, 16, 8), [0, 0, 0, 255]);
+    assert_close_rgba(at(&pixels, 8, 8), [255, 0, 0, 255]);
+    assert_close_rgba(at(&pixels, 1, 1), [0, 0, 0, 255]);
+}
+
+#[test]
+fn an_intersect_mask_keeps_only_the_overlap() {
+    let second = vv_core::MaskValue {
+        mode: vv_core::MaskMode::Intersect,
+        ..rect_mask([8.0, 0.0], [16.0, 16.0])
+    };
+    let pixels = render_masked_red(
+        &[rect_mask([0.0, 0.0], [16.0, 16.0]), second],
+        Transform::default(),
+    );
+    assert_close_rgba(at(&pixels, 20, 8), [255, 0, 0, 255]);
+    assert_close_rgba(at(&pixels, 12, 8), [0, 0, 0, 255]);
+    assert_close_rgba(at(&pixels, 28, 8), [0, 0, 0, 255]);
+}
+
+#[test]
+fn a_masked_adjustment_processes_only_inside_the_mask() {
+    let compositor = Compositor::new_headless();
+    let darken = [vv_core::FilterValue {
+        amount: -5.0,
+        ..vv_core::FilterValue::new(vv_core::FilterKind::Exposure)
+    }];
+    let render = |invert: bool| {
+        let masks = [vv_core::MaskValue {
+            invert,
+            ..rect_mask([0.0, 0.0], [16.0, 8.0])
+        }];
+        let out = compositor.render_layers(
+            &[
+                Layer::new(LayerContent::Solid(WHITE), Transform::default()),
+                Layer {
+                    masks: &masks,
+                    ..adjustment(Transform::default(), 1.0, &darken)
+                },
+            ],
+            OutputFrame::exact(32, 16),
+        );
+        out.as_chunks::<4>().0.to_vec()
+    };
+    let inside = render(false);
+    assert!(at(&inside, 16, 8)[0] < 128, "darkened inside");
+    assert_close_rgba(at(&inside, 2, 1), [255, 255, 255, 255]);
+    let outside = render(true);
+    assert_close_rgba(at(&outside, 16, 8), [255, 255, 255, 255]);
+    assert!(at(&outside, 2, 1)[0] < 128, "darkened outside");
+}
+
+#[test]
+fn a_masked_adjustment_blurs_only_inside_the_mask() {
+    let compositor = Compositor::new_headless();
+    let blur = [vv_core::FilterValue {
+        radius: 6.0,
+        ..vv_core::FilterValue::new(vv_core::FilterKind::BoxBlur)
+    }];
+    let masks = [rect_mask([-8.0, 0.0], [16.0, 16.0])];
+    // Left half red, right half blue: the blur would mix them at the seam.
+    let out = compositor.render_layers(
+        &[
+            Layer::new(LayerContent::Solid(BLUE), Transform::default()),
+            Layer::new(
+                LayerContent::Solid(RED),
+                Transform {
+                    crop: [0.0, 0.0, 16.0, 0.0],
+                    ..Transform::default()
+                },
+            ),
+            Layer {
+                masks: &masks,
+                ..adjustment(Transform::default(), 1.0, &blur)
+            },
+        ],
+        OutputFrame::exact(32, 16),
+    );
+    let pixels = out.as_chunks::<4>().0;
+    let left_of_seam = at(pixels, 14, 8);
+    assert!(left_of_seam[2] > 30, "blurred inside: {left_of_seam:?}");
+    assert_close_rgba(at(pixels, 17, 8), [0, 0, 255, 255]);
 }

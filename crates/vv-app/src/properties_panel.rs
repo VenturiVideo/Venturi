@@ -1441,6 +1441,8 @@ impl VenturiApp {
                     radius_key: RowKeyframe::of(&f.radius, frame, in_clip),
                     direction: f.direction.value_at(frame),
                     direction_key: RowKeyframe::of(&f.direction, frame, in_clip),
+                    amount: f.amount.value_at(frame),
+                    amount_key: RowKeyframe::of(&f.amount, frame, in_clip),
                 })
                 .collect(),
             blend_mode: clip.effects.blend_mode,
@@ -2089,7 +2091,27 @@ impl VenturiApp {
                                                     );
                                                     let mut reset_radius = reset;
                                                     let mut reset_direction = reset;
+                                                    let mut reset_amount = reset;
                                                     let mut keyframes: Vec<(KeyframeEdit, vv_core::KeyframeTarget)> = Vec::new();
+                                                    let mut goto = None;
+                                                    if kind.has_amount() {
+                                                        let mut amount = filter.amount;
+                                                        let row = param_row(
+                                                            ui,
+                                                            &t!("props.exposure_stops"),
+                                                            Some(filter.amount_key),
+                                                            |ui| slider_field(ui, &mut amount, vv_core::EXPOSURE_MIN..=vv_core::EXPOSURE_MAX, 0.01, 2),
+                                                        );
+                                                        let target = vv_core::KeyframeTarget::FilterAmount(kind);
+                                                        if row.changed {
+                                                            keyframes.push((KeyframeEdit::Set(vv_core::KeyframeValue::FilterAmount(kind, amount)), target));
+                                                        }
+                                                        if row.toggled_keyframe {
+                                                            keyframes.push((KeyframeEdit::Toggle(filter.amount_key.on_keyframe), target));
+                                                        }
+                                                        reset_amount |= row.reset;
+                                                        goto = row.goto;
+                                                    }
                                                     if kind.is_blur() {
                                                         let mut radius = filter.radius;
                                                         let row = param_row(
@@ -2106,7 +2128,7 @@ impl VenturiApp {
                                                             keyframes.push((KeyframeEdit::Toggle(filter.radius_key.on_keyframe), target));
                                                         }
                                                         reset_radius |= row.reset;
-                                                        let mut goto = row.goto;
+                                                        goto = row.goto;
 
                                                         let mut direction = filter.direction;
                                                         let row = param_row(
@@ -2138,17 +2160,17 @@ impl VenturiApp {
                                                         }
                                                         reset_direction |= row.reset;
                                                         goto = goto.or(row.goto);
-                                                        if let Some(source_frame) = goto {
-                                                            pending_playhead = self
-                                                                .timeline_id
-                                                                .and_then(|tid| {
-                                                                    self.session.project.timelines[tid]
-                                                                        .clip(primary.track_index, primary.clip_id)
-                                                                })
-                                                                .map(|c| c.timeline_frame_at(source_frame));
-                                                        }
                                                     }
-                                                    if !reset && !reset_radius && !reset_direction && keyframes.is_empty() && enabled == filter.enabled {
+                                                    if let Some(source_frame) = goto {
+                                                        pending_playhead = self
+                                                            .timeline_id
+                                                            .and_then(|tid| {
+                                                                self.session.project.timelines[tid]
+                                                                    .clip(primary.track_index, primary.clip_id)
+                                                            })
+                                                            .map(|c| c.timeline_frame_at(source_frame));
+                                                    }
+                                                    if !reset && !reset_radius && !reset_direction && !reset_amount && keyframes.is_empty() && enabled == filter.enabled {
                                                         continue;
                                                     }
                                                     let tl = self.timeline_id.map(|id| &self.session.project.timelines[id]);
@@ -2172,6 +2194,9 @@ impl VenturiApp {
                                                         if reset_direction {
                                                             own.direction = defaults.direction;
                                                         }
+                                                        if reset_amount {
+                                                            own.amount = defaults.amount;
+                                                        }
                                                         let mut pending_keyframes = Vec::new();
                                                         for (edit, target) in &keyframes {
                                                             let own = &mut new_filters[pos];
@@ -2183,6 +2208,9 @@ impl VenturiApp {
                                                                 KeyframeEdit::Set(vv_core::KeyframeValue::FilterDirection(_, v)) if own.direction.is_constant() => {
                                                                     own.direction.default = v;
                                                                 }
+                                                                KeyframeEdit::Set(vv_core::KeyframeValue::FilterAmount(_, v)) if own.amount.is_constant() => {
+                                                                    own.amount.default = v;
+                                                                }
                                                                 KeyframeEdit::Set(value) => {
                                                                     pending_keyframes.push(upsert_keyframe(clip_ref, t.source_frame, value));
                                                                 }
@@ -2193,6 +2221,9 @@ impl VenturiApp {
                                                                     let value = match target {
                                                                         vv_core::KeyframeTarget::FilterRadius(_) => {
                                                                             vv_core::KeyframeValue::FilterRadius(kind, own.radius.value_at(t.source_frame))
+                                                                        }
+                                                                        vv_core::KeyframeTarget::FilterAmount(_) => {
+                                                                            vv_core::KeyframeValue::FilterAmount(kind, own.amount.value_at(t.source_frame))
                                                                         }
                                                                         _ => vv_core::KeyframeValue::FilterDirection(kind, own.direction.value_at(t.source_frame)),
                                                                     };
@@ -2206,6 +2237,39 @@ impl VenturiApp {
                                                         pending_effects.append(&mut pending_keyframes);
                                                     }
                                                 }
+                                            }
+
+                                            if let Some(clip) = self.timeline_id.and_then(|tid| {
+                                                self.session.project.timelines[tid].clip(primary.track_index, primary.clip_id)
+                                            }) {
+                                                let in_clip = |f: &FrameIdx| (clip.source_in()..clip.source_out()).contains(f);
+                                                let focused = self
+                                                    .mask_focus
+                                                    .filter(|(id, _)| *id == primary.clip_id)
+                                                    .map(|(_, index)| index);
+                                                let section = crate::mask_panel::masks_section(
+                                                    ui,
+                                                    &clip.effects.masks,
+                                                    primary.source_frame,
+                                                    in_clip,
+                                                    crate::mask_panel::layer_size(source_size, timeline_size),
+                                                    focused,
+                                                );
+                                                let goto = section.goto.map(|f| clip.timeline_frame_at(f));
+                                                if let Some(focus) = section.focus {
+                                                    self.mask_focus = focus.map(|index| (primary.clip_id, index));
+                                                    self.mask_overlay.reset();
+                                                    self.mask_overlay.drawing = section.draw;
+                                                }
+                                                if let Some(masks) = section.masks {
+                                                    pending_effects.push(Box::new(vv_core::set_clip_masks(
+                                                        primary.timeline,
+                                                        primary.track_index,
+                                                        primary.clip_id,
+                                                        masks,
+                                                    )));
+                                                }
+                                                pending_playhead = pending_playhead.or(goto);
                                             }
 
                                             // The color applies only to generator

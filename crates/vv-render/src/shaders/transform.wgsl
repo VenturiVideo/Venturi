@@ -31,6 +31,8 @@ struct TransformUniform {
     // (0 = empty slot); see `filter_shader_id` in compositor.rs, the only
     // place that knows which `FilterKind` each id corresponds to.
     filters: array<vec4<f32>, 2>,
+    // The scalar parameter of each slot of `filters`.
+    filter_params: array<vec4<f32>, 2>,
 };
 
 @group(0) @binding(0) var y_tex: texture_2d<f32>;
@@ -46,6 +48,22 @@ struct TransformUniform {
 // (the pipeline's fixed alpha blending is not enough). With Normal it is a
 // 1x1 placeholder, never sampled.
 @group(0) @binding(6) var backdrop_tex: texture_2d<f32>;
+
+// See `MaskData`/`MaskUniform` in compositor.rs.
+struct MaskData {
+    shape_mode: vec4<f32>,
+    center_size: vec4<f32>,
+    params: vec4<f32>,
+    points: vec4<f32>,
+};
+
+struct MaskUniform {
+    header: vec4<f32>,
+    masks: array<MaskData, 8>,
+    points: array<vec4<f32>, 128>,
+};
+
+@group(0) @binding(7) var<uniform> mask_uniform: MaskUniform;
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
@@ -77,7 +95,8 @@ fn kr_kb(matrix_id: i32) -> vec2<f32> {
     return vec2<f32>(0.299, 0.114); // BT.601 (also the fallback for unhandled matrices)
 }
 
-// Slot `i` (0..8) inside the two vec4s of `TransformUniform.filters`: an
+// Slot `i` (0..8) inside the two vec4s of `TransformUniform.filters` (or
+// `filter_params`): an
 // array<vec4,2> cannot be indexed linearly in WGSL, it must be unpacked.
 fn filter_id_at(filters: array<vec4<f32>, 2>, i: i32) -> f32 {
     let group = filters[i / 4];
@@ -91,10 +110,15 @@ fn filter_id_at(filters: array<vec4<f32>, 2>, i: i32) -> f32 {
 // Applies a filter in sequence to `rgb`; the call order (see the
 // loop in `fs_main`) is the order chosen by the user. New per-pixel filters: a new
 // id (`filter_shader_id`) and a new branch here, nothing else in the pipeline.
-fn apply_filter(rgb: vec3<f32>, id: f32) -> vec3<f32> {
+fn apply_filter(rgb: vec3<f32>, id: f32, param: f32) -> vec3<f32> {
     if (id > 0.5 && id < 1.5) { // Grayscale
         let luma = dot(rgb, vec3<f32>(0.299, 0.587, 0.114));
         return vec3<f32>(luma, luma, luma);
+    }
+    if (id > 1.5 && id < 2.5) { // Exposure, `param` in stops
+        // Scaled in (approximately) linear light, as a camera would.
+        let linear = pow(rgb, vec3<f32>(2.2)) * exp2(param);
+        return clamp(pow(linear, vec3<f32>(1.0 / 2.2)), vec3<f32>(0.0), vec3<f32>(1.0));
     }
     return rgb;
 }
@@ -127,16 +151,16 @@ fn yuv_to_rgb(y_sample: f32, u_sample: f32, v_sample: f32, matrix_id: i32, full_
     return clamp(vec3<f32>(r, g, b), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
-// Color of the layer alone, not premultiplied.
-fn shade(in: VertexOutput) -> vec4<f32> {
+// The output pixel in the layer's space before the fit: fractions of the
+// output frame from the center of the clip, Y down. Inverse of position,
+// then of rotation and zoom around the anchor.
+fn layer_point(in: VertexOutput) -> vec2<f32> {
     let zoom = max(abs(transform.zoom_pos.xy), vec2<f32>(0.0001, 0.0001));
     let position = transform.zoom_pos.zw;
     let anchor = transform.anchor_flip.xy;
     let angle = transform.fit_rot.z;
     let aspect = max(transform.color.z, 0.0001);
 
-    // From the output to the source: inverse of position, then of rotation and zoom
-    // around the anchor, then of the fit.
     var q = in.uv - vec2<f32>(0.5, 0.5) - position - anchor;
     // The rotation must be done in an isotropic space, otherwise a non-square
     // frame would turn it into a shear.
@@ -145,7 +169,104 @@ fn shade(in: VertexOutput) -> vec4<f32> {
     let sn = sin(angle);
     q = vec2<f32>(q.x * cs + q.y * sn, -q.x * sn + q.y * cs);
     q = vec2<f32>(q.x / aspect, q.y);
-    q = q / zoom + anchor;
+    return q / zoom + anchor;
+}
+
+fn mask_point(i: i32) -> vec2<f32> {
+    let pair = mask_uniform.points[i / 2];
+    return select(pair.xy, pair.zw, i % 2 == 1);
+}
+
+// Signed distance from the outline, negative inside, in layer pixels.
+fn mask_distance(m: MaskData, p: vec2<f32>) -> f32 {
+    let shape = m.shape_mode.x;
+    if (shape > 1.5) {
+        // Polygon (iq's sdPolygon): distance to the nearest edge, sign from
+        // the crossings.
+        let first = i32(m.points.x);
+        let count = i32(m.points.y);
+        if (count < 3) {
+            return 1e9;
+        }
+        var v_prev = mask_point(first + count - 1);
+        var d = dot(p - v_prev, p - v_prev);
+        var s = 1.0;
+        for (var k = 0; k < count; k = k + 1) {
+            let v = mask_point(first + k);
+            let e = v_prev - v;
+            let w = p - v;
+            let b = w - e * clamp(dot(w, e) / max(dot(e, e), 1e-12), 0.0, 1.0);
+            d = min(d, dot(b, b));
+            let above = p.y >= v.y;
+            let below = v_prev.y > p.y;
+            let left = e.x * w.y > e.y * w.x;
+            if ((above && below && left) || (!above && !below && !left)) {
+                s = -s;
+            }
+            v_prev = v;
+        }
+        return s * sqrt(d);
+    }
+    // Into the shape's own frame: undo the clockwise rotation (Y up).
+    let angle = m.params.x;
+    let d0 = p - m.center_size.xy;
+    let cs = cos(angle);
+    let sn = sin(angle);
+    let local = vec2<f32>(d0.x * cs - d0.y * sn, d0.x * sn + d0.y * cs);
+    let half_size = max(m.center_size.zw, vec2<f32>(0.0001, 0.0001));
+    if (shape > 0.5) {
+        // Ellipse: iq's approximation, good enough for a soft edge.
+        let k0 = length(local / half_size);
+        let k1 = length(local / (half_size * half_size));
+        if (k1 < 1e-6) {
+            return -min(half_size.x, half_size.y);
+        }
+        return k0 * (k0 - 1.0) / k1;
+    }
+    let r = min(m.params.y, min(half_size.x, half_size.y));
+    let q = abs(local) - half_size + vec2<f32>(r, r);
+    return length(max(q, vec2<f32>(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - r;
+}
+
+// Combined coverage of the layer's masks at this pixel; 1 without masks.
+fn mask_coverage(in: VertexOutput) -> f32 {
+    let count = i32(mask_uniform.header.x);
+    if (count == 0) {
+        return 1.0;
+    }
+    let q = layer_point(in);
+    let p = vec2<f32>(q.x, -q.y) * mask_uniform.header.zw;
+    let aa = max(mask_uniform.header.y, 0.0001);
+    var coverage = 0.0;
+    for (var i = 0; i < count; i = i + 1) {
+        let m = mask_uniform.masks[i];
+        let d = mask_distance(m, p) - m.params.w;
+        let feather = m.params.z;
+        var c: f32;
+        if (feather > 0.0) {
+            c = 1.0 - smoothstep(-0.5 * feather, 0.5 * feather, d);
+        } else {
+            c = clamp(0.5 - d / aa, 0.0, 1.0);
+        }
+        if (m.shape_mode.z > 0.5) {
+            c = 1.0 - c;
+        }
+        c = c * m.shape_mode.w;
+        let mode = m.shape_mode.y;
+        if (mode > 1.5) {
+            coverage = select(min(coverage, c), c, i == 0);
+        } else if (mode > 0.5) {
+            coverage = select(coverage, 1.0, i == 0) * (1.0 - c);
+        } else {
+            coverage = max(coverage, c);
+        }
+    }
+    return coverage;
+}
+
+// Color of the layer alone, not premultiplied.
+fn shade(in: VertexOutput) -> vec4<f32> {
+    let q = layer_point(in);
 
     let flip = vec2<f32>(
         select(1.0, -1.0, transform.anchor_flip.z > 0.5),
@@ -219,7 +340,7 @@ fn shade(in: VertexOutput) -> vec4<f32> {
     for (var slot = 0; slot < 8; slot = slot + 1) {
         let id = filter_id_at(transform.filters, slot);
         if (id > 0.5) {
-            rgb = apply_filter(rgb, id);
+            rgb = apply_filter(rgb, id, filter_id_at(transform.filter_params, slot));
         }
     }
     // 1x1 placeholder for a layer without real per-pixel coverage: it always
@@ -276,11 +397,13 @@ fn blend_channel(id: i32, cb: f32, cs: f32) -> f32 {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let src = shade(in);
+    let coverage = mask_coverage(in);
     let blend_id = i32(transform.extra.y);
     if (transform.extra.w > 0.5) {
-        return adjusted(in, src, blend_id);
+        return adjusted(in, shade(in), blend_id, coverage);
     }
+    var src = shade(in);
+    src.a = src.a * coverage;
     // Normal: the pipeline's alpha blending takes care of it, the color comes out
     // non-premultiplied.
     if (blend_id == 0) {
@@ -294,8 +417,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
 // Adjustment layer (REPLACE pipeline): `src` is the stack below, transformed and
 // filtered. Uncovered areas take the clear color instead of the original
-// stack, then the result is mixed with the original by the opacity.
-fn adjusted(in: VertexOutput, src: vec4<f32>, blend_id: i32) -> vec4<f32> {
+// stack, then the result is mixed with the original by the opacity and the
+// masks.
+fn adjusted(in: VertexOutput, src: vec4<f32>, blend_id: i32, coverage: f32) -> vec4<f32> {
     let dst = textureLoad(backdrop_tex, vec2<i32>(floor(in.clip_position.xy)), 0);
     let clear = transform.solid;
     let processed = vec4<f32>(src.rgb * src.a, src.a) + vec4<f32>(clear.rgb * clear.a, clear.a) * (1.0 - src.a);
@@ -304,7 +428,7 @@ fn adjusted(in: VertexOutput, src: vec4<f32>, blend_id: i32) -> vec4<f32> {
         let rgb = processed.rgb / max(processed.a, 1.0 / 255.0);
         composed = blend_over(blend_id, vec4<f32>(rgb, processed.a), dst);
     }
-    return mix(dst, composed, transform.extra.z);
+    return mix(dst, composed, transform.extra.z * coverage);
 }
 
 // `src` (not premultiplied) composed onto `dst` (premultiplied) with the

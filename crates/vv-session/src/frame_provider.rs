@@ -94,6 +94,8 @@ pub struct OwnedLayer {
     /// Only the active filters of `EffectStack::filters`, in their order.
     pub filters: Vec<vv_core::FilterValue>,
     pub blend: vv_core::BlendMode,
+    /// Only the active masks of `EffectStack::masks` (`ClipMask::is_active`).
+    pub masks: Vec<vv_core::MaskValue>,
 }
 
 pub enum OwnedContent {
@@ -138,6 +140,7 @@ impl OwnedLayer {
             opacity: self.opacity,
             filters: &self.filters,
             blend: self.blend,
+            masks: &self.masks,
         }
     }
 
@@ -164,6 +167,7 @@ impl OwnedLayer {
             && self.opacity == other.opacity
             && self.filters == other.filters
             && self.blend == other.blend
+            && self.masks == other.masks
     }
 }
 
@@ -344,6 +348,13 @@ fn build_layer(
         .filter(|f| f.enabled)
         .map(|f| f.value_at(source_frame))
         .collect();
+    let masks = clip
+        .effects
+        .masks
+        .iter()
+        .filter(|m| m.is_active())
+        .map(|m| m.value_at(source_frame))
+        .collect();
     let blend = clip.effects.blend_mode;
     // The clip opacity is multiplied by the one already carried by the
     // fades.
@@ -375,6 +386,7 @@ fn build_layer(
         opacity,
         filters,
         blend,
+        masks,
     })
 }
 

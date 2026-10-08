@@ -102,10 +102,13 @@ pub struct Layer<'a> {
     pub filters: &'a [vv_core::FilterValue],
     /// How the layer composes onto those below.
     pub blend: BlendMode,
+    /// Active masks of the clip (`EffectStack::masks`): where the layer
+    /// shows, or for an adjustment where its processing does.
+    pub masks: &'a [vv_core::MaskValue],
 }
 
 impl<'a> Layer<'a> {
-    /// Opaque, no filters, `Normal` blend.
+    /// Opaque, no filters, no masks, `Normal` blend.
     pub fn new(content: LayerContent<'a>, transform: Transform) -> Self {
         Self {
             content,
@@ -113,6 +116,7 @@ impl<'a> Layer<'a> {
             opacity: 1.0,
             filters: &[],
             blend: BlendMode::Normal,
+            masks: &[],
         }
     }
 }
@@ -157,6 +161,7 @@ const MAX_LAYER_FILTERS: usize = 8;
 fn filter_shader_id(kind: vv_core::FilterKind) -> f32 {
     match kind {
         vv_core::FilterKind::Grayscale => 1.0,
+        vv_core::FilterKind::Exposure => 2.0,
         vv_core::FilterKind::BoxBlur | vv_core::FilterKind::GaussianBlur => 0.0,
     }
 }
@@ -178,9 +183,9 @@ struct Blur {
 #[derive(Debug, Default, PartialEq)]
 struct FilterChain {
     /// Per-pixel filters before the first blur.
-    leading: Vec<vv_core::FilterKind>,
+    leading: Vec<vv_core::FilterValue>,
     /// Each blur with the per-pixel filters following it.
-    blurs: Vec<(Blur, Vec<vv_core::FilterKind>)>,
+    blurs: Vec<(Blur, Vec<vv_core::FilterValue>)>,
 }
 
 impl FilterChain {
@@ -199,8 +204,8 @@ impl FilterChain {
                 }
             } else {
                 match chain.blurs.last_mut() {
-                    Some((_, run)) => run.push(filter.kind),
-                    None => chain.leading.push(filter.kind),
+                    Some((_, run)) => run.push(*filter),
+                    None => chain.leading.push(*filter),
                 }
             }
         }
@@ -321,6 +326,8 @@ struct TransformUniform {
     /// `filter_shader_id`); 0 = empty slot. `MAX_LAYER_FILTERS` in two vec4s
     /// for the uniform alignment.
     filters: [[f32; 4]; MAX_LAYER_FILTERS / 4],
+    /// The scalar parameter of each slot of `filters` (`FilterValue::amount`).
+    filter_params: [[f32; 4]; MAX_LAYER_FILTERS / 4],
 }
 
 impl TransformUniform {
@@ -333,7 +340,7 @@ impl TransformUniform {
         source_size: (u32, u32),
         fill: Fill,
         opacity: f32,
-        filters: &[vv_core::FilterKind],
+        filters: &[vv_core::FilterValue],
         blend: BlendMode,
     ) -> Self {
         let (mode, solid) = match fill {
@@ -396,17 +403,109 @@ impl TransformUniform {
             }),
             extra: [opacity.clamp(0.0, 1.0), blend_shader_id(blend), 0.0, 0.0],
             planes: [0.0; 4],
-            filters: {
-                let mut ids = [0.0f32; MAX_LAYER_FILTERS];
-                for (slot, kind) in ids.iter_mut().zip(filters.iter().take(MAX_LAYER_FILTERS)) {
-                    *slot = filter_shader_id(*kind);
-                }
-                [
-                    [ids[0], ids[1], ids[2], ids[3]],
-                    [ids[4], ids[5], ids[6], ids[7]],
-                ]
-            },
+            filters: pack_filter_slots(filters, |f| filter_shader_id(f.kind)),
+            filter_params: pack_filter_slots(filters, |f| f.amount),
         }
+    }
+}
+
+fn pack_filter_slots(
+    filters: &[vv_core::FilterValue],
+    value: impl Fn(&vv_core::FilterValue) -> f32,
+) -> [[f32; 4]; MAX_LAYER_FILTERS / 4] {
+    let mut slots = [0.0f32; MAX_LAYER_FILTERS];
+    for (slot, filter) in slots.iter_mut().zip(filters.iter().take(MAX_LAYER_FILTERS)) {
+        *slot = value(filter);
+    }
+    [
+        [slots[0], slots[1], slots[2], slots[3]],
+        [slots[4], slots[5], slots[6], slots[7]],
+    ]
+}
+
+/// Past these, the excess masks and polygon points are dropped; sized for a
+/// uniform buffer, which (unlike a storage one) every backend has.
+const MAX_MASKS: usize = 8;
+const MAX_MASK_POINTS: usize = 256;
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct MaskData {
+    /// x: shape (0 rectangle, 1 ellipse, 2 polygon), y: mode (0 add,
+    /// 1 subtract, 2 intersect), z: 1 if inverted, w: opacity 0-1.
+    shape_mode: [f32; 4],
+    /// Center and half size, layer pixels, Y up.
+    center_size: [f32; 4],
+    /// Rotation (radians, clockwise), corner radius, feather, expansion.
+    params: [f32; 4],
+    /// x: first point in `MaskUniform::points`, y: point count.
+    points: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct MaskUniform {
+    /// x: mask count, y: layer pixels per output pixel (antialiasing width),
+    /// zw: timeline size.
+    header: [f32; 4],
+    masks: [MaskData; MAX_MASKS],
+    /// Two points per vec4.
+    points: [[f32; 4]; MAX_MASK_POINTS / 2],
+}
+
+impl MaskUniform {
+    fn new(masks: &[vv_core::MaskValue], transform: &Transform, output: OutputFrame) -> Self {
+        let mut uniform = <Self as bytemuck::Zeroable>::zeroed();
+        let zoom = transform.zoom[0]
+            .abs()
+            .max(transform.zoom[1].abs())
+            .max(1e-4);
+        uniform.header = [
+            masks.len().min(MAX_MASKS) as f32,
+            output.timeline_size.0 as f32 / output.width.max(1) as f32 / zoom,
+            output.timeline_size.0 as f32,
+            output.timeline_size.1 as f32,
+        ];
+        let mut points = Vec::new();
+        for (data, mask) in uniform.masks.iter_mut().zip(masks.iter().take(MAX_MASKS)) {
+            let first = points.len();
+            let budget = MAX_MASK_POINTS - first;
+            // Decimated evenly rather than cut, so the shape stays closed.
+            let step = mask.polygon.len().div_ceil(budget.max(1)).max(1);
+            points.extend(mask.polygon.iter().step_by(step).take(budget));
+            data.shape_mode = [
+                match mask.shape {
+                    vv_core::MaskShape::Rectangle => 0.0,
+                    vv_core::MaskShape::Ellipse => 1.0,
+                    vv_core::MaskShape::Path => 2.0,
+                },
+                match mask.mode {
+                    vv_core::MaskMode::Add => 0.0,
+                    vv_core::MaskMode::Subtract => 1.0,
+                    vv_core::MaskMode::Intersect => 2.0,
+                },
+                if mask.invert { 1.0 } else { 0.0 },
+                mask.opacity,
+            ];
+            data.center_size = [
+                mask.center[0],
+                mask.center[1],
+                mask.size[0] / 2.0,
+                mask.size[1] / 2.0,
+            ];
+            data.params = [
+                mask.rotation.to_radians(),
+                mask.roundness,
+                mask.feather,
+                mask.expansion,
+            ];
+            data.points = [first as f32, (points.len() - first) as f32, 0.0, 0.0];
+        }
+        for (slot, pair) in uniform.points.iter_mut().zip(points.chunks(2)) {
+            let second: [f32; 2] = pair.get(1).copied().unwrap_or_default();
+            *slot = [pair[0][0], pair[0][1], second[0], second[1]];
+        }
+        uniform
     }
 }
 
@@ -558,6 +657,16 @@ impl Compositor {
                 },
                 plane_entry(5), // Alpha (per-pixel coverage, see YuvFrame::alpha)
                 plane_entry(6), // Backdrop (see `backdrop_tex` in the shader)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -929,6 +1038,7 @@ impl Compositor {
                 opacity,
                 filters,
                 blend,
+                masks,
             } = layer;
             let blend = *blend;
             let is_adjustment = matches!(content, LayerContent::Adjustment);
@@ -989,6 +1099,7 @@ impl Compositor {
                     blend,
                     &backdrop_view,
                     is_adjustment.then_some(clear),
+                    masks,
                 );
                 self.pass(
                     &mut encoder,
@@ -1014,6 +1125,7 @@ impl Compositor {
                     filters,
                     blend,
                     &backdrop_view(&mut backdrops),
+                    masks,
                 )],
                 LayerContent::Texture {
                     texture,
@@ -1030,6 +1142,7 @@ impl Compositor {
                     blend,
                     &backdrop_view(&mut backdrops),
                     None,
+                    masks,
                 )],
                 // The copy of the stack is both the source and the backdrop.
                 LayerContent::Adjustment => {
@@ -1046,6 +1159,7 @@ impl Compositor {
                         blend,
                         &stack,
                         Some(clear),
+                        masks,
                     )]
                 }
                 // The color comes from the uniform: the planes are only placeholders.
@@ -1061,6 +1175,7 @@ impl Compositor {
                     filters,
                     blend,
                     &backdrop_view(&mut backdrops),
+                    masks,
                 )],
                 LayerContent::Text(title) => {
                     let render = crate::text::render_title(
@@ -1091,6 +1206,7 @@ impl Compositor {
                             filters,
                             blend,
                             &view,
+                            masks,
                         ));
                     }
                     groups
@@ -1202,6 +1318,7 @@ impl Compositor {
                 leading,
                 BlendMode::Normal,
                 no_backdrop,
+                &[],
             )],
             LayerContent::Texture { texture, .. } => vec![self.texture_bind_group(
                 planes,
@@ -1215,6 +1332,7 @@ impl Compositor {
                 BlendMode::Normal,
                 no_backdrop,
                 None,
+                &[],
             )],
             LayerContent::Adjustment => vec![self.texture_bind_group(
                 planes,
@@ -1228,6 +1346,7 @@ impl Compositor {
                 BlendMode::Normal,
                 no_backdrop,
                 None,
+                &[],
             )],
             LayerContent::Solid(color) => vec![self.layer_bind_group(
                 planes,
@@ -1241,6 +1360,7 @@ impl Compositor {
                 leading,
                 BlendMode::Normal,
                 no_backdrop,
+                &[],
             )],
             LayerContent::Text(title) => {
                 let render = crate::text::render_title(
@@ -1270,6 +1390,7 @@ impl Compositor {
                             leading,
                             BlendMode::Normal,
                             no_backdrop,
+                            &[],
                         )
                     })
                     .collect()
@@ -1311,6 +1432,7 @@ impl Compositor {
                     BlendMode::Normal,
                     no_backdrop,
                     None,
+                    &[],
                 );
                 self.pass(
                     encoder,
@@ -1396,9 +1518,10 @@ impl Compositor {
         fit_size: (u32, u32),
         fill: Fill,
         opacity: f32,
-        filters: &[vv_core::FilterKind],
+        filters: &[vv_core::FilterValue],
         blend: BlendMode,
         backdrop: &wgpu::TextureView,
+        masks: &[vv_core::MaskValue],
     ) -> wgpu::BindGroup {
         let y_texture = self.plane_texture(frame.y, frame.width, frame.height);
         let (u_texture, v_texture) = match frame.chroma {
@@ -1443,8 +1566,11 @@ impl Compositor {
         if matches!(frame.chroma, YuvChroma::Interleaved(_)) {
             uniform.planes[0] = 1.0;
         }
-        let bind_group =
-            self.bind_group_for([&y_view, &u_view, &v_view, &a_view, backdrop], &uniform);
+        let bind_group = self.bind_group_for(
+            [&y_view, &u_view, &v_view, &a_view, backdrop],
+            &uniform,
+            &MaskUniform::new(masks, transform, output),
+        );
         planes.extend([y_texture, u_texture, v_texture, a_texture]);
         bind_group
     }
@@ -1465,10 +1591,11 @@ impl Compositor {
         output: OutputFrame,
         source_size: (u32, u32),
         opacity: f32,
-        filters: &[vv_core::FilterKind],
+        filters: &[vv_core::FilterValue],
         blend: BlendMode,
         backdrop: &wgpu::TextureView,
         adjustment_clear: Option<wgpu::Color>,
+        masks: &[vv_core::MaskValue],
     ) -> wgpu::BindGroup {
         let u_texture = self.plane_texture(&[128], 1, 1);
         let v_texture = self.plane_texture(&[128], 1, 1);
@@ -1502,8 +1629,11 @@ impl Compositor {
                 clear.a as f32,
             ];
         }
-        let bind_group =
-            self.bind_group_for([rgba_view, &u_view, &v_view, &a_view, backdrop], &uniform);
+        let bind_group = self.bind_group_for(
+            [rgba_view, &u_view, &v_view, &a_view, backdrop],
+            &uniform,
+            &MaskUniform::new(masks, transform, output),
+        );
         planes.extend([u_texture, v_texture, a_texture]);
         bind_group
     }
@@ -1514,12 +1644,20 @@ impl Compositor {
         &self,
         views: [&wgpu::TextureView; 5],
         uniform: &TransformUniform,
+        masks: &MaskUniform,
     ) -> wgpu::BindGroup {
         let uniform_buffer = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("vv-render transform uniform"),
                 contents: bytemuck::bytes_of(uniform),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let mask_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("vv-render mask uniform"),
+                contents: bytemuck::bytes_of(masks),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1553,6 +1691,10 @@ impl Compositor {
                 wgpu::BindGroupEntry {
                     binding: 6,
                     resource: wgpu::BindingResource::TextureView(views[4]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: mask_buffer.as_entire_binding(),
                 },
             ],
         })

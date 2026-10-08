@@ -1050,3 +1050,37 @@ fn a_transition_between_two_clips_imports_as_one_crossing() {
         "followed by a gap: only the half inside the clip"
     );
 }
+
+#[test]
+fn masks_of_an_adjustment_clip_round_trip_in_our_metadata() {
+    let mut project = Project::default();
+    let timeline_id = project.timelines.insert(Timeline {
+        name: "Masks".into(),
+        fps: Rational::new(24, 1),
+        resolution: (1280, 720),
+        tracks: vec![Track::new(TrackKind::Video)],
+        markers: Vec::new(),
+        master: Default::default(),
+    });
+    let mut clip =
+        Clip::from_source_range(ClipId(1), ClipSource::Adjustment, 0, 48, 0, Rational::one());
+    let mut ellipse = crate::ClipMask::new(crate::MaskShape::Ellipse, (1280, 720));
+    ellipse.invert = true;
+    ellipse
+        .track_mut(crate::MaskParam::Feather)
+        .upsert(10, 40.0, Interpolation::Linear);
+    clip.effects.masks = vec![
+        ellipse,
+        crate::ClipMask::new(crate::MaskShape::Path, (1280, 720)),
+    ];
+    project.timelines[timeline_id].tracks[0].clips.push(clip);
+    let original = project.timelines[timeline_id].tracks[0].clips[0].clone();
+
+    let otio = timeline_to_otio(&project, timeline_id, None);
+    let mut probe = probe_from(Vec::new());
+    let imported = project_from_otio(&otio, Path::new("/"), &mut probe, None).unwrap();
+    let (_, tl) = imported.project.timelines.iter().next().unwrap();
+    let clip = &tl.tracks[0].clips[0];
+    assert!(matches!(clip.source, ClipSource::Adjustment));
+    assert_eq!(clip.effects.masks, original.effects.masks);
+}
