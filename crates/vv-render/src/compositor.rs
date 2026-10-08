@@ -936,6 +936,16 @@ impl Compositor {
         compositor
     }
 
+    /// The device and queue the compositor's textures live on: a `Scopes`
+    /// measuring them must use the same.
+    pub fn device(&self) -> &Arc<wgpu::Device> {
+        &self.device
+    }
+
+    pub fn queue(&self) -> &Arc<wgpu::Queue> {
+        &self.queue
+    }
+
     pub fn adapter_name(&self) -> &str {
         &self.adapter_name
     }
