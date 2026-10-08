@@ -14,54 +14,12 @@ pub(crate) struct ScopeView {
     /// Pixel size wanted per slot; zero for a slot not shown.
     pub(crate) sizes: [(u32, u32); 2],
     pub(crate) drawn: [Option<DrawnScope>; 2],
-}
-
-/// What the viewer leaves out while the window is open, see
-/// `VenturiApp::color_isolation`.
-pub(crate) struct Isolation {
-    pub(crate) track_index: usize,
-    /// The clip is an adjustment layer: it works on what is below, so those
-    /// tracks stay and only the ones above go.
-    pub(crate) keep_below: bool,
-    pub(crate) label: String,
-}
-
-impl Isolation {
-    pub(crate) fn shows(track: usize, keep_below: bool, other: usize) -> bool {
-        other == track || (keep_below && other < track)
-    }
-}
-
-/// A small label in the viewer's corner while the isolation lasts.
-pub(crate) fn paint_isolation_notice(
-    painter: &egui::Painter,
-    area: egui::Rect,
-    isolation: &Isolation,
-) {
-    let text = if isolation.keep_below {
-        t!("color.isolated_below", track = isolation.label)
-    } else {
-        t!("color.isolated", track = isolation.label)
-    };
-    let galley = painter.layout_no_wrap(
-        text.into_owned(),
-        egui::FontId::proportional(12.0),
-        egui::Color32::from_white_alpha(220),
-    );
-    let rect = egui::Rect::from_min_size(
-        area.left_top() + egui::vec2(8.0, 8.0),
-        galley.size() + egui::vec2(12.0, 6.0),
-    );
-    painter.rect_filled(rect, 4.0, egui::Color32::from_black_alpha(150));
-    painter.galley(
-        rect.min + egui::vec2(6.0, 3.0),
-        galley,
-        egui::Color32::WHITE,
-    );
+    /// Whether there is a clip to measure: the selected one, under the playhead.
+    pub(crate) has_source: bool,
 }
 
 /// What a scope texture holds: scope, pixel size and the viewer frame it
-/// measured (`viewer_generation`).
+/// measured (`VenturiApp::scope_generation`).
 pub(crate) type DrawnScope = (ScopeKind, (u32, u32), u64);
 
 /// The color correction of the clip the window edits, at the playhead.
@@ -94,13 +52,14 @@ const MIN_SCOPE_WIDTH: f32 = 260.0;
 const SCOPE_HEIGHT: f32 = 240.0;
 
 /// `grade`: `None` without a selected video clip, `Some(None)` for a clip
-/// without color correction.
+/// without color correction. `can_balance`: see `grade_section`.
 pub(crate) fn show_color_window(
     ctx: &egui::Context,
     open: &mut bool,
     kinds: &mut [ScopeKind; 2],
     view: &mut ScopeView,
     grade: Option<Option<GradeInfo>>,
+    can_balance: bool,
 ) -> ColorWindowResponse {
     let mut response = ColorWindowResponse::default();
     egui::Window::new(t!("color.title"))
@@ -140,7 +99,15 @@ pub(crate) fn show_color_window(
                         );
                         let painter = ui.painter_at(rect);
                         painter.rect_filled(rect, 2.0, egui::Color32::BLACK);
-                        if let Some(id) = view.textures[slot]
+                        if !view.has_source {
+                            painter.text(
+                                rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                t!("color.no_scope_source"),
+                                egui::FontId::proportional(12.0),
+                                egui::Color32::from_white_alpha(110),
+                            );
+                        } else if let Some(id) = view.textures[slot]
                             && view.drawn[slot].is_some_and(|(kind, ..)| kind == *kind_slot)
                         {
                             painter.image(
@@ -153,7 +120,9 @@ pub(crate) fn show_color_window(
                                 egui::Color32::WHITE,
                             );
                         }
-                        graticule(&painter, rect, *kind_slot);
+                        if view.has_source {
+                            graticule(&painter, rect, *kind_slot);
+                        }
                     });
                 }
             });
@@ -170,8 +139,12 @@ pub(crate) fn show_color_window(
                         }
                     }
                     Some(Some(info)) => {
-                        let section =
-                            crate::grade_panel::grade_section(ui, &info.value, &info.keys);
+                        let section = crate::grade_panel::grade_section(
+                            ui,
+                            &info.value,
+                            &info.keys,
+                            can_balance,
+                        );
                         response.goto = section.goto;
                         response.grade = Some(section);
                     }
@@ -287,7 +260,3 @@ pub(crate) fn grade_info(clip: &vv_core::Clip, frame: FrameIdx) -> Option<GradeI
             .collect(),
     })
 }
-
-#[cfg(test)]
-#[path = "tests/color_window.rs"]
-mod tests;

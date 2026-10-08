@@ -2254,15 +2254,50 @@ fn selection_follows_playhead_during_normal_playback() {
 }
 
 #[test]
-fn the_selection_stays_on_the_graded_clip_while_the_color_window_is_open() {
+fn a_clip_is_isolated_on_its_own_track() {
+    let isolation = Isolation {
+        track_index: 2,
+        keep_below: false,
+    };
+    assert!(isolation.shows(2));
+    assert!(!isolation.shows(1), "the track below goes");
+    assert!(!isolation.shows(3), "the track above goes");
+}
+
+#[test]
+fn an_adjustment_keeps_what_it_works_on() {
+    let isolation = Isolation {
+        track_index: 2,
+        keep_below: true,
+    };
+    assert!(isolation.shows(0));
+    assert!(isolation.shows(2));
+    assert!(!isolation.shows(3), "only the tracks above go");
+}
+
+#[test]
+fn the_auto_balance_needs_one_clip_under_the_playhead() {
     let mut app = VenturiApp::default();
     let clip_a = make_timeline_with_clip(&mut app, 0, 0, 25);
-    make_timeline_with_clip(&mut app, 0, 25, 25);
-    app.timeline_state.set_single_selection(Some((0, clip_a)));
-    app.settings.panels.color_window_open = true;
-    app.timeline_state.playhead = 30;
-    app.sync_selection_to_playhead();
-    assert_eq!(app.timeline_state.selected, BTreeSet::from([(0, clip_a)]));
+    let clip_b = make_timeline_with_clip(&mut app, 0, 25, 25);
+    let timeline = app.timeline_id.unwrap();
+    let target = |clip_id| PanelTarget {
+        timeline,
+        track_index: 0,
+        clip_id,
+        source_frame: 0,
+        timeline_start: 0,
+        is_solid_color: false,
+        is_text: false,
+    };
+    app.timeline_state.playhead = 10;
+    assert!(app.can_auto_balance(&[target(clip_a)]));
+    assert!(
+        !app.can_auto_balance(&[target(clip_b)]),
+        "the playhead is off it"
+    );
+    assert!(!app.can_auto_balance(&[target(clip_a), target(clip_b)]));
+    assert!(!app.can_auto_balance(&[]));
 }
 
 /// Bug: "playback starts only if I select the clip".

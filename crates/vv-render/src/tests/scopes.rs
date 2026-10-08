@@ -118,6 +118,32 @@ fn a_flat_grey_puts_every_waveform_column_on_one_level() {
     assert_eq!(bins.iter().map(|b| *b as u64).sum::<u64>(), 64 * 32);
 }
 
+/// The app measures the compositor's work texture, `Rgba16Float` in high
+/// precision, not an `Rgba8Unorm` one.
+#[test]
+fn a_composed_work_texture_is_measured() {
+    let (compositor, scopes) = scopes();
+    let level = 128.0 / 255.0;
+    let grey = vv_core::Rgba {
+        r: level,
+        g: level,
+        b: level,
+        a: 1.0,
+    };
+    let work = compositor.render_layers_to_owned_texture_transparent(
+        &[crate::Layer::new(
+            crate::LayerContent::Solid(grey),
+            vv_core::Transform::default(),
+        )],
+        crate::OutputFrame::exact(64, 32),
+    );
+    scopes.render(&work, ScopeKind::Waveform, 0, (64, 256));
+    let bins = bins(&scopes);
+    for col in 0..64 {
+        assert_eq!(bins[128 * 64 + col], 32, "column {col}");
+    }
+}
+
 #[test]
 fn a_horizontal_gradient_draws_a_waveform_diagonal() {
     let (_c, scopes) = scopes();

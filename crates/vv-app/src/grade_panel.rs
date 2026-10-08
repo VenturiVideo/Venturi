@@ -406,10 +406,12 @@ fn icon_button(ui: &mut egui::Ui, icon: PresetIcon, label: &str) -> egui::Respon
 }
 
 /// `keys` holds one `RowKeyframe` per `GradeParam`, in the order of `ALL`.
+/// `can_balance`: a single clip is selected and the playhead is on it.
 pub(crate) fn grade_section(
     ui: &mut egui::Ui,
     grade: &GradeValue,
     keys: &[RowKeyframe],
+    can_balance: bool,
 ) -> GradeSectionResponse {
     let mut response = GradeSectionResponse::default();
     let key = |param: GradeParam| keys[param.index()];
@@ -426,10 +428,14 @@ pub(crate) fn grade_section(
                 response.preset = Some(preset);
             }
         }
-        response.auto_balance =
-            icon_button(ui, PresetIcon::AutoBalance, &t!("props.grade_auto_balance"))
-                .on_hover_text(t!("props.grade_auto_balance_hint"))
-                .clicked();
+        response.auto_balance = ui
+            .add_enabled_ui(can_balance, |ui| {
+                icon_button(ui, PresetIcon::AutoBalance, &t!("props.grade_auto_balance"))
+            })
+            .inner
+            .on_hover_text(t!("props.grade_auto_balance_hint"))
+            .on_disabled_hover_text(t!("props.grade_auto_balance_unavailable"))
+            .clicked();
     });
 
     ui.add_space(4.0);

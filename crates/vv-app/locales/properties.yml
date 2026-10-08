@@ -222,8 +222,12 @@ props.grade_auto_balance:
   it: "Bilanciamento auto"
 
 props.grade_auto_balance_hint:
-  en: "Moves the shadows, midtones and highlights wheels so that each range of the viewer's picture averages to a neutral grey. Click again to refine."
-  it: "Sposta le ruote di ombre, toni medi e alte luci perché ogni fascia dell'immagine nel viewer sia in media un grigio neutro. Clicca di nuovo per rifinire."
+  en: "Moves the shadows, midtones and highlights wheels so that the neutral surfaces of the clip at the playhead turn grey. What covers it on the tracks above is left out. Click again to refine."
+  it: "Sposta le ruote di ombre, toni medi e alte luci perché le superfici neutre della clip sotto la playhead diventino grigie. Ciò che la copre nelle tracce sopra è escluso. Clicca di nuovo per rifinire."
+
+props.grade_auto_balance_unavailable:
+  en: "Select a single clip and put the playhead on it"
+  it: "Seleziona una sola clip e porta la playhead su di essa"
 
 props.grade_wheel_hint:
   en: "Drag to shift the color of this range. Shift for fine control, double-click to reset."

@@ -2173,9 +2173,10 @@ impl VenturiApp {
                                                             if ui.small_button(t!("color.open_window")).clicked() {
                                                                 self.settings.panels.color_window_open = true;
                                                             }
-                                                            let mut section = crate::grade_panel::grade_section(ui, &filter.grade, &filter.grade_keys);
+                                                            let can_balance = self.can_auto_balance(targets);
+                                                            let mut section = crate::grade_panel::grade_section(ui, &filter.grade, &filter.grade_keys, can_balance);
                                                             if section.auto_balance {
-                                                                self.balance_on_viewer(&mut section, &filter.grade);
+                                                                self.balance_isolated(&mut section, &filter.grade, targets[0]);
                                                             }
                                                             goto = goto.or(section.goto);
                                                             let tl = self.timeline_id.map(|id| &self.session.project.timelines[id]);

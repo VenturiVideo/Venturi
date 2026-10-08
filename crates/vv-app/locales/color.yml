@@ -36,10 +36,6 @@ color.open_window:
   en: "Open in the Color window"
   it: "Apri nella finestra Colore"
 
-color.isolated:
-  en: "Only %{track} shown · Color window"
-  it: "Solo %{track} visibile · finestra Colore"
-
-color.isolated_below:
-  en: "Tracks above %{track} hidden · Color window"
-  it: "Tracce sopra %{track} nascoste · finestra Colore"
+color.no_scope_source:
+  en: "Select a video clip and put the playhead on it"
+  it: "Seleziona una clip video e porta la playhead su di essa"

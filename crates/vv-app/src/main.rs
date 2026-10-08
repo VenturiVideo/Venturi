@@ -215,6 +215,21 @@ struct FilterPanelInfo {
     grade_keys: Vec<RowKeyframe>,
 }
 
+/// A clip's track composed by itself, for the auto balance: a
+/// picture-in-picture or a title over the clip would skew it. An adjustment
+/// layer keeps the tracks below, which it works on.
+#[derive(Debug, Clone, Copy)]
+struct Isolation {
+    track_index: usize,
+    keep_below: bool,
+}
+
+impl Isolation {
+    fn shows(self, track_index: usize) -> bool {
+        track_index == self.track_index || (self.keep_below && track_index < self.track_index)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ViewerFrameKind {
     Video,
@@ -260,17 +275,20 @@ struct VenturiApp {
     /// egui-wgpu device/queue, shared with the compositor: a texture from
     /// another device cannot be registered in egui. `None` in the tests.
     egui_render_state: Option<eframe::egui_wgpu::RenderState>,
-    /// The viewer's last composed frame, measured by the Color window's
-    /// scopes, and a counter bumped with each new one.
-    viewer_texture: Option<wgpu::Texture>,
-    viewer_generation: u64,
+    /// The clip the Color window edits, which its scopes measure while the
+    /// playhead is on it.
+    scope_target: Option<PanelTarget>,
+    /// That clip composed by itself (see `Isolation`): the stack, the frame
+    /// and the texture, reused while the stack renders the same; and a
+    /// counter bumped with each new composition.
+    scope_frame: Option<(
+        Vec<frame_provider::OwnedLayer>,
+        vv_render::OutputFrame,
+        vv_render::PooledTexture,
+    )>,
+    scope_generation: u64,
     /// Created the first time the Color window shows them.
     scopes: Option<vv_render::Scopes>,
-    /// While the Color window is open, the viewer shows only the track of
-    /// the clip being graded, so the scopes measure that clip and not a
-    /// picture-in-picture or a title over it. Preview only: the project's
-    /// tracks are untouched.
-    color_isolation: Option<color_window::Isolation>,
     scope_view: color_window::ScopeView,
     /// Video buffer of the media pool preview: a `RenderAhead` on a
     /// timeline with only the clip of the media, and the id of the media in there.
@@ -451,10 +469,10 @@ impl Default for VenturiApp {
             viewer_geometry: None,
             last_viewer_frame_kind: None,
             egui_render_state: None,
-            viewer_texture: None,
-            viewer_generation: 0,
+            scope_target: None,
+            scope_frame: None,
+            scope_generation: 0,
             scopes: None,
-            color_isolation: None,
             scope_view: color_window::ScopeView::default(),
             browsing_render_ahead: None,
             slip_viewer: None,
@@ -688,11 +706,9 @@ impl VenturiApp {
     }
 
     /// With "selection follows playhead" on, it selects the video clip under
-    /// the playhead and its group (nothing on a gap). Not while the Color
-    /// window is open: it would take the selection, and the isolation, off
-    /// the clip being graded to the topmost one.
+    /// the playhead and its group (nothing on a gap).
     fn sync_selection_to_playhead(&mut self) {
-        if !self.selection_follows_playhead || self.settings.panels.color_window_open {
+        if !self.selection_follows_playhead {
             return;
         }
         let Some((track_index, clip_id)) = self.active_video_clip_at(self.timeline_state.playhead)
@@ -1515,18 +1531,80 @@ impl VenturiApp {
         );
     }
 
-    /// Adds to `section` the wheel moves balancing the viewer's frame; nothing
-    /// without one (tests, nothing composed yet).
-    fn balance_on_viewer(
-        &self,
+    /// Whether the auto balance can measure `targets`: a single clip, under
+    /// the playhead, since it is composed there.
+    fn can_auto_balance(&self, targets: &[PanelTarget]) -> bool {
+        matches!(targets, [t] if self.isolation_at_playhead(t).is_some())
+    }
+
+    /// The isolation composing `target` by itself, if the playhead is on it.
+    fn isolation_at_playhead(&self, target: &PanelTarget) -> Option<Isolation> {
+        let clip = self.session.project.timelines[target.timeline]
+            .clip(target.track_index, target.clip_id)?;
+        clip.contains(self.timeline_state.playhead)
+            .then_some(Isolation {
+                track_index: target.track_index,
+                keep_below: clip.is_adjustment(),
+            })
+    }
+
+    /// Adds to `section` the wheel moves balancing `target` at the playhead,
+    /// composed apart from what covers it (see `Isolation`); nothing while
+    /// its frames are not decoded.
+    fn balance_isolated(
+        &mut self,
         section: &mut grade_panel::GradeSectionResponse,
         grade: &vv_core::GradeValue,
+        target: PanelTarget,
     ) {
-        if let Some(texture) = &self.viewer_texture {
-            let pixels =
-                self.compositor
-                    .read_rgba_texture(texture, texture.width(), texture.height());
-            grade_panel::balance_edits(section, grade, &pixels);
+        let Some(isolation) = self.isolation_at_playhead(&target) else {
+            return;
+        };
+        let Some(layers) = self.timeline_video_layers(Some(isolation)) else {
+            return;
+        };
+        let output = self.viewer_output(&layers);
+        let render_layers: Vec<vv_render::Layer> = layers
+            .iter()
+            .map(frame_provider::OwnedLayer::as_render)
+            .collect();
+        let texture = self
+            .compositor
+            .render_layers_to_texture(&render_layers, output);
+        let pixels = self
+            .compositor
+            .read_rgba_texture(&texture, texture.width(), texture.height());
+        grade_panel::balance_edits(section, grade, &pixels);
+    }
+
+    /// The frame the viewer composes `layers` into: at the resolution of the
+    /// largest decoded frame, widened to the aspect of the timeline so the
+    /// bars show without upscaling. With SolidColor clips only, at the
+    /// timeline's resolution; empty, a tiny black frame of its aspect.
+    fn viewer_output(&self, layers: &[frame_provider::OwnedLayer]) -> vv_render::OutputFrame {
+        let video_size = layers
+            .iter()
+            .filter_map(|l| match &l.content {
+                frame_provider::OwnedContent::Video { frame, .. } => {
+                    Some((frame.width, frame.height))
+                }
+                _ => None,
+            })
+            .reduce(|a, b| (a.0.max(b.0), a.1.max(b.1)));
+        let timeline_size = self
+            .timeline_id
+            .map(|id| self.session.project.timelines[id].resolution);
+        match video_size.or(timeline_size.filter(|_| !layers.is_empty())) {
+            Some(size) => {
+                let timeline_size = timeline_size.unwrap_or(size);
+                let (out_w, out_h) = vv_render::fit_output_size(size, timeline_size);
+                vv_render::OutputFrame::scaled(out_w, out_h, timeline_size)
+            }
+            None => {
+                let (w, h) = timeline_size.unwrap_or((16, 9));
+                let step = (w.max(h) / 64).max(1);
+                vv_render::OutputFrame::scaled((w / step).max(1), (h / step).max(1), (w, h))
+            }
         }
     }
 
@@ -1534,11 +1612,12 @@ impl VenturiApp {
     /// on the next frame. Only what changed (frame, scope or size) is redrawn.
     fn update_scopes(&mut self, ctx: &egui::Context) {
         if !self.settings.panels.color_window_open {
+            self.scope_frame = None;
             return;
         }
-        let (Some(render_state), Some(source)) =
-            (self.egui_render_state.clone(), self.viewer_texture.clone())
-        else {
+        let source = self.scope_source();
+        self.scope_view.has_source = source.is_some();
+        let (Some(render_state), Some(source)) = (self.egui_render_state.clone(), source) else {
             return;
         };
         let scopes = self.scopes.get_or_insert_with(|| {
@@ -1553,7 +1632,7 @@ impl VenturiApp {
                 continue;
             }
             let kind = self.settings.panels.color_scopes[slot];
-            let drawn = Some((kind, size, self.viewer_generation));
+            let drawn = Some((kind, size, self.scope_generation));
             if self.scope_view.drawn[slot] == drawn {
                 continue;
             }
@@ -1580,6 +1659,43 @@ impl VenturiApp {
         }
     }
 
+    /// What the scopes measure: `scope_target` composed by itself at the
+    /// playhead, recomposed only when its stack changes. While its frames are
+    /// not decoded, the last composition.
+    fn scope_source(&mut self) -> Option<wgpu::Texture> {
+        let Some(isolation) = self
+            .scope_target
+            .and_then(|t| self.isolation_at_playhead(&t))
+        else {
+            self.scope_frame = None;
+            return None;
+        };
+        let Some(layers) = self.timeline_video_layers(Some(isolation)) else {
+            return self.scope_frame.as_ref().map(|(.., t)| (**t).clone());
+        };
+        let output = self.viewer_output(&layers);
+        if let Some((shown, shown_output, texture)) = &self.scope_frame
+            && *shown_output == output
+            && frame_provider::renders_same(shown, &layers)
+        {
+            return Some((**texture).clone());
+        }
+        let render_layers: Vec<vv_render::Layer> = layers
+            .iter()
+            .map(frame_provider::OwnedLayer::as_render)
+            .collect();
+        // Owned: a pooled output would be drawn over by the viewer's next
+        // frame of the same size.
+        let texture = self
+            .compositor
+            .render_layers_to_owned_texture_transparent(&render_layers, output);
+        drop(render_layers);
+        let source = (*texture).clone();
+        self.scope_frame = Some((layers, output, texture));
+        self.scope_generation += 1;
+        Some(source)
+    }
+
     /// Undo, redo and opening a project change it too: checked before each
     /// composition rather than where it is set.
     fn sync_compositor_precision(&mut self) {
@@ -1587,6 +1703,7 @@ impl VenturiApp {
         if self.compositor.precision() != precision {
             self.compositor.set_precision(precision);
             self.viewer_content = None;
+            self.scope_frame = None;
         }
     }
 
@@ -1638,8 +1755,6 @@ impl VenturiApp {
             }
         }
         drop(renderer);
-        self.viewer_texture = Some(texture);
-        self.viewer_generation += 1;
         let (width, height) = output.timeline_size;
         self.video_display_size = Some(egui::vec2(width as f32, height as f32));
         self.last_viewer_frame_kind = Some(ViewerFrameKind::Video);
@@ -1657,12 +1772,12 @@ impl VenturiApp {
     /// buffer says it is caught up the missing frame will never arrive (media
     /// that does not decode): the layer is dropped instead of freezing the
     /// preview. During a crossing transition both halves must be ready.
-    fn timeline_video_layers(&mut self) -> Option<Vec<frame_provider::OwnedLayer>> {
+    /// With `isolation`, only the tracks it shows.
+    fn timeline_video_layers(
+        &mut self,
+        isolation: Option<Isolation>,
+    ) -> Option<Vec<frame_provider::OwnedLayer>> {
         self.sync_compositor_precision();
-        let isolation = self
-            .color_isolation
-            .as_ref()
-            .map(|i| (i.track_index, i.keep_below));
         let timeline = &self.session.project.timelines[self.timeline_id?];
         let still_filling = self
             .render_ahead
@@ -1673,9 +1788,7 @@ impl VenturiApp {
         let clips = timeline.active_video_clips_at(playhead);
         let mut layers = Vec::with_capacity(clips.len());
         for &(track_index, clip) in &clips {
-            if isolation.is_some_and(|(track, keep_below)| {
-                !color_window::Isolation::shows(track, keep_below, track_index)
-            }) {
+            if isolation.is_some_and(|i| !i.shows(track_index)) {
                 continue;
             }
             let frame = playhead.max(clip.timeline_start);
@@ -3777,18 +3890,10 @@ impl VenturiApp {
             }
         }
 
-        self.color_isolation = None;
         if self.settings.panels.color_window_open {
             let primary = video_targets.first().copied();
-            self.color_isolation = primary.and_then(|t| {
-                let timeline = &self.session.project.timelines[t.timeline];
-                let clip = timeline.clip(t.track_index, t.clip_id)?;
-                Some(color_window::Isolation {
-                    track_index: t.track_index,
-                    keep_below: clip.is_adjustment(),
-                    label: timeline.track_label(t.track_index),
-                })
-            });
+            let can_balance = self.can_auto_balance(&video_targets);
+            self.scope_target = primary;
             let grade = primary.map(|t| {
                 self.session.project.timelines[t.timeline]
                     .clip(t.track_index, t.clip_id)
@@ -3801,11 +3906,13 @@ impl VenturiApp {
                 &mut self.settings.panels.color_scopes,
                 &mut self.scope_view,
                 grade,
+                can_balance,
             );
-            if let (Some(section), Some(value)) = (&mut response.grade, grade_value)
+            if let (Some(section), Some(value), Some(t)) =
+                (&mut response.grade, grade_value, primary)
                 && section.auto_balance
             {
-                self.balance_on_viewer(section, &value);
+                self.balance_isolated(section, &value, t);
             }
             let tl = self
                 .timeline_id
@@ -3896,7 +4003,7 @@ impl VenturiApp {
             } else if media_offline || self.browsing_media.is_some() {
                 None
             } else {
-                self.timeline_video_layers()
+                self.timeline_video_layers(None)
             };
 
             if media_offline {
@@ -3920,48 +4027,8 @@ impl VenturiApp {
                     self.show_composited(vec![layer], output);
                 }
             } else if let Some(layers) = layers {
-                let video_size = layers
-                    .iter()
-                    .filter_map(|l| match &l.content {
-                        frame_provider::OwnedContent::Video { frame, .. } => {
-                            Some((frame.width, frame.height))
-                        }
-                        _ => None,
-                    })
-                    .reduce(|a, b| (a.0.max(b.0), a.1.max(b.1)));
-                let timeline_size = self
-                    .timeline_id
-                    .map(|id| self.session.project.timelines[id].resolution);
-                // With SolidColor clips only it composes at the resolution
-                // of the timeline.
-                let composite_size = video_size.or(timeline_size.filter(|_| !layers.is_empty()));
-
-                match composite_size {
-                    Some(size) => {
-                        // At the resolution of the decoded frame, widened to the aspect of the
-                        // timeline: the bars show without upscaling.
-                        let timeline_size = timeline_size.unwrap_or(size);
-                        let (out_w, out_h) = vv_render::fit_output_size(size, timeline_size);
-                        self.show_composited(
-                            layers,
-                            vv_render::OutputFrame::scaled(out_w, out_h, timeline_size),
-                        );
-                    }
-                    // Empty: black, not the last frame left. A tiny
-                    // texture with the aspect of the timeline is enough.
-                    None => {
-                        let (w, h) = timeline_size.unwrap_or((16, 9));
-                        let step = (w.max(h) / 64).max(1);
-                        self.show_composited(
-                            Vec::new(),
-                            vv_render::OutputFrame::scaled(
-                                (w / step).max(1),
-                                (h / step).max(1),
-                                (w, h),
-                            ),
-                        );
-                    }
-                }
+                let output = self.viewer_output(&layers);
+                self.show_composited(layers, output);
             }
 
             match self.last_viewer_frame_kind {
@@ -3983,11 +4050,6 @@ impl VenturiApp {
                         self.viewer_geometry = Some((area, tex_size));
                         viewer_area = Some(area);
                         viewer_rect = Some(rect);
-                        if let Some(isolation) = &self.color_isolation
-                            && self.browsing_media.is_none()
-                        {
-                            color_window::paint_isolation_notice(ui.painter(), area, isolation);
-                        }
                     }
                 }
                 Some(ViewerFrameKind::Offline) => {
