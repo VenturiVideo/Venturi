@@ -639,9 +639,8 @@ pub struct Compositor {
     /// A separate pool for the work textures (see `PooledTexture`): they go back
     /// there when whoever uses them lets them go, not at the end of the render.
     scratch: Arc<Mutex<Vec<wgpu::Texture>>>,
-    /// Known only for a headless device: with `new` the adapter stays with
-    /// whoever created the device.
-    adapter_name: Option<String>,
+    /// Name and backend.
+    adapter_name: String,
 }
 
 #[derive(Default)]
@@ -749,10 +748,10 @@ impl Compositor {
     ) -> Self {
         let float_work =
             float_work_supported(adapter.get_texture_format_features(PRECISE_WORK_FORMAT));
+        let info = adapter.get_info();
+        let adapter_name = format!("{} ({:?})", info.name, info.backend);
         if !float_work {
-            eprintln!(
-                "vv-render: {PRECISE_WORK_FORMAT:?} unsupported, composing in {OUTPUT_FORMAT:?}"
-            );
+            eprintln!("vv-render: {adapter_name} cannot compose in {PRECISE_WORK_FORMAT:?}");
         }
 
         // Three input textures (Y/U/V, bindings 0-2) instead of a single
@@ -875,7 +874,7 @@ impl Compositor {
             cache: None,
         });
 
-        Self {
+        let compositor = Self {
             device,
             queue,
             work,
@@ -887,12 +886,14 @@ impl Compositor {
             i420_pipeline,
             pool: Mutex::default(),
             scratch: Arc::default(),
-            adapter_name: None,
-        }
+            adapter_name,
+        };
+        compositor.log_work_format();
+        compositor
     }
 
-    pub fn adapter_name(&self) -> Option<&str> {
-        self.adapter_name.as_deref()
+    pub fn adapter_name(&self) -> &str {
+        &self.adapter_name
     }
 
     pub fn precision(&self) -> ProcessingPrecision {
@@ -911,6 +912,15 @@ impl Compositor {
             self.work = WorkPipelines::new(&self.device, &self.bind_group_layout, format);
             self.scratch.lock().unwrap().clear();
         }
+        self.log_work_format();
+    }
+
+    /// For the manual tests: which precision is actually in use, and where.
+    fn log_work_format(&self) {
+        eprintln!(
+            "vv-render: {:?} precision, composing in {:?} on {}",
+            self.precision, self.work.format, self.adapter_name
+        );
     }
 
     pub fn new_headless() -> Self {
@@ -937,10 +947,7 @@ impl Compositor {
                 .expect("wgpu device request failed");
             (adapter, device)
         });
-        Self {
-            adapter_name: Some(adapter.get_info().name),
-            ..Self::new(&adapter, Arc::new(device), Arc::new(queue), precision)
-        }
+        Self::new(&adapter, Arc::new(device), Arc::new(queue), precision)
     }
 
     /// Like `render_layers`, but dense I420 BT.709 limited: doing the conversion on

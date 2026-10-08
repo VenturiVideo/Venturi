@@ -354,7 +354,7 @@ pub fn export_timeline(
     {
         let mut p = progress.lock().unwrap();
         p.output_path = settings.output_path.clone();
-        p.compositor = compositor.adapter_name().map(str::to_owned);
+        p.compositor = Some(compositor.adapter_name().to_owned());
         p.encoder = Some(settings.video.codec);
     }
     let compositor = &compositor;
