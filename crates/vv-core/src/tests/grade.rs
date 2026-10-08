@@ -57,20 +57,6 @@ fn params_missing_from_a_file_load_neutral() {
 }
 
 #[test]
-fn positional_files_with_fewer_params_load_the_missing_ones_neutral() {
-    let tracks: GradeTracks =
-        ron::from_str("(params: [(keyframes: [], default: 0.25), (keyframes: [], default: -0.5)])")
-            .unwrap();
-    let value = tracks.value_at(0);
-    assert_eq!(value.get(GradeParam::ShadowsX), 0.25);
-    assert_eq!(value.get(GradeParam::ShadowsY), -0.5);
-    assert_eq!(
-        value.get(GradeParam::HighRange),
-        GradeParam::HighRange.neutral()
-    );
-}
-
-#[test]
 fn black_and_white_keeps_the_rest_of_the_grade() {
     let mut tracks = GradeTracks::default();
     tracks.track_mut(GradeParam::MidtonesX).default = 0.3;

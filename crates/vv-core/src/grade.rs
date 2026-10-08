@@ -468,27 +468,15 @@ impl<'de> Deserialize<'de> for GradeTracks {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
         struct Repr {
-            #[serde(default)]
             tracks: std::collections::HashMap<GradeParam, Keyframed<f32>>,
-            /// Positional, in the order of `ALL`: the first builds with
-            /// color correction.
-            #[serde(default)]
-            params: Vec<Keyframed<f32>>,
         }
-        let Repr {
-            mut tracks,
-            mut params,
-        } = Repr::deserialize(deserializer)?;
-        params.truncate(GradeParam::COUNT);
-        let mut params = params.into_iter();
+        let mut tracks = Repr::deserialize(deserializer)?.tracks;
         Ok(Self {
             params: GradeParam::ALL
                 .iter()
                 .map(|p| {
-                    let positional = params.next();
                     tracks
                         .remove(p)
-                        .or(positional)
                         .unwrap_or_else(|| Keyframed::constant(p.neutral()))
                 })
                 .collect(),
