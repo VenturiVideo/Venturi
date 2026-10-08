@@ -1,11 +1,10 @@
-//! The Color window: scopes of the viewer's frame above the color correction
-//! of the selected clip, a small "Color page".
+//! The Color window: scopes of the selected clip above its color
+//! correction, a small "Color page".
 
-use vv_core::{FrameIdx, GradeParam, GradeValue};
+use vv_core::FrameIdx;
 use vv_render::ScopeKind;
 
-use crate::grade_panel::GradeSectionResponse;
-use crate::properties_panel::RowKeyframe;
+use crate::grade_panel::{GradeInfo, GradeSectionResponse};
 
 /// The scopes as shown, and what the window asks of them for the next frame.
 #[derive(Default)]
@@ -21,13 +20,6 @@ pub(crate) struct ScopeView {
 /// What a scope texture holds: scope, pixel size and the viewer frame it
 /// measured (`VenturiApp::scope_generation`).
 pub(crate) type DrawnScope = (ScopeKind, (u32, u32), u64);
-
-/// The color correction of the clip the window edits, at the playhead.
-pub(crate) struct GradeInfo {
-    pub(crate) value: GradeValue,
-    /// One per `GradeParam`, in the order of `ALL`.
-    pub(crate) keys: Vec<RowKeyframe>,
-}
 
 /// What happened in the window this frame.
 #[derive(Default)]
@@ -139,12 +131,7 @@ pub(crate) fn show_color_window(
                         }
                     }
                     Some(Some(info)) => {
-                        let section = crate::grade_panel::grade_section(
-                            ui,
-                            &info.value,
-                            &info.keys,
-                            can_balance,
-                        );
+                        let section = crate::grade_panel::grade_section(ui, &info, can_balance);
                         response.goto = section.goto;
                         response.grade = Some(section);
                     }
@@ -248,11 +235,5 @@ fn graticule(painter: &egui::Painter, rect: egui::Rect, kind: ScopeKind) {
 pub(crate) fn grade_info(clip: &vv_core::Clip, frame: FrameIdx) -> Option<GradeInfo> {
     let filter = clip.effects.filters.iter().find(|f| f.kind.has_grade())?;
     let in_clip = |f: &FrameIdx| (clip.source_in()..clip.source_out()).contains(f);
-    Some(GradeInfo {
-        value: filter.grade.value_at(frame),
-        keys: GradeParam::ALL
-            .iter()
-            .map(|p| RowKeyframe::of(filter.grade.track(*p), frame, in_clip))
-            .collect(),
-    })
+    Some(GradeInfo::of(&filter.grade, frame, in_clip))
 }

@@ -417,16 +417,40 @@ fn icon_button(ui: &mut egui::Ui, icon: PresetIcon, label: &str) -> egui::Respon
     response
 }
 
-/// `keys` holds one `RowKeyframe` per `GradeParam`, in the order of `ALL`.
+/// A color correction at the panel's frame, as `grade_section` shows it.
+#[derive(Debug, Clone)]
+pub(crate) struct GradeInfo {
+    pub(crate) value: GradeValue,
+    /// One per `GradeParam`, in the order of `ALL`.
+    pub(crate) keys: Vec<RowKeyframe>,
+}
+
+impl GradeInfo {
+    /// `reachable`: the keyframe frames the arrows may go to.
+    pub(crate) fn of(
+        grade: &vv_core::GradeTracks,
+        frame: FrameIdx,
+        reachable: impl Fn(&FrameIdx) -> bool,
+    ) -> Self {
+        Self {
+            value: grade.value_at(frame),
+            keys: GradeParam::ALL
+                .iter()
+                .map(|p| RowKeyframe::of(grade.track(*p), frame, &reachable))
+                .collect(),
+        }
+    }
+}
+
 /// `can_balance`: a single clip is selected and the playhead is on it.
 pub(crate) fn grade_section(
     ui: &mut egui::Ui,
-    grade: &GradeValue,
-    keys: &[RowKeyframe],
+    info: &GradeInfo,
     can_balance: bool,
 ) -> GradeSectionResponse {
     let mut response = GradeSectionResponse::default();
-    let key = |param: GradeParam| keys[param.index()];
+    let grade = &info.value;
+    let key = |param: GradeParam| info.keys[param.index()];
 
     // Wrapped: in a narrow inspector a single row would widen it.
     ui.horizontal_wrapped(|ui| {

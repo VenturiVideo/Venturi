@@ -210,9 +210,7 @@ struct FilterPanelInfo {
     direction_key: RowKeyframe,
     amount: f32,
     amount_key: RowKeyframe,
-    grade: vv_core::GradeValue,
-    /// One per `GradeParam`, in the order of `ALL`.
-    grade_keys: Vec<RowKeyframe>,
+    grade: grade_panel::GradeInfo,
 }
 
 /// A clip's track composed by itself, for the auto balance: a

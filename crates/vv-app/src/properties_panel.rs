@@ -1454,11 +1454,7 @@ impl VenturiApp {
                     direction_key: RowKeyframe::of(&f.direction, frame, in_clip),
                     amount: f.amount.value_at(frame),
                     amount_key: RowKeyframe::of(&f.amount, frame, in_clip),
-                    grade: f.grade.value_at(frame),
-                    grade_keys: vv_core::GradeParam::ALL
-                        .iter()
-                        .map(|p| RowKeyframe::of(f.grade.track(*p), frame, in_clip))
-                        .collect(),
+                    grade: crate::grade_panel::GradeInfo::of(&f.grade, frame, in_clip),
                 })
                 .collect(),
             blend_mode: clip.effects.blend_mode,
@@ -2190,9 +2186,9 @@ impl VenturiApp {
                                                             ui.label(egui::RichText::new(t!("color.in_window")).weak());
                                                         } else {
                                                             let can_balance = self.can_auto_balance(targets);
-                                                            let mut section = crate::grade_panel::grade_section(ui, &filter.grade, &filter.grade_keys, can_balance);
+                                                            let mut section = crate::grade_panel::grade_section(ui, &filter.grade, can_balance);
                                                             if section.auto_balance {
-                                                                self.balance_isolated(&mut section, &filter.grade, targets[0]);
+                                                                self.balance_isolated(&mut section, &filter.grade.value, targets[0]);
                                                             }
                                                             goto = goto.or(section.goto);
                                                             let tl = self.timeline_id.map(|id| &self.session.project.timelines[id]);
