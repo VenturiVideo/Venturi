@@ -39,6 +39,16 @@ fn solid_i420(width: usize, height: usize, [y, u, v]: [u8; 3]) -> Vec<u8> {
     data
 }
 
+/// The I420 conversion dithers: a solid color off an 8-bit level comes out
+/// one level up or down.
+fn assert_i420_near(got: &[u8], expected: &[u8], context: &str) {
+    assert_eq!(got.len(), expected.len(), "{context}");
+    assert!(
+        got.iter().zip(expected).all(|(a, b)| a.abs_diff(*b) <= 1),
+        "{context}: {got:?} vs {expected:?}"
+    );
+}
+
 fn red() -> Rgba {
     Rgba {
         r: 1.0,
@@ -73,7 +83,7 @@ fn render_video_frame_returns_black_in_a_gap() {
     let compositor = vv_render::Compositor::new_headless();
     let mut active = StreamingFrameProvider::default();
     let frame = render_video_frame(&project, &tl, &compositor, &mut active, 0, (2, 2)).unwrap();
-    assert_eq!(frame, solid_i420(2, 2, BLACK_I420));
+    assert_i420_near(&frame, &solid_i420(2, 2, BLACK_I420), "frame");
 }
 
 #[test]
@@ -92,7 +102,7 @@ fn render_video_frame_reads_solid_color_at_the_clips_source_frame() {
     let compositor = vv_render::Compositor::new_headless();
     let mut active = StreamingFrameProvider::default();
     let frame = render_video_frame(&project, &tl, &compositor, &mut active, 12, (2, 2)).unwrap();
-    assert_eq!(frame, solid_i420(2, 2, RED_I420));
+    assert_i420_near(&frame, &solid_i420(2, 2, RED_I420), "frame");
 }
 
 /// A video clip inside the nested timeline of a compound clip must
@@ -159,17 +169,17 @@ fn render_video_frame_recurses_into_a_compound_clips_nested_timeline() {
     let mut provider = StreamingFrameProvider::default();
 
     let before = render_video_frame(&project, &tl, &compositor, &mut provider, 0, (2, 2)).unwrap();
-    assert_eq!(
-        before,
-        solid_i420(2, 2, BLACK_I420),
-        "before the compound clip: empty"
+    assert_i420_near(
+        &before,
+        &solid_i420(2, 2, BLACK_I420),
+        "before the compound clip: empty",
     );
 
     let during = render_video_frame(&project, &tl, &compositor, &mut provider, 7, (2, 2)).unwrap();
-    assert_eq!(
-        during,
-        solid_i420(2, 2, RED_I420),
-        "inside: the content of the nested timeline"
+    assert_i420_near(
+        &during,
+        &solid_i420(2, 2, RED_I420),
+        "inside: the content of the nested timeline",
     );
 }
 
@@ -257,10 +267,15 @@ fn render_video_frame_lets_the_track_below_show_through_the_compound_clips_empty
     let frame = render_video_frame(&project, &tl, &compositor, &mut provider, 0, (4, 2)).unwrap();
     // Y plane, one byte per pixel: left covered by the red of the
     // compound clip, right uncovered (the blue below must show).
-    assert_eq!(frame[0], RED_I420[0], "left: the red of the compound clip");
-    assert_eq!(
-        frame[3], BLUE_I420[0],
-        "right: the blue of the track below, not black"
+    assert_i420_near(
+        &frame[0..1],
+        &RED_I420[..1],
+        "left: the red of the compound clip",
+    );
+    assert_i420_near(
+        &frame[3..4],
+        &BLUE_I420[..1],
+        "right: the blue of the track below, not black",
     );
 }
 
@@ -367,8 +382,8 @@ fn render_video_frame_applies_the_transform_to_a_solid_color_clip() {
     let mut active = StreamingFrameProvider::default();
     let frame = render_video_frame(&project, &tl, &compositor, &mut active, 0, (4, 2)).unwrap();
     // First row of the Y plane.
-    assert_eq!(frame[0], RED_I420[0]);
-    assert_eq!(frame[3], BLACK_I420[0]);
+    assert_i420_near(&frame[0..=0], &RED_I420[..1], "pixel 0");
+    assert_i420_near(&frame[3..=3], &BLACK_I420[..1], "pixel 3");
 }
 
 /// A media missing from the pool is an `Err`, not a black frame.
@@ -450,17 +465,17 @@ fn render_video_frame_prefers_the_topmost_video_track() {
     let mut provider = StreamingFrameProvider::default();
 
     let below = render_video_frame(&project, &tl, &compositor, &mut provider, 5, (2, 2)).unwrap();
-    assert_eq!(
-        below,
-        solid_i420(2, 2, RED_I420),
-        "below the top track: the bottom one shows"
+    assert_i420_near(
+        &below,
+        &solid_i420(2, 2, RED_I420),
+        "below the top track: the bottom one shows",
     );
 
     let above = render_video_frame(&project, &tl, &compositor, &mut provider, 15, (2, 2)).unwrap();
-    assert_eq!(
-        above,
-        solid_i420(2, 2, BLUE_I420),
-        "the top track has a clip here: it wins"
+    assert_i420_near(
+        &above,
+        &solid_i420(2, 2, BLUE_I420),
+        "the top track has a clip here: it wins",
     );
 }
 

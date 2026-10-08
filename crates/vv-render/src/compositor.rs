@@ -11,7 +11,12 @@ use std::sync::{Arc, Mutex};
 use vv_core::{BlendMode, ColorMatrix, Transform};
 use wgpu::util::DeviceExt;
 
+/// What leaves the compositor (preview, readback): the work textures are
+/// resolved to it with dithering.
 const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+/// What the compositor composes into, so a chain of passes does not round to
+/// 8 bits at every step. See `work_format` for the fallback.
+const PRECISE_WORK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const BLACK: wgpu::Color = wgpu::Color {
     r: 0.0,
     g: 0.0,
@@ -517,13 +522,15 @@ pub struct Compositor {
     /// other than Normal (see `blend_shader_id`).
     blend_pipeline: wgpu::RenderPipeline,
     blur_pipeline: wgpu::RenderPipeline,
+    resolve_pipeline: wgpu::RenderPipeline,
+    work_format: wgpu::TextureFormat,
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     i420_pipeline: wgpu::ComputePipeline,
     /// Textures reused from one frame to the next, by size: allocating new
     /// ones on every frame costs more than the drawing itself.
     pool: Mutex<TexturePool>,
-    /// A separate pool for the intermediates (see `PooledTexture`): they go back
+    /// A separate pool for the work textures (see `PooledTexture`): they go back
     /// there when whoever uses them lets them go, not at the end of the render.
     scratch: Arc<Mutex<Vec<wgpu::Texture>>>,
     /// Known only for a headless device: with `new` the adapter stays with
@@ -534,6 +541,7 @@ pub struct Compositor {
 #[derive(Default)]
 struct TexturePool {
     planes: Vec<wgpu::Texture>,
+    /// Resolved, in `OUTPUT_FORMAT`.
     outputs: Vec<wgpu::Texture>,
     i420: Option<I420Buffers>,
 }
@@ -546,18 +554,10 @@ struct I420Buffers {
     readback: wgpu::Buffer,
 }
 
-/// Whether the output texture goes straight back into the frame pool or comes out as
-/// a `PooledTexture`, which puts it back when whoever uses it lets it go.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Recycle {
-    Immediately,
-    OnDrop,
-}
-
 /// An intermediate texture (the composed frame of a nested timeline) that
 /// returns to the pool by itself: while someone holds it as a layer no other
 /// render draws over it, and when they let it go it is available
-/// again, without reallocating 8 MB on every frame.
+/// again, without reallocating it on every frame.
 pub struct PooledTexture {
     texture: Option<wgpu::Texture>,
     pool: Arc<Mutex<Vec<wgpu::Texture>>>,
@@ -602,6 +602,22 @@ fn give_back(pool: &mut Vec<wgpu::Texture>, textures: impl IntoIterator<Item = w
     pool.drain(..excess);
 }
 
+/// `PRECISE_WORK_FORMAT` if the adapter can render, blend and filter it
+/// (`features` are its own), otherwise the 8-bit output format.
+fn work_format(features: wgpu::TextureFormatFeatures) -> wgpu::TextureFormat {
+    let needed =
+        wgpu::TextureFormatFeatureFlags::BLENDABLE | wgpu::TextureFormatFeatureFlags::FILTERABLE;
+    if features
+        .allowed_usages
+        .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+        && features.flags.contains(needed)
+    {
+        return PRECISE_WORK_FORMAT;
+    }
+    eprintln!("vv-render: {PRECISE_WORK_FORMAT:?} unsupported, composing in {OUTPUT_FORMAT:?}");
+    OUTPUT_FORMAT
+}
+
 /// wgpu refuses a device asking for more than the adapter offers, and the
 /// defaults exceed small GPUs (Raspberry Pi 4: 4 color attachments, 4096
 /// textures on GL).
@@ -614,7 +630,14 @@ pub fn device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
 }
 
 impl Compositor {
-    pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> Self {
+    /// `adapter`: the one `device` comes from, asked which work format it
+    /// supports.
+    pub fn new(
+        adapter: &wgpu::Adapter,
+        device: Arc<wgpu::Device>,
+        queue: Arc<wgpu::Queue>,
+    ) -> Self {
+        let work_format = work_format(adapter.get_texture_format_features(PRECISE_WORK_FORMAT));
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("vv-render transform shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/transform.wgsl").into()),
@@ -676,7 +699,7 @@ impl Compositor {
             immediate_size: 0,
         });
 
-        let transform_pipeline = |label, blend| {
+        let transform_pipeline = |label, blend, format| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&pipeline_layout),
@@ -690,7 +713,7 @@ impl Compositor {
                     module: &shader,
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: OUTPUT_FORMAT,
+                        format,
                         blend,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -710,9 +733,13 @@ impl Compositor {
         let pipeline = transform_pipeline(
             "vv-render transform pipeline",
             Some(wgpu::BlendState::ALPHA_BLENDING),
+            work_format,
         );
-        let blend_pipeline =
-            transform_pipeline("vv-render blend pipeline", Some(wgpu::BlendState::REPLACE));
+        let blend_pipeline = transform_pipeline(
+            "vv-render blend pipeline",
+            Some(wgpu::BlendState::REPLACE),
+            work_format,
+        );
 
         let blur_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("vv-render blur shader"),
@@ -729,6 +756,42 @@ impl Compositor {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &blur_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: work_format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let resolve_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("vv-render resolve shader"),
+            source: wgpu::ShaderSource::Wgsl(
+                concat!(
+                    include_str!("shaders/dither.wgsl"),
+                    include_str!("shaders/resolve.wgsl")
+                )
+                .into(),
+            ),
+        });
+        let resolve_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("vv-render resolve pipeline"),
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &resolve_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &resolve_shader,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: OUTPUT_FORMAT,
@@ -756,7 +819,13 @@ impl Compositor {
 
         let i420_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("vv-render rgba->i420 shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/rgba_to_i420.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                concat!(
+                    include_str!("shaders/dither.wgsl"),
+                    include_str!("shaders/rgba_to_i420.wgsl")
+                )
+                .into(),
+            ),
         });
         let i420_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("vv-render rgba->i420 pipeline"),
@@ -773,6 +842,8 @@ impl Compositor {
             pipeline,
             blend_pipeline,
             blur_pipeline,
+            resolve_pipeline,
+            work_format,
             bind_group_layout,
             sampler,
             i420_pipeline,
@@ -790,7 +861,7 @@ impl Compositor {
     /// use the compositor outside an eframe/egui-wgpu context — useful
     /// for the app today and for the tests.
     pub fn new_headless() -> Self {
-        let (adapter_name, (device, queue)) = pollster::block_on(async {
+        let (adapter, (device, queue)) = pollster::block_on(async {
             let instance = wgpu::Instance::default();
             let adapter = instance
                 .request_adapter(&wgpu::RequestAdapterOptions::default())
@@ -804,11 +875,11 @@ impl Compositor {
                 })
                 .await
                 .expect("wgpu device request failed");
-            (adapter.get_info().name, device)
+            (adapter, device)
         });
         Self {
-            adapter_name: Some(adapter_name),
-            ..Self::new(Arc::new(device), Arc::new(queue))
+            adapter_name: Some(adapter.get_info().name),
+            ..Self::new(&adapter, Arc::new(device), Arc::new(queue))
         }
     }
 
@@ -818,7 +889,8 @@ impl Compositor {
         const WORKGROUP: u32 = 256;
         const MAX_GROUPS_PER_DIM: u32 = 65535;
 
-        let output_texture = self.render_layers_to_texture(layers, output);
+        // Read in float, not resolved: the conversion dithers once, in YUV.
+        let work = self.compose(layers, output, BLACK);
         let (w, h) = (output.width, output.height);
         let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
         let len = (w * h + 2 * cw * ch) as usize;
@@ -861,7 +933,7 @@ impl Compositor {
         } = pool.i420.as_ref().unwrap();
         self.queue
             .write_buffer(params_buffer, 0, bytemuck::cast_slice(&params));
-        let texture_view = output_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let texture_view = work.create_view(&wgpu::TextureViewDescriptor::default());
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("vv-render i420 bind group"),
             layout: &self.i420_pipeline.get_bind_group_layout(0),
@@ -897,6 +969,7 @@ impl Compositor {
         }
         encoder.copy_buffer_to_buffer(storage, 0, readback, 0, buffer_size);
         self.queue.submit(Some(encoder.finish()));
+        give_back(&mut self.scratch.lock().unwrap(), [work]);
 
         self.map_read(readback, |data| data[..len].to_vec())
     }
@@ -963,7 +1036,7 @@ impl Compositor {
     /// (see [`Compositor::render_layers`]). Opaque black background: for the
     /// final video (preview, export) there is no "transparent".
     pub fn render_layers_to_texture(&self, layers: &[Layer], output: OutputFrame) -> wgpu::Texture {
-        self.render_layers_to_texture_with_clear(layers, output, BLACK, Recycle::Immediately)
+        self.render_resolved(layers, output, BLACK)
     }
 
     /// Like `render_layers_to_texture`, but without forcing an opaque background:
@@ -977,40 +1050,71 @@ impl Compositor {
         layers: &[Layer],
         output: OutputFrame,
     ) -> wgpu::Texture {
-        self.render_layers_to_texture_with_clear(layers, output, TRANSPARENT, Recycle::Immediately)
+        self.render_resolved(layers, output, TRANSPARENT)
     }
 
     /// Like `render_layers_to_texture_transparent`, but the texture stays with
     /// whoever receives it until they let it go, so it can be used in the meantime
     /// as a `LayerContent::Texture`: with immediate recycling the first render of the
-    /// same size would draw over it.
+    /// same size would draw over it. Not resolved: the work format keeps its
+    /// precision into the timeline that uses it.
     pub fn render_layers_to_owned_texture_transparent(
         &self,
         layers: &[Layer],
         output: OutputFrame,
     ) -> PooledTexture {
         PooledTexture {
-            texture: Some(self.render_layers_to_texture_with_clear(
-                layers,
-                output,
-                TRANSPARENT,
-                Recycle::OnDrop,
-            )),
+            texture: Some(self.compose(layers, output, TRANSPARENT)),
             pool: Arc::clone(&self.scratch),
         }
     }
 
-    fn render_layers_to_texture_with_clear(
+    fn render_resolved(
         &self,
         layers: &[Layer],
         output: OutputFrame,
         clear: wgpu::Color,
-        recycle: Recycle,
     ) -> wgpu::Texture {
-        let output_texture = match recycle {
-            Recycle::Immediately => self.output_texture(output.width, output.height),
-            Recycle::OnDrop => self.scratch_texture(output.width, output.height),
-        };
+        let work = self.compose(layers, output, clear);
+        let resolved = self.resolve(&work);
+        give_back(&mut self.scratch.lock().unwrap(), [work]);
+        resolved
+    }
+
+    /// `work` to a new `OUTPUT_FORMAT` texture, dithered.
+    fn resolve(&self, work: &wgpu::Texture) -> wgpu::Texture {
+        let output = self.output_texture(work.width(), work.height());
+        let work_view = work.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("vv-render resolve bind group"),
+            layout: &self.resolve_pipeline.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&work_view),
+            }],
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("vv-render resolve encoder"),
+            });
+        self.pass(
+            &mut encoder,
+            &output.create_view(&wgpu::TextureViewDescriptor::default()),
+            wgpu::LoadOp::Clear(TRANSPARENT),
+            Some((&bind_group, &self.resolve_pipeline)),
+        );
+        self.queue.submit(Some(encoder.finish()));
+        // A copy stays in the pool: the next frame of the same size draws
+        // over it, after the GPU has finished with this one (same queue).
+        give_back(&mut self.pool.lock().unwrap().outputs, [output.clone()]);
+        output
+    }
+
+    /// The stack composed into a work texture from the scratch pool, which
+    /// the caller gives back.
+    fn compose(&self, layers: &[Layer], output: OutputFrame, clear: wgpu::Color) -> wgpu::Texture {
+        let output_texture = self.scratch_texture(output.width, output.height);
         let output_view = output_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut planes = Vec::new();
         // Placeholder for the backdrop slot of the Normal layers, which do not
@@ -1250,12 +1354,6 @@ impl Compositor {
         let mut pool = self.pool.lock().unwrap();
         planes.push(no_backdrop);
         give_back(&mut pool.planes, planes);
-        if recycle == Recycle::Immediately {
-            // A copy stays in the pool: the next frame of the same
-            // size draws over it, after the GPU has finished with
-            // this one (same queue).
-            give_back(&mut pool.outputs, [output_texture.clone()]);
-        }
         output_texture
     }
 
@@ -1577,7 +1675,7 @@ impl Compositor {
 
     /// Like `layer_bind_group`, but the source is an already composed RGBA
     /// texture (`LayerContent::Texture`), letterboxed as if it were `fit_size`: it takes the Y plane slot — the layout
-    /// only asks for a filterable float 2D texture, and `Rgba8Unorm` satisfies
+    /// only asks for a filterable float 2D texture, and the work format satisfies
     /// it as much as `R8Unorm` — and the other slots take the 1x1
     /// placeholders, which with `Fill::Rgba` the shader does not sample (except the alpha,
     /// which must stay opaque). `adjustment_clear` = draw it as an adjustment
@@ -1743,17 +1841,17 @@ impl Compositor {
         texture
     }
 
-    /// Like `output_texture`, but from the intermediates pool (see
-    /// `PooledTexture`), separate because there a texture stays taken
-    /// until whoever uses it gives it back.
+    /// A work texture, from the scratch pool (see `PooledTexture`): separate
+    /// from `output_texture`'s because there a texture stays taken until
+    /// whoever uses it gives it back.
     fn scratch_texture(&self, output_w: u32, output_h: u32) -> wgpu::Texture {
         take_sized(
             &mut self.scratch.lock().unwrap(),
             output_w,
             output_h,
-            OUTPUT_FORMAT,
+            self.work_format,
         )
-        .unwrap_or_else(|| self.new_output_texture(output_w, output_h))
+        .unwrap_or_else(|| self.new_output_texture(output_w, output_h, self.work_format))
     }
 
     fn output_texture(&self, output_w: u32, output_h: u32) -> wgpu::Texture {
@@ -1765,10 +1863,15 @@ impl Compositor {
         ) {
             return texture;
         }
-        self.new_output_texture(output_w, output_h)
+        self.new_output_texture(output_w, output_h, OUTPUT_FORMAT)
     }
 
-    fn new_output_texture(&self, output_w: u32, output_h: u32) -> wgpu::Texture {
+    fn new_output_texture(
+        &self,
+        output_w: u32,
+        output_h: u32,
+        format: wgpu::TextureFormat,
+    ) -> wgpu::Texture {
         self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("vv-render output frame"),
             size: wgpu::Extent3d {
@@ -1779,7 +1882,7 @@ impl Compositor {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: OUTPUT_FORMAT,
+            format,
             // TEXTURE_BINDING is needed by the zero-copy path: egui-wgpu samples it.
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::COPY_SRC

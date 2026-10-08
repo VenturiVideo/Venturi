@@ -4028,6 +4028,7 @@ fn main() -> eframe::Result<()> {
             app.timeline_audio = Some(TimelineAudio::new());
             if let Some(render_state) = cc.wgpu_render_state.clone() {
                 app.compositor = vv_render::Compositor::new(
+                    &render_state.adapter,
                     std::sync::Arc::new(render_state.device.clone()),
                     std::sync::Arc::new(render_state.queue.clone()),
                 );

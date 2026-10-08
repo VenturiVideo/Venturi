@@ -21,8 +21,9 @@ fn luma(c: vec3<f32>) -> f32 {
     return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
 }
 
-fn to_byte(v: f32) -> u32 {
-    return u32(clamp(round(v), 0.0, 255.0));
+// `i`, the byte index, seeds the dither: each byte gets its own noise.
+fn to_byte(v: f32, i: u32) -> u32 {
+    return u32(clamp(dither_round(v, vec2<u32>(i, 0u)), 0.0, 255.0));
 }
 
 fn pixel(x: i32, y: i32) -> vec3<f32> {
@@ -33,7 +34,7 @@ fn pixel(x: i32, y: i32) -> vec3<f32> {
 fn byte_at(i: u32) -> u32 {
     let luma_len = params.width * params.height;
     if i < luma_len {
-        return to_byte(16.0 + 219.0 * luma(pixel(i32(i % params.width), i32(i / params.width))));
+        return to_byte(16.0 + 219.0 * luma(pixel(i32(i % params.width), i32(i / params.width))), i);
     }
     let chroma_len = params.chroma_width * params.chroma_height;
     var j = i - luma_len;
@@ -49,9 +50,9 @@ fn byte_at(i: u32) -> u32 {
     let c = (pixel(x, y) + pixel(x + 1, y) + pixel(x, y + 1) + pixel(x + 1, y + 1)) * 0.25;
     let l = luma(c);
     if is_v {
-        return to_byte(128.0 + 224.0 * (c.r - l) / 1.5748);
+        return to_byte(128.0 + 224.0 * (c.r - l) / 1.5748, i);
     }
-    return to_byte(128.0 + 224.0 * (c.b - l) / 1.8556);
+    return to_byte(128.0 + 224.0 * (c.b - l) / 1.8556, i);
 }
 
 @compute @workgroup_size(256)

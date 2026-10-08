@@ -865,10 +865,17 @@ fn an_owned_texture_is_not_recycled_by_the_next_render() {
         &[Layer::new(LayerContent::Solid(BLUE), Transform::default())],
         output,
     );
-    assert_eq!(
-        read_back(&compositor, &nested, 8, 8).as_chunks::<4>().0[0],
-        [255, 0, 0, 255]
+    let out = compositor.render_layers(
+        &[Layer::new(
+            LayerContent::Texture {
+                texture: &nested,
+                source_size: (8, 8),
+            },
+            Transform::default(),
+        )],
+        output,
     );
+    assert_eq!(out.as_chunks::<4>().0[0], [255, 0, 0, 255]);
 }
 
 const RED: vv_core::Rgba = vv_core::Rgba {
@@ -968,7 +975,11 @@ fn render_layers_i420_packs_dense_planes_for_odd_sizes() {
     let mut expected = vec![63u8; 15];
     expected.extend([102; 6]);
     expected.extend([240; 6]);
-    assert_eq!(out, expected);
+    assert_eq!(out.len(), expected.len());
+    assert!(
+        out.iter().zip(&expected).all(|(a, b)| a.abs_diff(*b) <= 1),
+        "{out:?}"
+    );
 }
 
 #[test]
@@ -1063,11 +1074,7 @@ fn a_videos_own_alpha_plane_lets_the_layer_below_show_through() {
         OutputFrame::exact(4, 4),
     );
     let px = |x: usize, y: usize| &out[(y * 4 + x) * 4..(y * 4 + x) * 4 + 4];
-    assert_eq!(
-        px(0, 0),
-        &[255, 255, 255, 255],
-        "left: the video shows, opaque"
-    );
+    assert_close_rgba(px(0, 0).try_into().unwrap(), [255, 255, 255, 255]);
     assert_eq!(
         px(3, 0),
         &[0, 0, 0, 255],
@@ -1601,7 +1608,10 @@ fn a_blur_spreads_only_along_its_direction() {
 #[test]
 fn gaussian_blur_is_a_symmetric_ramp_across_the_edge() {
     let row = render_blurred(&[blur(vv_core::FilterKind::GaussianBlur, 4.0)]);
-    assert!(row.windows(2).all(|w| w[0] <= w[1]), "{row:?}");
+    assert!(
+        row.windows(2).all(|w| w[0] <= w[1].saturating_add(1)),
+        "{row:?}"
+    );
     assert!(row[7] > 0 && row[7] < 128, "{row:?}");
     assert!((row[7] as i32 + row[8] as i32 - 255).abs() <= 2, "{row:?}");
 }
@@ -1885,4 +1895,137 @@ fn a_masked_adjustment_blurs_only_inside_the_mask() {
     let left_of_seam = at(pixels, 14, 8);
     assert!(left_of_seam[2] > 30, "blurred inside: {left_of_seam:?}");
     assert_close_rgba(at(pixels, 17, 8), [0, 0, 255, 255]);
+}
+
+fn exposure(stops: f32) -> [vv_core::FilterValue; 1] {
+    [vv_core::FilterValue {
+        amount: stops,
+        ..vv_core::FilterValue::new(vv_core::FilterKind::Exposure)
+    }]
+}
+
+/// 256x4, Y = x on every row (neutral chroma, full range).
+fn gradient_frame() -> OwnedYuvFrame {
+    let mut frame = solid_frame(256, 4, 0, 128, 128, ColorMatrix::Bt709, true);
+    for row in frame.y.chunks_mut(256) {
+        for (x, y) in row.iter_mut().enumerate() {
+            *y = x as u8;
+        }
+    }
+    frame
+}
+
+/// The green channel of the first row of the gradient, under
+/// Exposure `down` then an adjustment with Exposure `up`.
+fn render_pushed_gradient(compositor: &Compositor, down: f32, up: f32) -> Vec<u8> {
+    let frame = gradient_frame();
+    let (down, up) = (exposure(down), exposure(up));
+    let out = compositor.render_layers(
+        &[
+            Layer {
+                filters: &down,
+                ..Layer::new(
+                    LayerContent::Video {
+                        frame: frame.as_yuv_frame(),
+                        source_size: (256, 4),
+                    },
+                    Transform::default(),
+                )
+            },
+            adjustment(Transform::default(), 1.0, &up),
+        ],
+        OutputFrame::exact(256, 4),
+    );
+    out.as_chunks::<4>().0[..256].iter().map(|px| px[1]).collect()
+}
+
+/// Exposure −6 then +6 squeezes the gradient into about 40 levels in
+/// between: with 8-bit intermediates it would come back banded, each pixel
+/// up to 3 levels off.
+#[test]
+fn a_chain_of_passes_keeps_the_precision_of_the_gradient() {
+    let compositor = Compositor::new_headless();
+    let reference = render_pushed_gradient(&compositor, 0.0, 0.0);
+    let pushed = render_pushed_gradient(&compositor, -6.0, 6.0);
+    let levels = |row: &[u8]| row.iter().collect::<std::collections::BTreeSet<_>>().len();
+    assert!(
+        levels(&pushed) + 10 >= levels(&reference),
+        "{} levels out of {}",
+        levels(&pushed),
+        levels(&reference)
+    );
+    let worst = reference
+        .iter()
+        .zip(&pushed)
+        .map(|(a, b)| a.abs_diff(*b))
+        .max()
+        .unwrap();
+    assert!(worst <= 2, "{reference:?}\n{pushed:?}");
+}
+
+#[test]
+fn the_dither_is_the_same_on_every_render() {
+    let compositor = Compositor::new_headless();
+    assert_eq!(
+        render_pushed_gradient(&compositor, -6.0, 6.0),
+        render_pushed_gradient(&compositor, -6.0, 6.0)
+    );
+    let frame = gradient_frame();
+    let i420 = || {
+        compositor.render_layers_i420(
+            &[Layer::new(
+                LayerContent::Video {
+                    frame: frame.as_yuv_frame(),
+                    source_size: (256, 4),
+                },
+                Transform::default(),
+            )],
+            OutputFrame::exact(256, 4),
+        )
+    };
+    assert_eq!(i420(), i420());
+}
+
+/// Between two levels the dither spreads the pixels over both, in the
+/// proportion that keeps the mean; on a level it leaves them alone.
+#[test]
+fn the_dither_keeps_the_mean_of_a_flat_color() {
+    let compositor = Compositor::new_headless();
+    // Exact in f16, but not on an 8-bit level; then one on a level.
+    for v in [0.5f32, 0.25, 0.3125, 0.78125, 64.0 / 255.0] {
+        let level = v * 255.0;
+        let out = compositor.render_layers(
+            &[Layer::new(
+                LayerContent::Solid(vv_core::Rgba::from([v, v, v, 1.0])),
+                Transform::default(),
+            )],
+            OutputFrame::exact(64, 64),
+        );
+        let pixels = out.as_chunks::<4>().0;
+        let mean = pixels.iter().map(|px| px[0] as f32).sum::<f32>() / pixels.len() as f32;
+        assert!((mean - level).abs() < 0.05, "{level}: mean {mean}");
+        assert!(
+            pixels.iter().all(|px| (px[0] as f32 - level).abs() <= 1.5),
+            "{level}: no wider than the triangular noise"
+        );
+        assert!(pixels.iter().all(|px| px[3] == 255), "alpha is not dithered");
+    }
+}
+
+#[test]
+fn the_work_format_falls_back_to_8_bits_without_float_rendering() {
+    use wgpu::{TextureFormatFeatureFlags as Flags, TextureUsages as Usages};
+    let features = |allowed_usages, flags| wgpu::TextureFormatFeatures {
+        allowed_usages,
+        flags,
+    };
+    let all = Flags::BLENDABLE | Flags::FILTERABLE;
+    let usages = Usages::RENDER_ATTACHMENT | Usages::TEXTURE_BINDING;
+    assert_eq!(work_format(features(usages, all)), PRECISE_WORK_FORMAT);
+    assert_eq!(
+        work_format(features(Usages::TEXTURE_BINDING, all)),
+        OUTPUT_FORMAT
+    );
+    assert_eq!(work_format(features(usages, Flags::FILTERABLE)), OUTPUT_FORMAT);
+    assert_eq!(work_format(features(usages, Flags::BLENDABLE)), OUTPUT_FORMAT);
 }
