@@ -17,7 +17,7 @@ use vv_audio::mixer::{
 };
 
 use crate::frame_provider::{
-    FrameProvider, GpuCompounds, OwnedLayer, media_source_frame, track_layers_at,
+    FrameProvider, GpuCompounds, OwnedLayer, clips_decoded_at, media_source_frame, track_layers_at,
 };
 
 pub(crate) const PROJECT_CHANNELS: u16 = 2;
@@ -506,17 +506,9 @@ fn decode_video_frame(
     resolution: (u32, u32),
 ) -> Result<Vec<OwnedLayer>, ExportError> {
     let clips = timeline.active_video_clips_at(frame);
-    // In addition to the "naturally" active clips, the other half of a
-    // crossing transition in progress too: `track_layers_at` decodes it as well,
-    // otherwise `retain_clips` would close it on every frame as soon as it is opened.
-    let mut keep: Vec<ClipId> = clips.iter().map(|(_, c)| c.id).collect();
-    for &(track_index, _) in &clips {
-        if let Some((left, right, _)) = timeline.tracks[track_index].crossing_at(frame) {
-            keep.push(left.id);
-            keep.push(right.id);
-        }
-    }
-    provider.retain_clips(&keep);
+    // Every clip `track_layers_at` decodes, or `retain_clips` would close its
+    // decoder and reopen it on the next frame.
+    provider.retain_clips(&clips_decoded_at(project, timeline, frame));
     let mut gpu = GpuCompounds::new(provider, compositor);
     let mut layers = Vec::with_capacity(clips.len());
     for (track_index, clip) in clips {

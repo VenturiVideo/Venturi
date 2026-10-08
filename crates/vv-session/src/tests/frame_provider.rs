@@ -472,3 +472,49 @@ fn a_nan_parameter_never_renders_the_same() {
     let layer = || video_layer(frame.clone(), f32::NAN);
     assert!(!renders_same(&[layer()], &[layer()]));
 }
+
+/// The export closes the decoders of the clips not in this list: those inside
+/// a compound clip must be in it, or they reopen and seek on every frame.
+#[test]
+fn the_clips_decoded_at_a_frame_include_those_of_the_nested_timelines() {
+    let mut project = Project::default();
+    let nested_id = project.timelines.insert(Timeline {
+        name: "Nested".into(),
+        fps: Rational::new(25, 1),
+        resolution: (4, 4),
+        tracks: vec![video_track(vec![
+            solid_clip(1, 0, 5, [1.0, 1.0]),
+            solid_clip(2, 5, 5, [1.0, 1.0]),
+        ])],
+        markers: Vec::new(),
+        master: Default::default(),
+    });
+    let compound_media = project
+        .media_pool
+        .insert(compound_media_item(nested_id, (4, 4), 10));
+    let outer = Timeline {
+        name: "Outer".into(),
+        fps: Rational::new(25, 1),
+        resolution: (4, 4),
+        tracks: vec![video_track(vec![Clip::from_source_range(
+            ClipId(3),
+            ClipSource::Media(compound_media),
+            0,
+            10,
+            20,
+            Rational::one(),
+        )])],
+        markers: Vec::new(),
+        master: Default::default(),
+    };
+
+    assert_eq!(clips_decoded_at(&project, &outer, 5), Vec::new());
+    assert_eq!(
+        clips_decoded_at(&project, &outer, 22),
+        vec![ClipId(3), ClipId(1)]
+    );
+    assert_eq!(
+        clips_decoded_at(&project, &outer, 27),
+        vec![ClipId(3), ClipId(2)]
+    );
+}
