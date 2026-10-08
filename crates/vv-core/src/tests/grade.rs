@@ -220,11 +220,13 @@ fn solve_finds_the_exact_moves() {
         vec![1.0, 3.0, 1.0],
         vec![0.0, 1.0, 2.0],
     ];
-    let x = solve(matrix, vec![3.0, 5.0, 3.0]).unwrap();
-    for v in x {
-        assert!((v - 1.0).abs() < 1e-9);
+    // Solutions 1 and -2 everywhere: the two columns are solved at once.
+    let x = solve(matrix, vec![[3.0, -6.0], [5.0, -10.0], [3.0, -6.0]]).unwrap();
+    for [a, b] in x {
+        assert!((a - 1.0).abs() < 1e-9 && (b + 2.0).abs() < 1e-9);
     }
-    assert!(solve(vec![vec![1.0, 2.0], vec![2.0, 4.0]], vec![1.0, 2.0]).is_none());
+    let singular = vec![vec![1.0, 2.0], vec![2.0, 4.0]];
+    assert!(solve(singular, vec![[1.0, 0.0], [2.0, 0.0]]).is_none());
 }
 
 /// A warm grey wall behind a large orange shirt: the wall turns grey, and

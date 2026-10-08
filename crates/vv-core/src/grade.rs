@@ -331,82 +331,87 @@ pub fn auto_balance(grade: &GradeValue, pixels: impl Iterator<Item = [f32; 3]>) 
             }
         }
     }
-    let neutral = |s: &Sample, casts: &[[f32; 2]; 3]| {
-        let expected =
-            [0, 1].map(|axis| (0..3).map(|r| s.weights[r] * casts[r][axis]).sum::<f32>());
-        let d = [s.chroma[0] - expected[0], s.chroma[1] - expected[1]];
-        d[0] * d[0] + d[1] * d[1] < NEUTRAL * NEUTRAL
+    // Per range r, over the pixels neutral around `casts`: Σ w_r, Σ w_r·Cb,
+    // Σ w_r·Cr, and how much a move of each wheel t shows in it:
+    // Σ w_r·w_t·saturation.
+    struct Sums {
+        weight: [f64; 3],
+        chroma: [[f64; 2]; 3],
+        effect: [[f64; 3]; 3],
+    }
+    let sums_around = |casts: &[[f32; 2]; 3]| {
+        let mut sums = Sums {
+            weight: [0.0; 3],
+            chroma: [[0.0; 2]; 3],
+            effect: [[0.0; 3]; 3],
+        };
+        for s in &samples {
+            let expected =
+                [0, 1].map(|axis| (0..3).map(|r| s.weights[r] * casts[r][axis]).sum::<f32>());
+            let d = [s.chroma[0] - expected[0], s.chroma[1] - expected[1]];
+            if d[0] * d[0] + d[1] * d[1] >= NEUTRAL * NEUTRAL {
+                continue;
+            }
+            let w = s.weights.map(f64::from);
+            for r in 0..3 {
+                sums.weight[r] += w[r];
+                for axis in 0..2 {
+                    sums.chroma[r][axis] += w[r] * s.chroma[axis] as f64;
+                }
+                for t in 0..3 {
+                    sums.effect[r][t] += w[r] * w[t] * s.saturation as f64;
+                }
+            }
+        }
+        sums
     };
     for _ in 0..2 {
-        let mut sums = [[0.0f64; 3]; 3];
-        for s in samples.iter().filter(|s| neutral(s, &casts)) {
-            for (r, sum) in sums.iter_mut().enumerate() {
-                let w = s.weights[r] as f64;
-                sum[0] += w * s.chroma[0] as f64;
-                sum[1] += w * s.chroma[1] as f64;
-                sum[2] += w;
-            }
-        }
-        for (cast, sum) in casts.iter_mut().zip(sums) {
-            if sum[2] >= 1.0 {
-                *cast = [(sum[0] / sum[2]) as f32, (sum[1] / sum[2]) as f32];
+        let sums = sums_around(&casts);
+        for (r, cast) in casts.iter_mut().enumerate() {
+            if sums.weight[r] >= 1.0 {
+                *cast = sums.chroma[r].map(|c| (c / sums.weight[r]) as f32);
             }
         }
     }
+    let Sums {
+        weight,
+        chroma,
+        effect,
+    } = sums_around(&casts);
 
-    // Per range r, over the neutral pixels: Σ w_r, Σ w_r·Cb, Σ w_r·Cr, and
-    // how much a move of each wheel s shows in it: Σ w_r·w_s·saturation.
-    let mut weight = [0.0f64; 3];
-    let mut chroma = [[0.0f64; 2]; 3];
-    let mut effect = [[0.0f64; 3]; 3];
-    for s in samples.iter().filter(|s| neutral(s, &casts)) {
-        let w = s.weights.map(|w| w as f64);
-        for r in 0..3 {
-            weight[r] += w[r];
-            chroma[r][0] += w[r] * s.chroma[0] as f64;
-            chroma[r][1] += w[r] * s.chroma[1] as f64;
-            for t in 0..3 {
-                effect[r][t] += w[r] * w[t] * s.saturation as f64;
-            }
-        }
-    }
     // Ranges with (almost) no neutral pixels, or desaturated, are left alone.
     let solved: Vec<usize> = (0..3)
         .filter(|&r| weight[r] >= 1.0 && effect[r][r] / weight[r] >= 0.01)
         .collect();
-    let mut balanced = *grade;
     if solved.is_empty() {
-        return balanced;
+        return *grade;
     }
     let matrix: Vec<Vec<f64>> = solved
         .iter()
         .map(|&r| solved.iter().map(|&t| effect[r][t] / weight[r]).collect())
         .collect();
-    for component in 0..2 {
-        let target: Vec<f64> = solved
-            .iter()
-            .map(|&r| -chroma[r][component] / weight[r])
-            .collect();
-        let Some(moves) = solve(matrix.clone(), target) else {
-            return *grade;
-        };
-        for (&r, delta) in solved.iter().zip(moves) {
-            let wheel = RANGES[r];
-            let [cb, cr] = wheel_chroma(balanced.get(wheel.x()), balanced.get(wheel.y()));
-            let mut current = [cb, cr];
-            current[component] += delta as f32;
-            // Out of the wheel's reach, `wheel_for_chroma` stops at its edge.
-            let (x, y) = wheel_for_chroma(current);
-            balanced.set(wheel.x(), x);
-            balanced.set(wheel.y(), y);
-        }
+    let targets = solved
+        .iter()
+        .map(|&r| chroma[r].map(|c| -c / weight[r]))
+        .collect();
+    let Some(moves) = solve(matrix, targets) else {
+        return *grade;
+    };
+    let mut balanced = *grade;
+    for (&r, [cb_move, cr_move]) in solved.iter().zip(moves) {
+        let wheel = RANGES[r];
+        let [cb, cr] = wheel_chroma(grade.get(wheel.x()), grade.get(wheel.y()));
+        // Out of the wheel's reach, `wheel_for_chroma` stops at its edge.
+        let (x, y) = wheel_for_chroma([cb + cb_move as f32, cr + cr_move as f32]);
+        balanced.set(wheel.x(), x);
+        balanced.set(wheel.y(), y);
     }
     balanced
 }
 
-/// `matrix · x = target` by Gaussian elimination with partial pivoting;
-/// `None` if singular.
-fn solve(mut matrix: Vec<Vec<f64>>, mut target: Vec<f64>) -> Option<Vec<f64>> {
+/// `matrix · x = target` for both columns of `target`, by Gaussian
+/// elimination with partial pivoting; `None` if singular.
+fn solve(mut matrix: Vec<Vec<f64>>, mut target: Vec<[f64; 2]>) -> Option<Vec<[f64; 2]>> {
     let n = target.len();
     for col in 0..n {
         let pivot =
@@ -418,17 +423,22 @@ fn solve(mut matrix: Vec<Vec<f64>>, mut target: Vec<f64>) -> Option<Vec<f64>> {
         target.swap(col, pivot);
         for row in col + 1..n {
             let factor = matrix[row][col] / matrix[col][col];
-            let pivot_row = matrix[col].clone();
-            for (cell, pivot) in matrix[row].iter_mut().zip(pivot_row).skip(col) {
+            let (upper, lower) = matrix.split_at_mut(row);
+            for (cell, pivot) in lower[0].iter_mut().zip(&upper[col]).skip(col) {
                 *cell -= factor * pivot;
             }
-            target[row] -= factor * target[col];
+            let pivot_target = target[col];
+            for (value, pivot) in target[row].iter_mut().zip(pivot_target) {
+                *value -= factor * pivot;
+            }
         }
     }
-    let mut x = vec![0.0; n];
+    let mut x = vec![[0.0; 2]; n];
     for row in (0..n).rev() {
-        let rest: f64 = (row + 1..n).map(|k| matrix[row][k] * x[k]).sum();
-        x[row] = (target[row] - rest) / matrix[row][row];
+        x[row] = [0, 1].map(|k| {
+            let rest: f64 = (row + 1..n).map(|j| matrix[row][j] * x[j][k]).sum();
+            (target[row][k] - rest) / matrix[row][row]
+        });
     }
     Some(x)
 }
