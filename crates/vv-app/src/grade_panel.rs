@@ -59,7 +59,8 @@ fn hue_at(angle: f32) -> egui::Color32 {
 }
 
 /// A color wheel: the puck at `(x, y)` in the unit disc (Y up), dragged
-/// relative to where it is, finer with Shift. `true` if it moved; a double
+/// relative to where it is, finer with Shift. The pointer is locked and
+/// hidden meanwhile, so only the puck moves. `true` if it moved; a double
 /// click asks for a reset.
 fn wheel(
     ui: &mut egui::Ui,
@@ -104,16 +105,33 @@ fn wheel(
         faint,
     );
 
+    // Pointer travel from the center to the edge, in radii.
+    const TRAVEL: f32 = 2.5;
+    if response.drag_started() {
+        ui.ctx()
+            .send_viewport_cmd(egui::ViewportCommand::CursorGrab(
+                egui::viewport::CursorGrab::Locked,
+            ));
+        ui.ctx()
+            .send_viewport_cmd(egui::ViewportCommand::CursorVisible(false));
+    }
+    if response.drag_stopped() {
+        ui.ctx()
+            .send_viewport_cmd(egui::ViewportCommand::CursorGrab(
+                egui::viewport::CursorGrab::None,
+            ));
+        ui.ctx()
+            .send_viewport_cmd(egui::ViewportCommand::CursorVisible(true));
+    }
     let mut changed = false;
     if response.double_clicked() {
         *reset = true;
     } else if response.dragged() {
-        let fine = if ui.input(|i| i.modifiers.shift) {
-            0.2
-        } else {
-            1.0
-        };
-        let delta = response.drag_delta() / radius * fine;
+        ui.ctx().set_cursor_icon(egui::CursorIcon::None);
+        // Locked, the pointer reports only its motion (see `drag_field`).
+        let (motion, precise) = ui.input(|i| (i.pointer.motion(), i.modifiers.shift));
+        let fine = if precise { 0.2 } else { 1.0 };
+        let delta = motion.unwrap_or_default() / (radius * TRAVEL) * fine;
         let (mut nx, mut ny) = (*x + delta.x, *y - delta.y);
         let length = (nx * nx + ny * ny).sqrt();
         if length > 1.0 {
@@ -311,11 +329,13 @@ fn wheel_block(
         response.reset.extend([px, py]);
     }
 
-    for (param, label) in [
-        (wheel_kind.luma(), t!("props.grade_luminance_short")),
-        (wheel_kind.saturation(), t!("props.grade_saturation_short")),
-    ] {
-        ui.horizontal(|ui| {
+    ui.horizontal(|ui| {
+        // Narrow enough for both on one row of the narrowest block.
+        ui.spacing_mut().interact_size.x = 36.0;
+        for (param, label) in [
+            (wheel_kind.luma(), t!("props.grade_luminance_short")),
+            (wheel_kind.saturation(), t!("props.grade_saturation_short")),
+        ] {
             ui.label(label).on_hover_text(grade_param_label(param));
             let mut value = grade.get(param) as f64;
             let range = param.range();
@@ -324,13 +344,13 @@ fn wheel_block(
                 &mut value,
                 0.005,
                 (*range.start() as f64)..=(*range.end() as f64),
-                3,
+                2,
                 "",
             ) {
                 response.set(param, value as f32);
             }
-        });
-    }
+        }
+    });
 }
 
 fn scalar_row(

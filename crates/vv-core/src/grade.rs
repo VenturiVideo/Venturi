@@ -172,9 +172,12 @@ pub const WHEEL_LUMA_STRENGTH: f32 = 0.5;
 pub const LUMA_WEIGHTS: [f32; 3] = [0.2126, 0.7152, 0.0722];
 
 /// The color a puck at `(x, y)` adds, with no change in luma: X is Cb and Y
-/// is Cr, as on a vectorscope, so the wheel reads like one.
+/// is Cr, as on a vectorscope, so the wheel reads like one. The strength
+/// grows with the square of the distance from the center, for fine control
+/// where the small corrections are.
 pub fn chroma_shift(x: f32, y: f32) -> [f32; 3] {
-    let (cb, cr) = (x * WHEEL_CHROMA_STRENGTH, y * WHEEL_CHROMA_STRENGTH);
+    let gain = (x * x + y * y).sqrt() * WHEEL_CHROMA_STRENGTH;
+    let (cb, cr) = (x * gain, y * gain);
     [1.5748 * cr, -0.187_324 * cb - 0.468_124 * cr, 1.8556 * cb]
 }
 

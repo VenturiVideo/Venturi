@@ -64,3 +64,10 @@ fn a_chroma_shift_leaves_the_luma_unchanged() {
         assert!(shift.iter().any(|c| c.abs() > 0.1));
     }
 }
+
+#[test]
+fn the_chroma_shift_grows_with_the_square_of_the_distance() {
+    let edge = chroma_shift(0.0, 1.0)[0];
+    let half = chroma_shift(0.0, 0.5)[0];
+    assert!((half - edge / 4.0).abs() < 1e-6, "{half} vs {edge}");
+}
