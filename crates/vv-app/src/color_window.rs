@@ -16,6 +16,50 @@ pub(crate) struct ScopeView {
     pub(crate) drawn: [Option<DrawnScope>; 2],
 }
 
+/// What the viewer leaves out while the window is open, see
+/// `VenturiApp::color_isolation`.
+pub(crate) struct Isolation {
+    pub(crate) track_index: usize,
+    /// The clip is an adjustment layer: it works on what is below, so those
+    /// tracks stay and only the ones above go.
+    pub(crate) keep_below: bool,
+    pub(crate) label: String,
+}
+
+impl Isolation {
+    pub(crate) fn shows(track: usize, keep_below: bool, other: usize) -> bool {
+        other == track || (keep_below && other < track)
+    }
+}
+
+/// A small label in the viewer's corner while the isolation lasts.
+pub(crate) fn paint_isolation_notice(
+    painter: &egui::Painter,
+    area: egui::Rect,
+    isolation: &Isolation,
+) {
+    let text = if isolation.keep_below {
+        t!("color.isolated_below", track = isolation.label)
+    } else {
+        t!("color.isolated", track = isolation.label)
+    };
+    let galley = painter.layout_no_wrap(
+        text.into_owned(),
+        egui::FontId::proportional(12.0),
+        egui::Color32::from_white_alpha(220),
+    );
+    let rect = egui::Rect::from_min_size(
+        area.left_top() + egui::vec2(8.0, 8.0),
+        galley.size() + egui::vec2(12.0, 6.0),
+    );
+    painter.rect_filled(rect, 4.0, egui::Color32::from_black_alpha(150));
+    painter.galley(
+        rect.min + egui::vec2(6.0, 3.0),
+        galley,
+        egui::Color32::WHITE,
+    );
+}
+
 /// What a scope texture holds: scope, pixel size and the viewer frame it
 /// measured (`viewer_generation`).
 pub(crate) type DrawnScope = (ScopeKind, (u32, u32), u64);
@@ -243,3 +287,7 @@ pub(crate) fn grade_info(clip: &vv_core::Clip, frame: FrameIdx) -> Option<GradeI
             .collect(),
     })
 }
+
+#[cfg(test)]
+#[path = "tests/color_window.rs"]
+mod tests;

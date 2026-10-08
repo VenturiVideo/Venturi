@@ -266,6 +266,11 @@ struct VenturiApp {
     viewer_generation: u64,
     /// Created the first time the Color window shows them.
     scopes: Option<vv_render::Scopes>,
+    /// While the Color window is open, the viewer shows only the track of
+    /// the clip being graded, so the scopes measure that clip and not a
+    /// picture-in-picture or a title over it. Preview only: the project's
+    /// tracks are untouched.
+    color_isolation: Option<color_window::Isolation>,
     scope_view: color_window::ScopeView,
     /// Video buffer of the media pool preview: a `RenderAhead` on a
     /// timeline with only the clip of the media, and the id of the media in there.
@@ -449,6 +454,7 @@ impl Default for VenturiApp {
             viewer_texture: None,
             viewer_generation: 0,
             scopes: None,
+            color_isolation: None,
             scope_view: color_window::ScopeView::default(),
             browsing_render_ahead: None,
             slip_viewer: None,
@@ -1651,6 +1657,10 @@ impl VenturiApp {
     /// preview. During a crossing transition both halves must be ready.
     fn timeline_video_layers(&mut self) -> Option<Vec<frame_provider::OwnedLayer>> {
         self.sync_compositor_precision();
+        let isolation = self
+            .color_isolation
+            .as_ref()
+            .map(|i| (i.track_index, i.keep_below));
         let timeline = &self.session.project.timelines[self.timeline_id?];
         let still_filling = self
             .render_ahead
@@ -1661,6 +1671,11 @@ impl VenturiApp {
         let clips = timeline.active_video_clips_at(playhead);
         let mut layers = Vec::with_capacity(clips.len());
         for &(track_index, clip) in &clips {
+            if isolation.is_some_and(|(track, keep_below)| {
+                !color_window::Isolation::shows(track, keep_below, track_index)
+            }) {
+                continue;
+            }
             let frame = playhead.max(clip.timeline_start);
             let involved = match timeline.tracks[track_index].crossing_at(frame) {
                 Some((left, right, _)) if left.id == clip.id || right.id == clip.id => 2,
@@ -3760,8 +3775,18 @@ impl VenturiApp {
             }
         }
 
+        self.color_isolation = None;
         if self.settings.panels.color_window_open {
             let primary = video_targets.first().copied();
+            self.color_isolation = primary.and_then(|t| {
+                let timeline = &self.session.project.timelines[t.timeline];
+                let clip = timeline.clip(t.track_index, t.clip_id)?;
+                Some(color_window::Isolation {
+                    track_index: t.track_index,
+                    keep_below: clip.is_adjustment(),
+                    label: timeline.track_label(t.track_index),
+                })
+            });
             let grade = primary.map(|t| {
                 self.session.project.timelines[t.timeline]
                     .clip(t.track_index, t.clip_id)
@@ -3956,6 +3981,11 @@ impl VenturiApp {
                         self.viewer_geometry = Some((area, tex_size));
                         viewer_area = Some(area);
                         viewer_rect = Some(rect);
+                        if let Some(isolation) = &self.color_isolation
+                            && self.browsing_media.is_none()
+                        {
+                            color_window::paint_isolation_notice(ui.painter(), area, isolation);
+                        }
                     }
                 }
                 Some(ViewerFrameKind::Offline) => {
