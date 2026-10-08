@@ -211,52 +211,144 @@ pub fn range_weights(luma: f32, low: f32, high: f32) -> [f32; 3] {
     [shadows, 1.0 - shadows - highlights, highlights]
 }
 
-/// `grade` with the shadows, midtones and highlights wheels moved so that
-/// the mean color of each range of `pixels` (RGB 0–1, measured with `grade`
-/// already applied) becomes a neutral grey: gray world, per range. Clipped
-/// pixels do not count; a range without pixels keeps its wheel. Measured
-/// after the grade, it corrects what is left, so applying it again refines.
-pub fn auto_balance(grade: &GradeValue, pixels: impl Iterator<Item = [f32; 3]>) -> GradeValue {
-    const CLIPPED: f32 = 1.0 / 255.0;
-    let (low, high) = (
+fn luma(rgb: [f32; 3]) -> f32 {
+    rgb.iter().zip(LUMA_WEIGHTS).map(|(c, w)| c * w).sum()
+}
+
+/// `grade` applied to one pixel on the CPU: the same as `apply_grade` in
+/// transform.wgsl, which the compositor tests check it against.
+pub fn apply_grade(rgb: [f32; 3], grade: &GradeValue) -> [f32; 3] {
+    let [shadows, midtones, highlights] = range_weights(
+        luma(rgb),
         grade.get(GradeParam::LowRange),
         grade.get(GradeParam::HighRange),
     );
-    // Per range: weighted Cb, Cr and weight.
-    let mut sums = [[0.0f64; 3]; 3];
-    for rgb in pixels {
-        if rgb.iter().any(|c| *c <= CLIPPED || *c >= 1.0 - CLIPPED) {
-            continue;
-        }
-        let luma: f32 = rgb.iter().zip(LUMA_WEIGHTS).map(|(c, w)| c * w).sum();
-        let cb = (rgb[2] - luma) / 1.8556;
-        let cr = (rgb[0] - luma) / 1.5748;
-        for (sum, weight) in sums.iter_mut().zip(range_weights(luma, low, high)) {
-            sum[0] += (weight * cb) as f64;
-            sum[1] += (weight * cr) as f64;
-            sum[2] += weight as f64;
+    let weights = [shadows, midtones, highlights, 1.0];
+    let mut c = rgb;
+    for (wheel, weight) in GradeWheel::ALL.iter().zip(weights) {
+        let shift = grade.wheel_shift(*wheel);
+        for i in 0..3 {
+            c[i] += weight * shift[i];
         }
     }
-    let mut balanced = *grade;
-    let ranges = [
+    let saturation = (0..3)
+        .map(|i| weights[i] * grade.get(GradeWheel::ALL[i].saturation()))
+        .sum::<f32>()
+        * grade.get(GradeParam::Saturation);
+    let y = luma(c);
+    c.map(|v| (y + (v - y) * saturation).clamp(0.0, 1.0))
+}
+
+/// `grade` with the shadows, midtones and highlights wheels moved so that
+/// the mean color of each range of `pixels` (RGB 0–1, measured with `grade`
+/// already applied) becomes a neutral grey: gray world, per range. The
+/// ranges overlap, so a wheel also moves its neighbours' means: the three
+/// moves are solved together. Near-black and near-white pixels do not
+/// count; a range without pixels keeps its wheel. Measured after the grade,
+/// it corrects what is left, so applying it again refines what clipping and
+/// the wheels' reach leave.
+pub fn auto_balance(grade: &GradeValue, pixels: impl Iterator<Item = [f32; 3]>) -> GradeValue {
+    const CLIPPED: f32 = 1.0 / 255.0;
+    const RANGES: [GradeWheel; 3] = [
         GradeWheel::Shadows,
         GradeWheel::Midtones,
         GradeWheel::Highlights,
     ];
-    for (wheel, [cb, cr, weight]) in ranges.into_iter().zip(sums) {
-        // The saturation scales the chroma after the shift: what is measured
-        // is that much stronger than what the wheel must add.
-        let saturation = grade.get(wheel.saturation()) * grade.get(GradeParam::Saturation);
-        if weight < 1.0 || saturation < 0.05 {
+    let (low, high) = (
+        grade.get(GradeParam::LowRange),
+        grade.get(GradeParam::HighRange),
+    );
+    let saturations = RANGES.map(|w| grade.get(w.saturation()));
+    let global_saturation = grade.get(GradeParam::Saturation);
+    // Per range r: Σ w_r, Σ w_r·Cb, Σ w_r·Cr, and how much a move of each
+    // wheel s shows in it: Σ w_r·w_s·saturation.
+    let mut weight = [0.0f64; 3];
+    let mut chroma = [[0.0f64; 2]; 3];
+    let mut effect = [[0.0f64; 3]; 3];
+    for rgb in pixels {
+        let y = luma(rgb);
+        if y <= CLIPPED || y >= 1.0 - CLIPPED {
             continue;
         }
-        let residual = [(cb / weight) as f32, (cr / weight) as f32].map(|c| c / saturation);
-        let [x, y] = wheel_chroma(grade.get(wheel.x()), grade.get(wheel.y()));
-        let (x, y) = wheel_for_chroma([x - residual[0], y - residual[1]]);
-        balanced.set(wheel.x(), x);
-        balanced.set(wheel.y(), y);
+        let cb = ((rgb[2] - y) / 1.8556) as f64;
+        let cr = ((rgb[0] - y) / 1.5748) as f64;
+        let w = range_weights(y, low, high).map(|w| w as f64);
+        let saturation = w
+            .iter()
+            .zip(saturations)
+            .map(|(w, s)| w * s as f64)
+            .sum::<f64>()
+            * global_saturation as f64;
+        for r in 0..3 {
+            weight[r] += w[r];
+            chroma[r][0] += w[r] * cb;
+            chroma[r][1] += w[r] * cr;
+            for s in 0..3 {
+                effect[r][s] += w[r] * w[s] * saturation;
+            }
+        }
+    }
+    // Ranges with (almost) no pixels, or desaturated, are left alone.
+    let solved: Vec<usize> = (0..3)
+        .filter(|&r| weight[r] >= 1.0 && effect[r][r] / weight[r] >= 0.01)
+        .collect();
+    let mut balanced = *grade;
+    if solved.is_empty() {
+        return balanced;
+    }
+    let matrix: Vec<Vec<f64>> = solved
+        .iter()
+        .map(|&r| solved.iter().map(|&s| effect[r][s] / weight[r]).collect())
+        .collect();
+    for component in 0..2 {
+        let target: Vec<f64> = solved
+            .iter()
+            .map(|&r| -chroma[r][component] / weight[r])
+            .collect();
+        let Some(moves) = solve(matrix.clone(), target) else {
+            return *grade;
+        };
+        for (&r, delta) in solved.iter().zip(moves) {
+            let wheel = RANGES[r];
+            let [cb, cr] = wheel_chroma(balanced.get(wheel.x()), balanced.get(wheel.y()));
+            let mut current = [cb, cr];
+            current[component] += delta as f32;
+            // Out of the wheel's reach, `wheel_for_chroma` stops at its edge.
+            let (x, y) = wheel_for_chroma(current);
+            balanced.set(wheel.x(), x);
+            balanced.set(wheel.y(), y);
+        }
     }
     balanced
+}
+
+/// `matrix · x = target` by Gaussian elimination with partial pivoting;
+/// `None` if singular.
+fn solve(mut matrix: Vec<Vec<f64>>, mut target: Vec<f64>) -> Option<Vec<f64>> {
+    let n = target.len();
+    for col in 0..n {
+        let pivot =
+            (col..n).max_by(|&a, &b| matrix[a][col].abs().total_cmp(&matrix[b][col].abs()))?;
+        if matrix[pivot][col].abs() < 1e-9 {
+            return None;
+        }
+        matrix.swap(col, pivot);
+        target.swap(col, pivot);
+        for row in col + 1..n {
+            let factor = matrix[row][col] / matrix[col][col];
+            let pivot_row = matrix[col].clone();
+            for (cell, pivot) in matrix[row].iter_mut().zip(pivot_row).skip(col) {
+                *cell -= factor * pivot;
+            }
+            target[row] -= factor * target[col];
+        }
+    }
+    let mut x = vec![0.0; n];
+    for row in (0..n).rev() {
+        let rest: f64 = (row + 1..n).map(|k| matrix[row][k] * x[k]).sum();
+        x[row] = (target[row] - rest) / matrix[row][row];
+    }
+    Some(x)
 }
 
 impl GradeValue {

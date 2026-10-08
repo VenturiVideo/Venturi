@@ -124,12 +124,63 @@ fn auto_balance_cancels_a_cast_in_its_range() {
 }
 
 #[test]
-fn auto_balance_ignores_clipped_pixels_and_leaves_the_rest_alone() {
+fn auto_balance_ignores_black_and_white_pixels_and_leaves_the_rest_alone() {
     let pixels = (0..100)
-        .map(|_| [1.0, 1.0, 0.6])
-        .chain((0..100).map(|_| [0.0, 0.0, 0.2]));
+        .map(|_| [1.0, 1.0, 0.99])
+        .chain((0..100).map(|_| [0.0, 0.0, 0.03]));
     let mut grade = GradeValue::NEUTRAL;
     grade.set(GradeParam::OffsetX, 0.3);
     grade.set(GradeParam::MidtonesLuma, 0.2);
     assert_eq!(auto_balance(&grade, pixels), grade);
+}
+
+/// Each range's mean color after `grade`.
+fn range_means(pixels: &[[f32; 3]], grade: &GradeValue) -> [[f32; 3]; 3] {
+    let mut sums = [[0.0f64; 4]; 3];
+    for pixel in pixels {
+        let graded = apply_grade(*pixel, grade);
+        for (sum, w) in sums
+            .iter_mut()
+            .zip(range_weights(luma(graded), 1.0 / 3.0, 2.0 / 3.0))
+        {
+            for c in 0..3 {
+                sum[c] += (w * graded[c]) as f64;
+            }
+            sum[3] += w as f64;
+        }
+    }
+    sums.map(|s| [0, 1, 2].map(|c| (s[c] / s[3]) as f32))
+}
+
+/// A blue cast in the shadows, a warm one in the highlights: the ranges
+/// overlap, so balancing each on its own would overshoot its neighbours.
+#[test]
+fn auto_balance_neutralises_every_range_in_one_go() {
+    let pixels: Vec<[f32; 3]> = (8..248)
+        .map(|level| {
+            let v = level as f32 / 255.0;
+            let warmth = (v - 0.5) * 0.12;
+            [v + warmth, v, v - warmth]
+        })
+        .collect();
+    let balanced = auto_balance(&GradeValue::NEUTRAL, pixels.iter().copied());
+    for (range, mean) in range_means(&pixels, &balanced).iter().enumerate() {
+        let spread = mean.iter().cloned().fold(f32::MIN, f32::max)
+            - mean.iter().cloned().fold(f32::MAX, f32::min);
+        assert!(spread < 0.003, "range {range}: {mean:?}");
+    }
+}
+
+#[test]
+fn solve_finds_the_exact_moves() {
+    let matrix = vec![
+        vec![2.0, 1.0, 0.0],
+        vec![1.0, 3.0, 1.0],
+        vec![0.0, 1.0, 2.0],
+    ];
+    let x = solve(matrix, vec![3.0, 5.0, 3.0]).unwrap();
+    for v in x {
+        assert!((v - 1.0).abs() < 1e-9);
+    }
+    assert!(solve(vec![vec![1.0, 2.0], vec![2.0, 4.0]], vec![1.0, 2.0]).is_none());
 }

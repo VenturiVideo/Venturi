@@ -2098,31 +2098,6 @@ fn standard_precision_composes_like_high() {
     }
 }
 
-/// CPU mirror of `apply_grade` in transform.wgsl.
-fn grade_reference(rgb: [f32; 3], grade: &vv_core::GradeValue) -> [f32; 3] {
-    use vv_core::{GradeParam, GradeWheel, LUMA_WEIGHTS};
-    let luma = |c: [f32; 3]| c.iter().zip(LUMA_WEIGHTS).map(|(c, w)| c * w).sum::<f32>();
-    let [shadows, midtones, highlights] = vv_core::range_weights(
-        luma(rgb),
-        grade.get(GradeParam::LowRange),
-        grade.get(GradeParam::HighRange),
-    );
-    let weights = [shadows, midtones, highlights, 1.0];
-    let mut c = rgb;
-    for (wheel, weight) in GradeWheel::ALL.iter().zip(weights) {
-        let shift = grade.wheel_shift(*wheel);
-        for i in 0..3 {
-            c[i] += weight * shift[i];
-        }
-    }
-    let saturation = (0..3)
-        .map(|i| weights[i] * grade.get(GradeWheel::ALL[i].saturation()))
-        .sum::<f32>()
-        * grade.get(GradeParam::Saturation);
-    let y = luma(c);
-    c.map(|v| (y + (v - y) * saturation).clamp(0.0, 1.0))
-}
-
 fn render_graded(compositor: &Compositor, color: [f32; 3], grade: vv_core::GradeValue) -> [u8; 4] {
     let filters = [vv_core::FilterValue {
         grade,
@@ -2177,7 +2152,8 @@ fn the_color_correction_matches_its_reference_in_both_precisions() {
         for grade in &grades {
             for color in colors {
                 let got = render_graded(&compositor, color, *grade);
-                let expected = grade_reference(color, grade).map(|c| (c * 255.0).round() as u8);
+                let expected =
+                    vv_core::apply_grade(color, grade).map(|c| (c * 255.0).round() as u8);
                 assert!(
                     (0..3).all(|i| got[i].abs_diff(expected[i]) <= 2),
                     "{precision:?} {color:?} {grade:?}: {got:?} vs {expected:?}"
