@@ -31,6 +31,8 @@ struct TransformUniform {
     // (0 = empty slot); see `filter_shader_id` in compositor.rs, the only
     // place that knows which `FilterKind` each id corresponds to.
     filters: array<vec4<f32>, 2>,
+    // The scalar parameter of each slot of `filters`.
+    filter_params: array<vec4<f32>, 2>,
 };
 
 @group(0) @binding(0) var y_tex: texture_2d<f32>;
@@ -77,7 +79,8 @@ fn kr_kb(matrix_id: i32) -> vec2<f32> {
     return vec2<f32>(0.299, 0.114); // BT.601 (also the fallback for unhandled matrices)
 }
 
-// Slot `i` (0..8) inside the two vec4s of `TransformUniform.filters`: an
+// Slot `i` (0..8) inside the two vec4s of `TransformUniform.filters` (or
+// `filter_params`): an
 // array<vec4,2> cannot be indexed linearly in WGSL, it must be unpacked.
 fn filter_id_at(filters: array<vec4<f32>, 2>, i: i32) -> f32 {
     let group = filters[i / 4];
@@ -91,10 +94,15 @@ fn filter_id_at(filters: array<vec4<f32>, 2>, i: i32) -> f32 {
 // Applies a filter in sequence to `rgb`; the call order (see the
 // loop in `fs_main`) is the order chosen by the user. New per-pixel filters: a new
 // id (`filter_shader_id`) and a new branch here, nothing else in the pipeline.
-fn apply_filter(rgb: vec3<f32>, id: f32) -> vec3<f32> {
+fn apply_filter(rgb: vec3<f32>, id: f32, param: f32) -> vec3<f32> {
     if (id > 0.5 && id < 1.5) { // Grayscale
         let luma = dot(rgb, vec3<f32>(0.299, 0.587, 0.114));
         return vec3<f32>(luma, luma, luma);
+    }
+    if (id > 1.5 && id < 2.5) { // Exposure, `param` in stops
+        // Scaled in (approximately) linear light, as a camera would.
+        let linear = pow(rgb, vec3<f32>(2.2)) * exp2(param);
+        return clamp(pow(linear, vec3<f32>(1.0 / 2.2)), vec3<f32>(0.0), vec3<f32>(1.0));
     }
     return rgb;
 }
@@ -219,7 +227,7 @@ fn shade(in: VertexOutput) -> vec4<f32> {
     for (var slot = 0; slot < 8; slot = slot + 1) {
         let id = filter_id_at(transform.filters, slot);
         if (id > 0.5) {
-            rgb = apply_filter(rgb, id);
+            rgb = apply_filter(rgb, id, filter_id_at(transform.filter_params, slot));
         }
     }
     // 1x1 placeholder for a layer without real per-pixel coverage: it always

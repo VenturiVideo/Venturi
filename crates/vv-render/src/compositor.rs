@@ -157,6 +157,7 @@ const MAX_LAYER_FILTERS: usize = 8;
 fn filter_shader_id(kind: vv_core::FilterKind) -> f32 {
     match kind {
         vv_core::FilterKind::Grayscale => 1.0,
+        vv_core::FilterKind::Exposure => 2.0,
         vv_core::FilterKind::BoxBlur | vv_core::FilterKind::GaussianBlur => 0.0,
     }
 }
@@ -178,9 +179,9 @@ struct Blur {
 #[derive(Debug, Default, PartialEq)]
 struct FilterChain {
     /// Per-pixel filters before the first blur.
-    leading: Vec<vv_core::FilterKind>,
+    leading: Vec<vv_core::FilterValue>,
     /// Each blur with the per-pixel filters following it.
-    blurs: Vec<(Blur, Vec<vv_core::FilterKind>)>,
+    blurs: Vec<(Blur, Vec<vv_core::FilterValue>)>,
 }
 
 impl FilterChain {
@@ -199,8 +200,8 @@ impl FilterChain {
                 }
             } else {
                 match chain.blurs.last_mut() {
-                    Some((_, run)) => run.push(filter.kind),
-                    None => chain.leading.push(filter.kind),
+                    Some((_, run)) => run.push(*filter),
+                    None => chain.leading.push(*filter),
                 }
             }
         }
@@ -321,6 +322,8 @@ struct TransformUniform {
     /// `filter_shader_id`); 0 = empty slot. `MAX_LAYER_FILTERS` in two vec4s
     /// for the uniform alignment.
     filters: [[f32; 4]; MAX_LAYER_FILTERS / 4],
+    /// The scalar parameter of each slot of `filters` (`FilterValue::amount`).
+    filter_params: [[f32; 4]; MAX_LAYER_FILTERS / 4],
 }
 
 impl TransformUniform {
@@ -333,7 +336,7 @@ impl TransformUniform {
         source_size: (u32, u32),
         fill: Fill,
         opacity: f32,
-        filters: &[vv_core::FilterKind],
+        filters: &[vv_core::FilterValue],
         blend: BlendMode,
     ) -> Self {
         let (mode, solid) = match fill {
@@ -396,18 +399,24 @@ impl TransformUniform {
             }),
             extra: [opacity.clamp(0.0, 1.0), blend_shader_id(blend), 0.0, 0.0],
             planes: [0.0; 4],
-            filters: {
-                let mut ids = [0.0f32; MAX_LAYER_FILTERS];
-                for (slot, kind) in ids.iter_mut().zip(filters.iter().take(MAX_LAYER_FILTERS)) {
-                    *slot = filter_shader_id(*kind);
-                }
-                [
-                    [ids[0], ids[1], ids[2], ids[3]],
-                    [ids[4], ids[5], ids[6], ids[7]],
-                ]
-            },
+            filters: pack_filter_slots(filters, |f| filter_shader_id(f.kind)),
+            filter_params: pack_filter_slots(filters, |f| f.amount),
         }
     }
+}
+
+fn pack_filter_slots(
+    filters: &[vv_core::FilterValue],
+    value: impl Fn(&vv_core::FilterValue) -> f32,
+) -> [[f32; 4]; MAX_LAYER_FILTERS / 4] {
+    let mut slots = [0.0f32; MAX_LAYER_FILTERS];
+    for (slot, filter) in slots.iter_mut().zip(filters.iter().take(MAX_LAYER_FILTERS)) {
+        *slot = value(filter);
+    }
+    [
+        [slots[0], slots[1], slots[2], slots[3]],
+        [slots[4], slots[5], slots[6], slots[7]],
+    ]
 }
 
 pub struct Compositor {
@@ -1396,7 +1405,7 @@ impl Compositor {
         fit_size: (u32, u32),
         fill: Fill,
         opacity: f32,
-        filters: &[vv_core::FilterKind],
+        filters: &[vv_core::FilterValue],
         blend: BlendMode,
         backdrop: &wgpu::TextureView,
     ) -> wgpu::BindGroup {
@@ -1465,7 +1474,7 @@ impl Compositor {
         output: OutputFrame,
         source_size: (u32, u32),
         opacity: f32,
-        filters: &[vv_core::FilterKind],
+        filters: &[vv_core::FilterValue],
         blend: BlendMode,
         backdrop: &wgpu::TextureView,
         adjustment_clear: Option<wgpu::Color>,

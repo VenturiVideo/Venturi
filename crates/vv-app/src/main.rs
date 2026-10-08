@@ -204,6 +204,8 @@ struct FilterPanelInfo {
     radius_key: RowKeyframe,
     direction: vv_core::BlurDirection,
     direction_key: RowKeyframe,
+    amount: f32,
+    amount_key: RowKeyframe,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

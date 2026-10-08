@@ -1730,8 +1730,9 @@ impl TimelineDrag {
 /// (no ghost on the empty zones, no new tracks). The type shared
 /// with `EffectStack::filters` (`vv_core::FilterKind`) remains the single source
 /// of truth on "which filters exist": here only their label.
-pub const ALL_FILTER_KINDS: [vv_core::FilterKind; 3] = [
+pub const ALL_FILTER_KINDS: [vv_core::FilterKind; 4] = [
     vv_core::FilterKind::Grayscale,
+    vv_core::FilterKind::Exposure,
     vv_core::FilterKind::BoxBlur,
     vv_core::FilterKind::GaussianBlur,
 ];
@@ -1741,6 +1742,7 @@ pub fn filter_label(kind: vv_core::FilterKind) -> std::borrow::Cow<'static, str>
         vv_core::FilterKind::Grayscale => t!("filter.grayscale"),
         vv_core::FilterKind::BoxBlur => t!("filter.box_blur"),
         vv_core::FilterKind::GaussianBlur => t!("filter.gaussian_blur"),
+        vv_core::FilterKind::Exposure => t!("filter.exposure"),
     }
 }
 

@@ -2170,6 +2170,7 @@ pub enum KeyframeValue {
     /// Of the clip's filter of that kind (there is at most one per kind).
     FilterRadius(FilterKind, f32),
     FilterDirection(FilterKind, BlurDirection),
+    FilterAmount(FilterKind, f32),
 }
 
 /// Inserts or replaces a keyframe of an animatable parameter.
@@ -2248,6 +2249,7 @@ pub enum KeyframeTarget {
     Color,
     FilterRadius(FilterKind),
     FilterDirection(FilterKind),
+    FilterAmount(FilterKind),
 }
 
 impl KeyframeValue {
@@ -2258,6 +2260,7 @@ impl KeyframeValue {
             Self::Color(_) => KeyframeTarget::Color,
             Self::FilterRadius(kind, _) => KeyframeTarget::FilterRadius(kind),
             Self::FilterDirection(kind, _) => KeyframeTarget::FilterDirection(kind),
+            Self::FilterAmount(kind, _) => KeyframeTarget::FilterAmount(kind),
         }
     }
 }
@@ -2297,6 +2300,9 @@ fn take_keyframe(
         KeyframeTarget::FilterDirection(kind) => filter_mut(effects, kind)
             .and_then(|f| f.direction.remove_at(frame))
             .map(|(v, i)| (KeyframeValue::FilterDirection(kind, v), i)),
+        KeyframeTarget::FilterAmount(kind) => filter_mut(effects, kind)
+            .and_then(|f| f.amount.remove_at(frame))
+            .map(|(v, i)| (KeyframeValue::FilterAmount(kind, v), i)),
     }
 }
 
@@ -2329,6 +2335,11 @@ fn put_keyframe(
                 filter.direction.upsert(frame, v, interpolation);
             }
         }
+        KeyframeValue::FilterAmount(kind, v) => {
+            if let Some(filter) = filter_mut(effects, kind) {
+                filter.amount.upsert(frame, v, interpolation);
+            }
+        }
     }
 }
 
@@ -2353,6 +2364,9 @@ fn set_keyframe_interpolation(
         }
         KeyframeTarget::FilterDirection(kind) => filter_mut(effects, kind)
             .and_then(|f| f.direction.set_interpolation(frame, interpolation)),
+        KeyframeTarget::FilterAmount(kind) => {
+            filter_mut(effects, kind).and_then(|f| f.amount.set_interpolation(frame, interpolation))
+        }
     }
 }
 

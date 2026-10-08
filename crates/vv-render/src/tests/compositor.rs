@@ -655,6 +655,36 @@ fn grayscale_flattens_a_solid_layer_to_its_luma() {
 }
 
 #[test]
+fn exposure_scales_the_color_by_stops_in_linear_light() {
+    let compositor = Compositor::new_headless();
+    let grey = vv_core::Rgba {
+        r: 0.5,
+        g: 0.5,
+        b: 0.5,
+        a: 1.0,
+    };
+    let render = |stops: f32| {
+        let filters = [vv_core::FilterValue {
+            amount: stops,
+            ..vv_core::FilterValue::new(vv_core::FilterKind::Exposure)
+        }];
+        let out = compositor.render_layers(
+            &[Layer {
+                filters: &filters,
+                ..Layer::new(LayerContent::Solid(grey), Transform::default())
+            }],
+            OutputFrame::exact(4, 4),
+        );
+        out.as_chunks::<4>().0[0][0]
+    };
+    let expected = |stops: f32| (0.5f32.powf(2.2) * stops.exp2()).powf(1.0 / 2.2) * 255.0;
+    assert!((render(0.0) as f32 - 127.5).abs() <= 2.0);
+    assert!((render(-1.0) as f32 - expected(-1.0)).abs() <= 2.0);
+    assert!((render(1.0) as f32 - expected(1.0)).abs() <= 2.0);
+    assert_eq!(render(5.0), 255, "clipped to white");
+}
+
+#[test]
 fn a_text_layer_paints_its_color_only_where_the_glyphs_are() {
     let compositor = Compositor::new_headless();
     let title = vv_core::TitleParams {
@@ -1498,7 +1528,7 @@ fn filter_chain_splits_the_per_pixel_filters_at_the_blurs() {
         blur(GaussianBlur, 2.0),
     ];
     let chain = FilterChain::new(&filters, false);
-    assert_eq!(chain.leading, [Grayscale]);
+    assert_eq!(chain.leading, [vv_core::FilterValue::new(Grayscale)]);
     assert_eq!(
         chain.blurs,
         [
@@ -1508,7 +1538,7 @@ fn filter_chain_splits_the_per_pixel_filters_at_the_blurs() {
                     radius: 3.0,
                     direction: vv_core::BlurDirection::Both,
                 },
-                vec![Grayscale]
+                vec![vv_core::FilterValue::new(Grayscale)]
             ),
             (
                 Blur {
@@ -1523,7 +1553,7 @@ fn filter_chain_splits_the_per_pixel_filters_at_the_blurs() {
     );
 
     let uniform = FilterChain::new(&filters, true);
-    assert_eq!(uniform.leading, [Grayscale, Grayscale]);
+    assert_eq!(uniform.leading, [vv_core::FilterValue::new(Grayscale); 2]);
     assert!(uniform.blurs.is_empty(), "nothing to blur on a solid color");
 }
 

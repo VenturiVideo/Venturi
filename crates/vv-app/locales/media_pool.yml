@@ -91,6 +91,9 @@ filter.box_blur:
 filter.gaussian_blur:
   en: "Gaussian Blur"
   it: "Sfocatura gaussiana"
+filter.exposure:
+  en: "Exposure"
+  it: "Esposizione"
 
 pool.drag_to_clip:
   en: "Drag onto a video clip"

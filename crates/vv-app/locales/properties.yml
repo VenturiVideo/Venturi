@@ -165,6 +165,9 @@ props.corner_radius:
 props.blur_radius:
   en: "Radius"
   it: "Raggio"
+props.exposure_stops:
+  en: "Stops"
+  it: "Stop"
 
 props.blur_direction:
   en: "Direction"

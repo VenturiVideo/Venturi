@@ -488,6 +488,7 @@ fn merged_attributes(
                     .map(|f| vv_core::ClipFilter {
                         radius: remap.apply(&f.radius),
                         direction: remap.apply(&f.direction),
+                        amount: remap.apply(&f.amount),
                         ..f.clone()
                     })
                     .collect();
