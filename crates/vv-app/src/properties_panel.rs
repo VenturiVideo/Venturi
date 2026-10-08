@@ -2258,6 +2258,8 @@ impl VenturiApp {
                                                 let goto = section.goto.map(|f| clip.timeline_frame_at(f));
                                                 if let Some(focus) = section.focus {
                                                     self.mask_focus = focus.map(|index| (primary.clip_id, index));
+                                                    self.mask_overlay.reset();
+                                                    self.mask_overlay.drawing = section.draw;
                                                 }
                                                 if let Some(masks) = section.masks {
                                                     pending_effects.push(Box::new(vv_core::set_clip_masks(

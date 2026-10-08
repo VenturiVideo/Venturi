@@ -140,6 +140,19 @@ impl Lerp for MaskPath {
 const CURVE_SEGMENTS: usize = 12;
 
 impl MaskPath {
+    /// Point at `t` (0..1) of the segment from vertex `i` to the next one.
+    pub fn segment_point(&self, i: usize, t: f32) -> [f32; 2] {
+        let a = self.points[i];
+        let b = self.points[(i + 1) % self.points.len()];
+        cubic(
+            a.point,
+            add(a.point, a.out_handle),
+            add(b.point, b.in_handle),
+            b.point,
+            t,
+        )
+    }
+
     /// The outline as a polygon, in the path's own coordinates.
     pub fn flatten(&self) -> Vec<[f32; 2]> {
         let n = self.points.len();
@@ -147,20 +160,12 @@ impl MaskPath {
         for i in 0..n {
             let a = self.points[i];
             let b = self.points[(i + 1) % n];
-            let c1 = add(a.point, a.out_handle);
-            let c2 = add(b.point, b.in_handle);
             out.push(a.point);
             if a.out_handle == [0.0; 2] && b.in_handle == [0.0; 2] {
                 continue;
             }
             for s in 1..CURVE_SEGMENTS {
-                out.push(cubic(
-                    a.point,
-                    c1,
-                    c2,
-                    b.point,
-                    s as f32 / CURVE_SEGMENTS as f32,
-                ));
+                out.push(self.segment_point(i, s as f32 / CURVE_SEGMENTS as f32));
             }
         }
         out
@@ -231,6 +236,20 @@ impl ClipMask {
                 .collect(),
             path: Keyframed::constant(path),
         }
+    }
+
+    /// Whether it limits anything: a path with fewer than three vertices
+    /// (still being drawn) does not.
+    pub fn is_active(&self) -> bool {
+        self.enabled
+            && (self.shape != MaskShape::Path
+                || self
+                    .path
+                    .keyframes()
+                    .iter()
+                    .map(|k| &k.1)
+                    .chain([&self.path.default])
+                    .any(|p| p.points.len() >= 3))
     }
 
     pub fn track(&self, param: MaskParam) -> &Keyframed<f32> {

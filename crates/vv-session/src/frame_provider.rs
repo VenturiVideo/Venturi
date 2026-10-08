@@ -94,7 +94,7 @@ pub struct OwnedLayer {
     /// Only the active filters of `EffectStack::filters`, in their order.
     pub filters: Vec<vv_core::FilterValue>,
     pub blend: vv_core::BlendMode,
-    /// Only the enabled masks of `EffectStack::masks`.
+    /// Only the active masks of `EffectStack::masks` (`ClipMask::is_active`).
     pub masks: Vec<vv_core::MaskValue>,
 }
 
@@ -352,7 +352,7 @@ fn build_layer(
         .effects
         .masks
         .iter()
-        .filter(|m| m.enabled)
+        .filter(|m| m.is_active())
         .map(|m| m.value_at(source_frame))
         .collect();
     let blend = clip.effects.blend_mode;

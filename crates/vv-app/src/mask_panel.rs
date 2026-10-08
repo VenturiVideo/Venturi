@@ -73,6 +73,8 @@ pub(crate) struct MaskSectionResponse {
     pub(crate) goto: Option<FrameIdx>,
     /// The mask the viewer handles should edit, if the user picked one.
     pub(crate) focus: Option<Option<usize>>,
+    /// The focused mask is a new path to draw with the pen.
+    pub(crate) draw: bool,
 }
 
 pub(crate) fn masks_section(
@@ -96,7 +98,12 @@ pub(crate) fn masks_section(
             ui.label(t!("mask.add"));
             for shape in MaskShape::ALL {
                 if ui.small_button(mask_shape_label(shape)).clicked() {
-                    new.push(ClipMask::new(shape, layer_size));
+                    let mut mask = ClipMask::new(shape, layer_size);
+                    if shape == MaskShape::Path {
+                        mask.path.default.points.clear();
+                        response.draw = true;
+                    }
+                    new.push(mask);
                     response.focus = Some(Some(new.len() - 1));
                 }
             }
@@ -130,6 +137,14 @@ pub(crate) fn masks_section(
                     response.focus = Some((focused != Some(index)).then_some(index));
                 }
                 label.context_menu(|ui| {
+                    if index > 0 && ui.button(t!("mask.move_up")).clicked() {
+                        swap = Some(index - 1);
+                        ui.close();
+                    }
+                    if index + 1 < masks.len() && ui.button(t!("mask.move_down")).clicked() {
+                        swap = Some(index);
+                        ui.close();
+                    }
                     if ui.button(t!("props.reset_section")).clicked() {
                         let enabled = own.enabled;
                         *own = ClipMask::new(mask.shape, layer_size);
@@ -139,27 +154,11 @@ pub(crate) fn masks_section(
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .small_button("✕")
+                        .small_button("×")
                         .on_hover_text(t!("mask.delete"))
                         .clicked()
                     {
                         removed = Some(index);
-                    }
-                    if index + 1 < masks.len()
-                        && ui
-                            .small_button("⏷")
-                            .on_hover_text(t!("mask.move_down"))
-                            .clicked()
-                    {
-                        swap = Some(index);
-                    }
-                    if index > 0
-                        && ui
-                            .small_button("⏶")
-                            .on_hover_text(t!("mask.move_up"))
-                            .clicked()
-                    {
-                        swap = Some(index - 1);
                     }
                     ui.checkbox(&mut own.invert, t!("mask.invert"));
                 });

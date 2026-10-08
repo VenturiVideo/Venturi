@@ -100,9 +100,10 @@ struct EffectStack {
     gain_db: Keyframed<f32>,
     color: Option<Keyframed<Rgba>>,   // SolidColor and Text
     title: Option<TitleParams>,       // Text only
-    filters: Vec<ClipFilter>,         // grayscale, box/gaussian blur, in order
+    filters: Vec<ClipFilter>,         // grayscale, exposure, box/gaussian blur, in order
     transition_in: Option<Transition>, transition_out: Option<Transition>,
     blend_mode: BlendMode,            // 15 separable modes
+    masks: Vec<ClipMask>,             // rectangle/ellipse/path, combined in order
 }
 
 struct Keyframed<T> { keyframes: Vec<(FrameIdx, T, Interpolation)>, default: T }
@@ -217,6 +218,12 @@ struct Keyframed<T> { keyframes: Vec<(FrameIdx, T, Interpolation)>, default: T }
    Adjustment layer copies the stack composed so far and redraws it with its
    own transform/filters, replacing it (clear colour where uncovered, which
    keeps OTIO round trips rendering the same) and mixing by opacity (`LayerContent::Adjustment`).
+   Masks (`vv-core/src/mask.rs`) live in the layer's own space (timeline
+   pixels from the clip's centre at zoom 1, Y up), so the transform carries
+   them; the shader evaluates them per pixel as signed distance fields from
+   a second uniform (paths arrive already flattened to polygons). They
+   scale the layer's coverage, or for an adjustment layer its final mix with
+   the stack below.
 5. Preview: composes at the resolution of the decoded frame widened to the
    timeline aspect (`vv_render::fit_output_size`), so the bars already show
    while editing without upscaling the content;
@@ -397,8 +404,11 @@ Done:
   (`Clip::rate`), in preview and in export.
 - Text clips (`ClipSource::Text`): font, style, colour, alignment, shadow
   and background from the properties panel.
-- Opacity and 15 blend modes per clip; filters (grayscale, box and gaussian
-  blur with keyframable radius and direction); Push transitions on a clip's
+- Opacity and 15 blend modes per clip; filters (grayscale, exposure, box
+  and gaussian blur with keyframable radius and direction); masks
+  (rectangle, ellipse, bezier path; feather, invert, add/subtract/intersect;
+  handles and pen in the viewer), which on an adjustment clip limit where its
+  filters apply; Push transitions on a clip's
   edges or across a cut; fades; adjustment clips; compound clips (a nested
   timeline in the media pool); markers.
 - Mixer: per-track and master gain, pan, solo, equalizer, multiband

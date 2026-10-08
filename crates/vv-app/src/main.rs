@@ -14,6 +14,7 @@ mod forced_relink_dialog;
 mod hw_decode;
 mod i18n;
 mod keyframe_editor;
+mod mask_overlay;
 mod mask_panel;
 mod mcp_host;
 mod media_pool;
@@ -293,6 +294,7 @@ struct VenturiApp {
     /// The mask of that clip whose handles the viewer shows instead of the
     /// transform's.
     mask_focus: Option<(ClipId, usize)>,
+    mask_overlay: mask_overlay::MaskOverlayState,
 
     /// Last handled playhead: it tells the one moved by the clock (no seek)
     /// from the one moved by the user.
@@ -446,6 +448,7 @@ impl Default for VenturiApp {
             compositor: vv_render::Compositor::new_headless(),
             edit_drag_group: None,
             mask_focus: None,
+            mask_overlay: Default::default(),
             last_synced_playhead: 0,
             browsing_media: None,
             browse_playhead: 0,
@@ -2103,6 +2106,35 @@ impl VenturiApp {
             self.overlay_drag = None;
             return;
         };
+        let clip =
+            self.session.project.timelines[timeline_id].clip(target.track_index, target.clip_id);
+        let focused_mask = self
+            .mask_focus
+            .filter(|(id, _)| *id == target.clip_id)
+            .and_then(|(_, index)| Some((index, clip?.effects.masks.get(index)?)));
+        if let Some((index, mask)) = focused_mask {
+            self.overlay_drag = None;
+            if let Some(edited) = mask_overlay::show(
+                ui,
+                rect,
+                area,
+                info.timeline_size,
+                &info.transform,
+                mask,
+                target.source_frame,
+                &mut self.mask_overlay,
+            ) {
+                let mut masks = clip.map(|c| c.effects.masks.clone()).unwrap_or_default();
+                masks[index] = edited;
+                pending.push(Box::new(vv_core::set_clip_masks(
+                    timeline_id,
+                    target.track_index,
+                    target.clip_id,
+                    masks,
+                )));
+            }
+            return;
+        }
         let Some(new) = viewer_overlay::show(
             ui,
             rect,
