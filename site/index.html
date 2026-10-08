@@ -178,6 +178,8 @@ h3 { font: 600 20px/1.3 var(--display); letter-spacing: -.01em; margin: 0 0 8px;
 }
 .icon svg { width: 22px; height: 22px; }
 .card.wide { grid-column: span 2; display: grid; grid-template-columns: 1fr 1fr; gap: 28px; align-items: center; }
+.card.wide.stack { display: block; }
+.card.wide.stack .card-img { width: 100%; height: auto; display: block; }
 @media (max-width: 960px) { .grid { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } .card.wide { grid-column: auto; grid-template-columns: 1fr; } }
 
@@ -557,10 +559,13 @@ footer p { margin: 6px 0 0; max-width: 560px; }
         <h3>Auto balance</h3>
         <p>One click finds the surfaces that should be neutral, a wall, a white shirt, a sheet of paper, and turns them grey, solving shadows, midtones and highlights together. A big colored object doesn't fool it.</p>
       </article>
-      <article class="card reveal">
-        <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M6 16c2-6 4-6 6-2s4 4 6-4"/></svg></div>
-        <h3>Scopes on the GPU</h3>
-        <p>Waveform, RGB parade, vectorscope with skin tone line and histogram, two at a time in the Color window. They measure the clip you are grading, not what covers it.</p>
+      <article class="card wide stack reveal">
+        <div>
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M6 16c2-6 4-6 6-2s4 4 6-4"/></svg></div>
+          <h3>Scopes on the GPU</h3>
+          <p>Waveform, RGB parade, vectorscope with skin tone line and histogram, two at a time in the Color window, right above the wheels. They measure the clip you are grading, not what covers it.</p>
+        </div>
+        <img class="card-img" src="assets/color-scopes.webp" width="720" height="266" loading="lazy" alt="The Color window's histogram and vectorscope of a shot, with the 75% color bar targets and the skin tone line">
       </article>
       <article class="card reveal">
         <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V4M4 20h16"/><path d="M7 16c3 0 3-8 6-8s3 4 7 4"/></svg></div>
@@ -570,7 +575,17 @@ footer p { margin: 6px 0 0; max-width: 560px; }
       <article class="card reveal">
         <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18Z" fill="currentColor"/></svg></div>
         <h3>Black &amp; white in one drag</h3>
-        <p>Drop the preset on a clip and it desaturates, keeping the rest of its grade. With masks and adjustment clips, correct one part of the frame or many clips at once.</p>
+        <p>Drop the preset on a clip and it desaturates, keeping the rest of its grade.</p>
+      </article>
+      <article class="card reveal">
+        <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg></div>
+        <h3>Match with a paste</h3>
+        <p>Paste attributes copies a clip's grade onto others, keyframes included: grade one shot of a camera, then the rest.</p>
+      </article>
+      <article class="card reveal">
+        <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" stroke-dasharray="3 3"/><circle cx="12" cy="12" r="4"/></svg></div>
+        <h3>Masks and adjustment clips</h3>
+        <p>Correct one part of the frame through a mask, or every clip below an adjustment clip at once.</p>
       </article>
     </div>
   </div>
