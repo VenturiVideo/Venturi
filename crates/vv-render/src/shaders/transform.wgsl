@@ -134,6 +134,9 @@ fn apply_filter(rgb: vec3<f32>, id: f32, param: f32) -> vec3<f32> {
 }
 
 // Shadows/midtones/highlights weights of a pixel of luma `y`: soft, summing to 1.
+// This and `apply_grade` mirror `vv_core::range_weights` and
+// `vv_core::apply_grade`: the_color_correction_matches_its_reference_in_both_precisions
+// keeps them equal.
 fn range_weights(y: f32) -> vec3<f32> {
     let low = grade.ranges.x;
     let high = max(grade.ranges.y, low);

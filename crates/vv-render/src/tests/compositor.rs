@@ -2137,12 +2137,33 @@ fn the_color_correction_matches_its_reference_in_both_precisions() {
             (HighRange, 0.8),
         ]),
         grade_with(&[(OffsetX, 0.3), (OffsetLuma, -0.1), (Saturation, 0.4)]),
+        // The range edges: no midtones, the full span, crossed ranges.
+        grade_with(&[
+            (LowRange, 0.5),
+            (HighRange, 0.5),
+            (ShadowsLuma, 0.2),
+            (HighlightsX, 0.5),
+        ]),
+        grade_with(&[
+            (LowRange, 0.0),
+            (HighRange, 1.0),
+            (MidtonesLuma, 0.2),
+            (ShadowsX, 0.5),
+        ]),
+        grade_with(&[
+            (LowRange, 0.7),
+            (HighRange, 0.3),
+            (ShadowsY, 0.6),
+            (HighlightsLuma, -0.2),
+        ]),
     ];
     let colors = [
         [0.05, 0.08, 0.1],
         [0.5, 0.25, 0.75],
         [0.9, 0.85, 0.7],
         [0.3, 0.6, 0.2],
+        [0.5, 0.5, 0.5],
+        [0.7, 0.7, 0.7],
     ];
     for precision in [
         vv_core::ProcessingPrecision::Standard,
