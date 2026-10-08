@@ -5,7 +5,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Venturi — a fast, focused video editor</title>
-<meta name="description" content="Venturi is a Linux-first, performance-oriented video editor written in Rust, hardware accelerated on NVIDIA, Intel, AMD and Apple Silicon. Multi-track editing, keyframes on every parameter, an audio mixer with EQ and multiband compression, voiceover recording, OpenTimelineIO round trips and a built-in MCP server for AI agents.">
+<meta name="description" content="Venturi is a Linux-first, performance-oriented video editor written in Rust, hardware accelerated on NVIDIA, Intel, AMD and Apple Silicon. Multi-track editing, keyframes on every parameter, color correction with GPU scopes, an audio mixer with EQ and multiband compression, voiceover recording, OpenTimelineIO round trips and a built-in MCP server for AI agents.">
 <meta name="theme-color" content="#0E0E10">
 <meta property="og:title" content="Venturi video editor">
 <meta property="og:description" content="A Linux-first, performance-oriented video editor written in Rust. Editing, done right.">
@@ -186,6 +186,17 @@ h3 { font: 600 20px/1.3 var(--display); letter-spacing: -.01em; margin: 0 0 8px;
 @keyframes draw { 0%, 15% { stroke-dashoffset: 400; } 85%, 100% { stroke-dashoffset: 0; } }
 
 /* audio */
+.wheels { display: flex; gap: 22px; justify-content: center; flex-wrap: wrap; }
+.wheel { text-align: center; font: 500 11.5px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--dim); }
+.wheel i { position: relative; display: block; width: 92px; aspect-ratio: 1; border-radius: 50%; margin: 0 auto 10px; background: #111113; }
+.wheel i::before { content: ""; position: absolute; inset: 0; border-radius: 50%;
+  background: conic-gradient(#d9655a, #c25fb8, #6b74d9, #4fb3c4, #4fbf96, #79c25a, #c9b24f, #d98a4f, #d9655a);
+  -webkit-mask: radial-gradient(circle closest-side, transparent calc(100% - 5px), #000 calc(100% - 4px));
+  mask: radial-gradient(circle closest-side, transparent calc(100% - 5px), #000 calc(100% - 4px)); }
+.wheel i::after { content: ""; position: absolute; inset: 12px; border-radius: 50%;
+  background: linear-gradient(var(--line), var(--line)) center / 1px 100% no-repeat, linear-gradient(var(--line), var(--line)) center / 100% 1px no-repeat; }
+@media (max-width: 640px) { .wheels { gap: 12px; } .wheel i { width: 76px; } .wheel { font-size: 10.5px; } }
+.wheel b { position: absolute; z-index: 1; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; border: 2px solid var(--text); }
 .audio-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 .panel { border-radius: var(--radius); border: 1px solid var(--line); background: var(--surface); overflow: hidden; display: flex; flex-direction: column; }
 .panel .shot-img { display: block; width: 100%; height: auto; background: #111113; }
@@ -336,6 +347,7 @@ footer p { margin: 6px 0 0; max-width: 560px; }
     <div class="nav-links">
       <a href="#features">Features</a>
       <a href="#audio">Audio</a>
+      <a href="#color">Color</a>
       <a href="#performance">Performance</a>
       <a href="#gpu">GPU</a>
       <a href="#agents">AI agents</a>
@@ -351,7 +363,7 @@ footer p { margin: 6px 0 0; max-width: 560px; }
   <div class="wrap">
     <a class="pill" href="https://github.com/VenturiVideo/Venturi/releases/latest"><b>ALPHA</b><span id="version">Open source · GPL-3.0</span></a>
     <h1>Cut fast.<br><span class="accent">Stay fluid.</span></h1>
-    <p class="lede">Venturi is a <strong>Linux-first, performance-oriented video editor</strong> written in Rust and hardware accelerated from decode to export. It focuses on editing, picture and sound, and it is built to make that feel instant, even on modest hardware.</p>
+    <p class="lede">Venturi is a <strong>Linux-first, performance-oriented video editor</strong> written in Rust and hardware accelerated from decode to export. It focuses on editing, color and sound, and it is built to make that feel instant, even on modest hardware.</p>
     <div class="cta">
       <a class="btn primary" href="#download">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 19h16"/></svg>
@@ -383,21 +395,21 @@ footer p { margin: 6px 0 0; max-width: 560px; }
       <div class="eyebrow">The idea</div>
       <blockquote>Venturi does little, and <em>does it well.</em></blockquote>
       <p>Editing is where the time goes, so that is the part that has to be perfect: the cut, and the sound that goes with it. Venturi has the tools you actually reach for while editing, and nothing you have to wade through to find them.</p>
-      <p>When you need a grading suite, take the timeline to one. Venturi speaks OpenTimelineIO in both directions.</p>
+      <p>That includes the color: balance a shot, match two cameras, give a video its look, with scopes to check it, right where you cut. When a job needs a full grading suite, Venturi speaks OpenTimelineIO in both directions.</p>
     </div>
     <div class="scope reveal">
       <div class="scope-col">
         <h4>In the box</h4>
         <ul>
           <li>Multi-track cutting</li><li>Ripple delete</li><li>Keyframes everywhere</li><li>Curve editor</li>
-          <li>Transitions</li><li>Compound clips</li><li>Titles</li><li>Filters</li><li>Audio mixer</li><li>EQ &amp; multiband compressor</li><li>Voiceover recording</li>
+          <li>Transitions</li><li>Compound clips</li><li>Titles</li><li>Filters</li><li>Color correction &amp; scopes</li><li>Audio mixer</li><li>EQ &amp; multiband compressor</li><li>Voiceover recording</li>
           <li>Pitch-preserved speed</li><li>Proxies</li><li>Unlimited undo</li>
         </ul>
       </div>
       <div class="scope-col out">
         <h4>Deliberately left out</h4>
-        <ul><li>Node editor</li><li>Grading suite</li><li>Node-based compositor</li></ul>
-        <p class="out-note">Cut here, grade there.</p>
+        <ul><li>Node editor</li><li>Node-based grading</li><li>Node-based compositor</li></ul>
+        <p class="out-note">Need them? Your timeline travels to a suite that has them.</p>
       </div>
     </div>
   </div>
@@ -520,6 +532,50 @@ footer p { margin: 6px 0 0; max-width: 560px; }
   </div>
 </section>
 
+<section class="features" id="color">
+  <div class="wrap">
+    <div class="head reveal">
+      <div class="eyebrow">Color</div>
+      <h2>Color, corrected<br>where you cut.</h2>
+      <p class="section-lede">Balance a shot, match two cameras or give the whole video its look without leaving the timeline. A color correction filter with wheels, scopes beside it, and a pipeline that keeps gradients smooth however many effects you stack.</p>
+    </div>
+    <div class="grid">
+      <article class="card wide reveal">
+        <div>
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3v18"/><circle cx="15" cy="9" r="2"/></svg></div>
+          <h3>Wheels, not sliders</h3>
+          <p>Shadows, midtones, highlights and offset, each with its own color, luminance and saturation, and ranges you can move. The wheels read like a vectorscope, respond gently near the center and lock the pointer while you drag. Every control is keyframable.</p>
+        </div>
+        <div class="wheels" aria-hidden="true">
+          <div class="wheel"><i><b style="left:56%;top:44%"></b></i>Shadows</div>
+          <div class="wheel"><i><b style="left:41%;top:58%"></b></i>Midtones</div>
+          <div class="wheel"><i><b style="left:50%;top:50%"></b></i>Highlights</div>
+        </div>
+      </article>
+      <article class="card reveal">
+        <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 4-11 11 5 5 11-11"/><path d="M18 2v4M16 4h4"/></svg></div>
+        <h3>Auto balance</h3>
+        <p>One click finds the surfaces that should be neutral, a wall, a white shirt, a sheet of paper, and turns them grey, solving shadows, midtones and highlights together. A big colored object doesn't fool it.</p>
+      </article>
+      <article class="card reveal">
+        <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M6 16c2-6 4-6 6-2s4 4 6-4"/></svg></div>
+        <h3>Scopes on the GPU</h3>
+        <p>Waveform, RGB parade, vectorscope with skin tone line and histogram, two at a time in the Color window. They measure the clip you are grading, not what covers it.</p>
+      </article>
+      <article class="card reveal">
+        <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V4M4 20h16"/><path d="M7 16c3 0 3-8 6-8s3 4 7 4"/></svg></div>
+        <h3>16-bit float inside</h3>
+        <p>Every layer, filter and blend is computed in 16-bit float and dithered once on the way out, so a chain of effects never bands. An 8-bit mode stays available for modest GPUs.</p>
+      </article>
+      <article class="card reveal">
+        <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18Z" fill="currentColor"/></svg></div>
+        <h3>Black &amp; white in one drag</h3>
+        <p>Drop the preset on a clip and it desaturates, keeping the rest of its grade. With masks and adjustment clips, correct one part of the frame or many clips at once.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
 <section id="performance">
   <div class="wrap perf">
     <div class="reveal">
@@ -631,11 +687,11 @@ footer p { margin: 6px 0 0; max-width: 560px; }
   <div class="wrap">
     <div class="head center reveal">
       <div class="eyebrow">Interoperability</div>
-      <h2>Cut here. Grade there.</h2>
-      <p class="section-lede">Venturi doesn't try to be your whole post-production pipeline. Timelines travel in both directions through OpenTimelineIO, so it slots into the one you already have.</p>
+      <h2>Go further when the job asks for it.</h2>
+      <p class="section-lede">Venturi's color correction covers the grade most videos need. It works on 8-bit decoded sources, though: for 10-bit footage, node-based grading and finishing, a dedicated suite still goes further. Timelines travel in both directions through OpenTimelineIO, so Venturi slots into the pipeline you already have.</p>
     </div>
     <div class="roundtrip reveal">
-      <div class="node vv"><b>Venturi</b><span>Fast editing</span></div>
+      <div class="node vv"><b>Venturi</b><span>Editing, color, sound</span></div>
       <div class="arrows">
         <svg viewBox="0 0 200 70" preserveAspectRatio="none" aria-hidden="true">
           <path class="dash" d="M6 24 H190" stroke="#FF6A1F" stroke-width="2" fill="none"/>
@@ -645,7 +701,7 @@ footer p { margin: 6px 0 0; max-width: 560px; }
         </svg>
         <span class="label">OTIO</span>
       </div>
-      <div class="node"><b>DaVinci Resolve</b><span>Grading, finishing</span></div>
+      <div class="node"><b>DaVinci Resolve</b><span>10-bit grading, finishing</span></div>
     </div>
     <p class="tm reveal">DaVinci Resolve is a trademark of Blackmagic Design Pty Ltd. Venturi is an independent project, not affiliated with or endorsed by Blackmagic Design.</p>
   </div>
@@ -657,7 +713,7 @@ footer p { margin: 6px 0 0; max-width: 560px; }
       <div class="eyebrow">The name</div>
       <h2>Narrower, and faster.</h2>
       <p>The <strong>Venturi effect</strong>: when a fluid passes through a constriction, it doesn't slow down. It speeds up.</p>
-      <p>Tight constraints make Venturi faster, so your edits stay fluid even on modest hardware. Saying no to a node editor and a grading suite is what lets the editing feel instant.</p>
+      <p>Tight constraints make Venturi faster, so your edits stay fluid even on modest hardware. Saying no to a node editor and node-based grading is what lets the editing feel instant.</p>
     </div>
     <svg class="tube reveal" id="tube" viewBox="0 0 520 260" aria-hidden="true"></svg>
   </div>

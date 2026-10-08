@@ -58,8 +58,12 @@ the part that has to be perfect.
   with custom curves.
 - **Titles, solid colours, filters, transitions.** Applied straight from the
   timeline, no node graph to wire up.
+- **Color correction.** Shadows, midtones, highlights and offset wheels,
+  auto balance and GPU scopes (waveform, RGB parade, vectorscope,
+  histogram), composed in 16-bit float.
 - **Interoperability.** Timelines move in both directions through
-  OpenTimelineIO, tested with DaVinci Resolve: cut here, grade there.
+  OpenTimelineIO, tested with DaVinci Resolve, for 10-bit grading and
+  finishing.
 - **Drivable by AI agents.** A built-in MCP server lets an agent such as
   Claude Code import, cut, measure audio, look at frames and export, on its
   own or in the window you are editing. See [docs/MCP.md](docs/MCP.md).
