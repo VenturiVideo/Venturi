@@ -3059,6 +3059,23 @@ fn toolbar_toggle(
     response
 }
 
+/// `toolbar_toggle` without its label, for a panel's header.
+fn icon_toggle(ui: &mut egui::Ui, on: &mut bool, icon: ToolbarIcon) -> egui::Response {
+    let side = ui.spacing().interact_size.y;
+    let (rect, mut response) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::click());
+    if response.clicked() {
+        *on = !*on;
+        response.mark_changed();
+    }
+    let visuals = ui.style().interact_selectable(&response, *on);
+    let painter = ui.painter();
+    if *on || response.hovered() {
+        painter.rect_filled(rect, 3.0, visuals.weak_bg_fill);
+    }
+    paint_toolbar_icon(painter, icon, rect.center(), visuals.fg_stroke.color);
+    response
+}
+
 fn paint_toolbar_icon(
     painter: &egui::Painter,
     icon: ToolbarIcon,

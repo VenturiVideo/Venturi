@@ -33,8 +33,8 @@ color.in_window:
   it: "Si modifica nella finestra Colore."
 
 color.open_window:
-  en: "Open in the Color window"
-  it: "Apri nella finestra Colore"
+  en: "Edit in the Color window, with the scopes"
+  it: "Modifica nella finestra Colore, con gli scope"
 
 color.no_scope_source:
   en: "Select a video clip and put the playhead on it"

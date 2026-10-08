@@ -557,6 +557,16 @@ pub(crate) fn color_row(ui: &mut egui::Ui, label: &str, color: &mut vv_core::Rgb
 /// Header of a toggleable section: switch and title, whose context menu
 /// resets the whole section (`true` if chosen).
 pub(crate) fn title_section_header(ui: &mut egui::Ui, title: &str, enabled: &mut bool) -> bool {
+    title_section_header_with(ui, title, enabled, |_| {})
+}
+
+/// Like `title_section_header`, with `trailing` at the right end of the row.
+pub(crate) fn title_section_header_with(
+    ui: &mut egui::Ui,
+    title: &str,
+    enabled: &mut bool,
+    trailing: impl FnOnce(&mut egui::Ui),
+) -> bool {
     let mut reset = false;
     ui.horizontal(|ui| {
         toggle_switch(ui, enabled);
@@ -567,6 +577,7 @@ pub(crate) fn title_section_header(ui: &mut egui::Ui, title: &str, enabled: &mut
                     ui.close();
                 }
             });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), trailing);
     });
     reset
 }
@@ -2089,11 +2100,19 @@ impl VenturiApp {
                                                 for filter in info.filters.iter().filter(|_| open) {
                                                     let kind = filter.kind;
                                                     let mut enabled = filter.enabled;
-                                                    let reset = title_section_header(
+                                                    let mut color_window_open = self.settings.panels.color_window_open;
+                                                    let reset = title_section_header_with(
                                                         ui,
                                                         &timeline_ui::filter_label(kind),
                                                         &mut enabled,
+                                                        |ui| {
+                                                            if kind.has_grade() {
+                                                                crate::icon_toggle(ui, &mut color_window_open, crate::ToolbarIcon::Color)
+                                                                    .on_hover_text(t!("color.open_window"));
+                                                            }
+                                                        },
                                                     );
+                                                    self.settings.panels.color_window_open = color_window_open;
                                                     let mut reset_radius = reset;
                                                     let mut reset_direction = reset;
                                                     let mut reset_amount = reset;
@@ -2170,9 +2189,6 @@ impl VenturiApp {
                                                         if self.settings.panels.color_window_open {
                                                             ui.label(egui::RichText::new(t!("color.in_window")).weak());
                                                         } else {
-                                                            if ui.small_button(t!("color.open_window")).clicked() {
-                                                                self.settings.panels.color_window_open = true;
-                                                            }
                                                             let can_balance = self.can_auto_balance(targets);
                                                             let mut section = crate::grade_panel::grade_section(ui, &filter.grade, &filter.grade_keys, can_balance);
                                                             if section.auto_balance {
