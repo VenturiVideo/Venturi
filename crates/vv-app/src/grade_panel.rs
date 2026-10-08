@@ -30,24 +30,22 @@ fn preset_label(preset: GradePreset) -> std::borrow::Cow<'static, str> {
 }
 
 pub(crate) fn grade_param_label(param: GradeParam) -> String {
-    match (param, GradeWheel::of(param)) {
-        (GradeParam::LowRange, _) => t!("props.grade_low_range").to_string(),
-        (GradeParam::HighRange, _) => t!("props.grade_high_range").to_string(),
-        (GradeParam::Saturation, _) => t!("props.saturation").to_string(),
-        (_, Some(wheel)) => {
-            let part = if param == wheel.x() {
-                "X".into()
-            } else if param == wheel.y() {
-                "Y".into()
-            } else if param == wheel.luma() {
-                t!("props.grade_luminance")
-            } else {
-                t!("props.saturation")
-            };
-            format!("{} {part}", wheel_label(wheel))
-        }
-        (_, None) => format!("{param:?}"),
-    }
+    let wheel = match param {
+        GradeParam::LowRange => return t!("props.grade_low_range").to_string(),
+        GradeParam::HighRange => return t!("props.grade_high_range").to_string(),
+        GradeParam::Saturation => return t!("props.saturation").to_string(),
+        _ => GradeWheel::of(param).expect("the other params belong to a wheel"),
+    };
+    let part = if param == wheel.x() {
+        "X".into()
+    } else if param == wheel.y() {
+        "Y".into()
+    } else if param == wheel.luma() {
+        t!("props.grade_luminance")
+    } else {
+        t!("props.saturation")
+    };
+    format!("{} {part}", wheel_label(wheel))
 }
 
 /// The color the wheel shows at angle `angle`: what a push that way adds,
@@ -174,8 +172,6 @@ fn joint_keyframe(keys: impl IntoIterator<Item = RowKeyframe>) -> RowKeyframe {
         .expect("a wheel has params")
 }
 
-/// Width of one wheel with its controls; the grid fits as many per row as
-/// the panel allows.
 /// Minimum width of one wheel with its controls: enough for the longest name
 /// next to the keyframe group. The blocks of a row share the panel's width.
 const WHEEL_BLOCK_WIDTH: f32 = 140.0;

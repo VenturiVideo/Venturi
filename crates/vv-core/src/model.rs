@@ -5,6 +5,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::grade::{GradePreset, GradeTracks, GradeValue};
+
 pub use crate::id_map::{FolderId, Id, IdMap, MediaId, TimelineId};
 
 /// A folder of the media pool: only a way to group the items, it has no
@@ -1099,7 +1101,7 @@ pub struct ClipFilter {
     /// Exposure only: in stops.
     pub amount: Keyframed<f32>,
     /// Color correction only.
-    pub grade: crate::GradeTracks,
+    pub grade: GradeTracks,
 }
 
 /// `ClipFilter` as saved, older files included.
@@ -1114,7 +1116,7 @@ struct StoredClipFilter {
     #[serde(default = "default_filter_amount")]
     amount: Keyframed<f32>,
     #[serde(default)]
-    grade: crate::GradeTracks,
+    grade: GradeTracks,
 }
 
 /// `FilterKind` plus the kinds that no longer exist.
@@ -1133,7 +1135,7 @@ impl From<StoredClipFilter> for ClipFilter {
         let (kind, grade) = match stored.kind {
             StoredFilterKind::Grayscale => (
                 FilterKind::ColorCorrection,
-                crate::GradeTracks::constant(crate::GradePreset::BlackAndWhite.value()),
+                GradeTracks::constant(GradePreset::BlackAndWhite.value()),
             ),
             StoredFilterKind::ColorCorrection => (FilterKind::ColorCorrection, stored.grade),
             StoredFilterKind::BoxBlur => (FilterKind::BoxBlur, stored.grade),
@@ -1162,7 +1164,7 @@ pub struct FilterValue {
     pub radius: f32,
     pub direction: BlurDirection,
     pub amount: f32,
-    pub grade: crate::GradeValue,
+    pub grade: GradeValue,
 }
 
 impl FilterValue {
@@ -1172,7 +1174,7 @@ impl FilterValue {
             radius: DEFAULT_BLUR_RADIUS,
             direction: BlurDirection::Both,
             amount: 0.0,
-            grade: crate::GradeValue::NEUTRAL,
+            grade: GradeValue::NEUTRAL,
         }
     }
 }
@@ -1185,7 +1187,7 @@ impl ClipFilter {
             radius: Keyframed::constant(DEFAULT_BLUR_RADIUS),
             direction: Keyframed::constant(BlurDirection::Both),
             amount: Keyframed::constant(0.0),
-            grade: crate::GradeTracks::default(),
+            grade: GradeTracks::default(),
         }
     }
 

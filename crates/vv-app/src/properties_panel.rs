@@ -2232,7 +2232,7 @@ impl VenturiApp {
                                                             own.amount = defaults.amount;
                                                         }
                                                         if reset {
-                                                            own.grade = defaults.grade.clone();
+                                                            own.grade = defaults.grade;
                                                         }
                                                         let mut pending_keyframes = Vec::new();
                                                         for (edit, target) in &keyframes {
