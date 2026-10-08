@@ -2,7 +2,7 @@
 //! snapshot of the project, so the host keeps answering meanwhile.
 
 use std::path::PathBuf;
-use std::sync::{OnceLock, mpsc};
+use std::sync::{OnceLock, RwLock, mpsc};
 
 use serde_json::json;
 use vv_core::{FrameIdx, ProcessingPrecision, Project, TimelineId};
@@ -32,15 +32,26 @@ fn on_worker(session: &Session, work: impl FnOnce() -> ToolResult + Send + 'stat
     Dispatch::Deferred(Pending::Worker(rx))
 }
 
-/// Creating a GPU device takes long: one per precision, not one per render.
-fn compositor(precision: ProcessingPrecision) -> &'static vv_render::Compositor {
-    static HIGH: OnceLock<vv_render::Compositor> = OnceLock::new();
-    static STANDARD: OnceLock<vv_render::Compositor> = OnceLock::new();
-    let cell = match precision {
-        ProcessingPrecision::High => &HIGH,
-        ProcessingPrecision::Standard => &STANDARD,
-    };
-    cell.get_or_init(|| vv_render::Compositor::new_headless_with_precision(precision))
+/// Runs `render` on the one compositor, set to `precision`: creating a GPU
+/// device takes long, so it is not one per render nor per precision.
+fn with_compositor<R>(
+    precision: ProcessingPrecision,
+    render: impl FnOnce(&vv_render::Compositor) -> R,
+) -> R {
+    static COMPOSITOR: OnceLock<RwLock<vv_render::Compositor>> = OnceLock::new();
+    let lock = COMPOSITOR.get_or_init(|| {
+        RwLock::new(vv_render::Compositor::new_headless_with_precision(
+            precision,
+        ))
+    });
+    loop {
+        let compositor = lock.read().unwrap();
+        if compositor.precision() == precision {
+            return render(&compositor);
+        }
+        drop(compositor);
+        lock.write().unwrap().set_precision(precision);
+    }
 }
 
 fn export_error(e: ExportError) -> ToolError {
@@ -83,13 +94,15 @@ pub(crate) fn render_frame(session: &Session, args: RenderFrameArgs) -> Dispatch
     let snapshot = project.clone();
     let frame = args.frame;
     on_worker(session, move || {
-        let rgba = vv_session::export::render_frame_rgba(
-            &snapshot,
-            timeline,
-            frame,
-            (width, height),
-            compositor(snapshot.precision),
-        )
+        let rgba = with_compositor(snapshot.precision, |compositor| {
+            vv_session::export::render_frame_rgba(
+                &snapshot,
+                timeline,
+                frame,
+                (width, height),
+                compositor,
+            )
+        })
         .map_err(export_error)?;
         Ok(ToolOutput {
             value: json!({ "frame": frame, "width": width, "height": height }),
