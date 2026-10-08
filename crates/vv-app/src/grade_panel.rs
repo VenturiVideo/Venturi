@@ -61,14 +61,20 @@ fn hue_at(angle: f32) -> egui::Color32 {
 /// A color wheel: the puck at `(x, y)` in the unit disc (Y up), dragged
 /// relative to where it is, finer with Shift. `true` if it moved; a double
 /// click asks for a reset.
-fn wheel(ui: &mut egui::Ui, id: egui::Id, x: &mut f32, y: &mut f32, reset: &mut bool) -> bool {
-    const SIZE: f32 = WHEEL_BLOCK_WIDTH - 20.0;
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(SIZE, SIZE), egui::Sense::hover());
+fn wheel(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    size: f32,
+    x: &mut f32,
+    y: &mut f32,
+    reset: &mut bool,
+) -> bool {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
     let response = ui
         .interact(rect, id, egui::Sense::click_and_drag())
         .on_hover_text(t!("props.grade_wheel_hint"));
     let center = rect.center();
-    let radius = SIZE / 2.0 - 6.0;
+    let radius = size / 2.0 - 6.0;
     let painter = ui.painter_at(rect);
     let visuals = ui.visuals();
     painter.circle_filled(center, radius, visuals.extreme_bg_color);
@@ -151,7 +157,10 @@ fn joint_keyframe(keys: impl IntoIterator<Item = RowKeyframe>) -> RowKeyframe {
 
 /// Width of one wheel with its controls; the grid fits as many per row as
 /// the panel allows.
-const WHEEL_BLOCK_WIDTH: f32 = 124.0;
+/// Minimum width of one wheel with its controls: enough for the longest name
+/// next to the keyframe group. The blocks of a row share the panel's width.
+const WHEEL_BLOCK_WIDTH: f32 = 140.0;
+const MAX_WHEEL_SIZE: f32 = 150.0;
 
 /// Wheels per row for `width`: 1, 2 or all 4 (never 3 + 1).
 fn wheel_columns(width: f32, spacing: f32) -> usize {
@@ -212,14 +221,17 @@ pub(crate) fn grade_section(
 
     ui.add_space(4.0);
     let spacing = ui.spacing().item_spacing.x;
-    let columns = wheel_columns(ui.available_width(), spacing);
+    let available = ui.available_width();
+    let columns = wheel_columns(available, spacing);
+    // Rounded down: a row a fraction wider than the panel would widen it.
+    let block_width = ((available - spacing * (columns - 1) as f32) / columns as f32).floor() - 1.0;
     for row in GradeWheel::ALL.chunks(columns) {
         ui.horizontal_top(|ui| {
             for wheel_kind in row {
                 ui.allocate_ui_with_layout(
-                    egui::vec2(WHEEL_BLOCK_WIDTH, 0.0),
+                    egui::vec2(block_width, 0.0),
                     egui::Layout::top_down(egui::Align::Center),
-                    |ui| wheel_block(ui, &mut response, grade, *wheel_kind, &key),
+                    |ui| wheel_block(ui, &mut response, grade, *wheel_kind, block_width, &key),
                 );
             }
         });
@@ -245,6 +257,7 @@ fn wheel_block(
     response: &mut GradeSectionResponse,
     grade: &GradeValue,
     wheel_kind: GradeWheel,
+    width: f32,
     key: &dyn Fn(GradeParam) -> RowKeyframe,
 ) {
     let params = [
@@ -255,7 +268,7 @@ fn wheel_block(
     ];
     let joint = joint_keyframe(params.map(key));
     ui.horizontal(|ui| {
-        ui.set_width(WHEEL_BLOCK_WIDTH);
+        ui.set_width(width);
         let prev = keyframe_arrow(ui, true, joint.prev, &t!("props.prev_keyframe"));
         if keyframe_button(ui, joint.on_keyframe).clicked() {
             for param in params {
@@ -286,6 +299,7 @@ fn wheel_block(
     if wheel(
         ui,
         ui.id().with(("grade_wheel", px)),
+        (width - 20.0).min(MAX_WHEEL_SIZE),
         &mut x,
         &mut y,
         &mut reset_wheel,
