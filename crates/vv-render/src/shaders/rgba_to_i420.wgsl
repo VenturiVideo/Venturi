@@ -17,10 +17,6 @@ struct Params {
 @group(0) @binding(1) var<storage, read_write> out_words: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
 
-fn luma(c: vec3<f32>) -> f32 {
-    return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
-}
-
 // `i`, the byte index, seeds the dither: each byte gets its own noise.
 fn to_byte(v: f32, i: u32) -> u32 {
     return u32(clamp(dither_round(v, vec2<u32>(i, 0u)), 0.0, 255.0));
@@ -48,11 +44,11 @@ fn byte_at(i: u32) -> u32 {
     let x = i32(j % params.chroma_width) * 2;
     let y = i32(j / params.chroma_width) * 2;
     let c = (pixel(x, y) + pixel(x + 1, y) + pixel(x, y + 1) + pixel(x + 1, y + 1)) * 0.25;
-    let l = luma(c);
+    let chroma = cb_cr(c);
     if is_v {
-        return to_byte(128.0 + 224.0 * (c.r - l) / 1.5748, i);
+        return to_byte(128.0 + 224.0 * chroma.y, i);
     }
-    return to_byte(128.0 + 224.0 * (c.b - l) / 1.8556, i);
+    return to_byte(128.0 + 224.0 * chroma.x, i);
 }
 
 @compute @workgroup_size(256)

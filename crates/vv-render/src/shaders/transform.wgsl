@@ -133,8 +133,6 @@ fn apply_filter(rgb: vec3<f32>, id: f32, param: f32) -> vec3<f32> {
     return rgb;
 }
 
-const LUMA_709: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
-
 // Shadows/midtones/highlights weights of a pixel of luma `y`: soft, summing to 1.
 fn range_weights(y: f32) -> vec3<f32> {
     let low = grade.ranges.x;
@@ -146,7 +144,7 @@ fn range_weights(y: f32) -> vec3<f32> {
 }
 
 fn apply_grade(rgb: vec3<f32>) -> vec3<f32> {
-    let w = range_weights(dot(rgb, LUMA_709));
+    let w = range_weights(luma(rgb));
     var c = rgb
         + w.x * grade.wheels[0].xyz
         + w.y * grade.wheels[1].xyz
@@ -154,8 +152,8 @@ fn apply_grade(rgb: vec3<f32>) -> vec3<f32> {
         + grade.wheels[3].xyz;
     let saturation = dot(w, vec3<f32>(grade.wheels[0].w, grade.wheels[1].w, grade.wheels[2].w))
         * grade.wheels[3].w;
-    let luma = dot(c, LUMA_709);
-    c = vec3<f32>(luma) + (c - vec3<f32>(luma)) * saturation;
+    let y = luma(c);
+    c = vec3<f32>(y) + (c - vec3<f32>(y)) * saturation;
     return clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 

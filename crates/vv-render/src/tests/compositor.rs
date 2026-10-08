@@ -2213,11 +2213,7 @@ fn a_wheel_push_changes_the_hue_but_not_the_luma() {
         grey,
         grade_with(&[(MidtonesX, -0.3), (MidtonesY, 0.9)]),
     );
-    let luma: f32 = pushed[..3]
-        .iter()
-        .zip(vv_core::LUMA_WEIGHTS)
-        .map(|(c, w)| *c as f32 * w)
-        .sum();
+    let luma = vv_core::luma([0, 1, 2].map(|i| pushed[i] as f32));
     assert!((luma - 127.5).abs() <= 1.5, "{pushed:?}");
     assert!(pushed[0] > pushed[2] + 20, "towards red: {pushed:?}");
 }
@@ -2260,12 +2256,8 @@ fn auto_balance_removes_a_cast_from_the_render() {
             .iter()
             .filter(|p| p.iter().all(|c| *c > 0.02 && *c < 0.98))
             .map(|p| {
-                let y: f32 = p
-                    .iter()
-                    .zip(vv_core::LUMA_WEIGHTS)
-                    .map(|(c, w)| c * w)
-                    .sum();
-                ((p[2] - y) / 1.8556).abs() + ((p[0] - y) / 1.5748).abs()
+                let [cb, cr] = vv_core::cb_cr(*p);
+                cb.abs() + cr.abs()
             })
             .collect();
         chroma.iter().sum::<f32>() / chroma.len() as f32

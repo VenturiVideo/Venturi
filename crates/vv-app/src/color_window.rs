@@ -224,12 +224,8 @@ fn graticule(painter: &egui::Painter, rect: egui::Rect, kind: ScopeKind) {
                 ("G", [0.0, 0.75, 0.0]),
                 ("Yl", [0.75, 0.75, 0.0]),
             ] {
-                let luma: f32 = rgb
-                    .iter()
-                    .zip(vv_core::LUMA_WEIGHTS)
-                    .map(|(c, w)| c * w)
-                    .sum();
-                let point = at((rgb[2] - luma) / 1.8556, (rgb[0] - luma) / 1.5748);
+                let [cb, cr] = vv_core::cb_cr(rgb);
+                let point = at(cb, cr);
                 painter.rect_stroke(
                     egui::Rect::from_center_size(point, egui::vec2(8.0, 8.0)),
                     0.0,

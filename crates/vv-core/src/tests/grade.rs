@@ -98,6 +98,16 @@ fn a_chroma_shift_leaves_the_luma_unchanged() {
 }
 
 #[test]
+fn cb_cr_reads_back_a_chroma_shift() {
+    for (x, y) in [(1.0, 0.0), (0.0, 1.0), (-0.6, 0.8)] {
+        let shifted = chroma_shift(x, y).map(|c| 0.5 + c);
+        let [cb, cr] = cb_cr(shifted);
+        let [want_cb, want_cr] = wheel_chroma(x, y);
+        assert!((cb - want_cb).abs() < 1e-5 && (cr - want_cr).abs() < 1e-5);
+    }
+}
+
+#[test]
 fn the_chroma_shift_grows_with_the_square_of_the_distance() {
     let edge = chroma_shift(0.0, 1.0)[0];
     let half = chroma_shift(0.0, 0.5)[0];

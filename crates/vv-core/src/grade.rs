@@ -178,7 +178,17 @@ pub const WHEEL_CHROMA_STRENGTH: f32 = 0.2;
 pub const WHEEL_LUMA_STRENGTH: f32 = 0.5;
 
 /// Rec.709 luma weights, the luma the ranges and the saturation are measured on.
-pub const LUMA_WEIGHTS: [f32; 3] = [0.2126, 0.7152, 0.0722];
+const LUMA_WEIGHTS: [f32; 3] = [0.2126, 0.7152, 0.0722];
+/// Rec.709: Cb = (B − Y) / CB_SCALE, Cr = (R − Y) / CR_SCALE, each in
+/// -0.5..0.5. Mirrored in color.wgsl.
+const CB_SCALE: f32 = 1.8556;
+const CR_SCALE: f32 = 1.5748;
+
+/// The Cb/Cr of `rgb`.
+pub fn cb_cr(rgb: [f32; 3]) -> [f32; 2] {
+    let y = luma(rgb);
+    [(rgb[2] - y) / CB_SCALE, (rgb[0] - y) / CR_SCALE]
+}
 
 /// The color a puck at `(x, y)` adds, with no change in luma: X is Cb and Y
 /// is Cr, as on a vectorscope, so the wheel reads like one. The strength
@@ -186,7 +196,12 @@ pub const LUMA_WEIGHTS: [f32; 3] = [0.2126, 0.7152, 0.0722];
 /// where the small corrections are.
 pub fn chroma_shift(x: f32, y: f32) -> [f32; 3] {
     let [cb, cr] = wheel_chroma(x, y);
-    [1.5748 * cr, -0.187_324 * cb - 0.468_124 * cr, 1.8556 * cb]
+    let green = |k: f32, scale: f32| -k * scale / LUMA_WEIGHTS[1];
+    [
+        CR_SCALE * cr,
+        green(LUMA_WEIGHTS[2], CB_SCALE) * cb + green(LUMA_WEIGHTS[0], CR_SCALE) * cr,
+        CB_SCALE * cb,
+    ]
 }
 
 /// The Cb/Cr a puck at `(x, y)` adds.
@@ -220,7 +235,8 @@ pub fn range_weights(luma: f32, low: f32, high: f32) -> [f32; 3] {
     [shadows, 1.0 - shadows - highlights, highlights]
 }
 
-fn luma(rgb: [f32; 3]) -> f32 {
+/// Rec.709 luma of `rgb`.
+pub fn luma(rgb: [f32; 3]) -> f32 {
     rgb.iter().zip(LUMA_WEIGHTS).map(|(c, w)| c * w).sum()
 }
 
@@ -292,7 +308,7 @@ pub fn auto_balance(grade: &GradeValue, pixels: impl Iterator<Item = [f32; 3]>) 
                 .sum::<f32>()
                 * global_saturation;
             Some(Sample {
-                chroma: [(rgb[2] - y) / 1.8556, (rgb[0] - y) / 1.5748],
+                chroma: cb_cr(rgb),
                 weights,
                 saturation,
             })

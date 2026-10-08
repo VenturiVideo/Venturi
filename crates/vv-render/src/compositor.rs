@@ -532,7 +532,13 @@ impl WorkPipelines {
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("vv-render transform shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/transform.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                concat!(
+                    include_str!("shaders/color.wgsl"),
+                    include_str!("shaders/transform.wgsl")
+                )
+                .into(),
+            ),
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -903,6 +909,7 @@ impl Compositor {
             label: Some("vv-render rgba->i420 shader"),
             source: wgpu::ShaderSource::Wgsl(
                 concat!(
+                    include_str!("shaders/color.wgsl"),
                     include_str!("shaders/dither.wgsl"),
                     include_str!("shaders/rgba_to_i420.wgsl")
                 )

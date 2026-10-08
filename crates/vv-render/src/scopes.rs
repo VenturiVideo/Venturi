@@ -65,7 +65,13 @@ impl Scopes {
     pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> Self {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("vv-render scopes shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/scopes.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                concat!(
+                    include_str!("shaders/color.wgsl"),
+                    include_str!("shaders/scopes.wgsl")
+                )
+                .into(),
+            ),
         });
         let pipeline = |entry_point| {
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {

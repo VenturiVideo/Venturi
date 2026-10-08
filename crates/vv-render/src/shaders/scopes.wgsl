@@ -26,11 +26,14 @@ struct Params {
 @group(0) @binding(2) var<uniform> params: Params;
 @group(0) @binding(3) var output: texture_storage_2d<rgba8unorm, write>;
 
-const LUMA_709: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 const HISTOGRAM_MAX: u32 = 1024u;
 
 fn level(v: f32) -> u32 {
     return u32(clamp(round(v * 255.0), 0.0, 255.0));
+}
+
+fn level2(v: vec2<f32>) -> vec2<u32> {
+    return vec2<u32>(level(v.x), level(v.y));
 }
 
 @compute @workgroup_size(16, 16)
@@ -40,11 +43,11 @@ fn accumulate(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
     let c = textureLoad(source, p, 0).rgb;
-    let luma = dot(c, LUMA_709);
+    let y = luma(c);
     let col = p.x * params.bins_w / params.src_w;
     switch params.mode {
         case 0u: {
-            atomicAdd(&bins[level(luma) * params.bins_w + col], 1u);
+            atomicAdd(&bins[level(y) * params.bins_w + col], 1u);
         }
         case 1u: {
             for (var k = 0u; k < 3u; k = k + 1u) {
@@ -52,15 +55,14 @@ fn accumulate(@builtin(global_invocation_id) id: vec3<u32>) {
             }
         }
         case 2u: {
-            let cb = level((c.b - luma) / 1.8556 + 0.5);
-            let cr = level((c.r - luma) / 1.5748 + 0.5);
-            atomicAdd(&bins[cr * 256u + cb], 1u);
+            let chroma = level2(cb_cr(c) + 0.5);
+            atomicAdd(&bins[chroma.y * 256u + chroma.x], 1u);
         }
         default: {
             for (var k = 0u; k < 3u; k = k + 1u) {
                 atomicAdd(&bins[k * 256u + level(c[k])], 1u);
             }
-            atomicAdd(&bins[3u * 256u + level(luma)], 1u);
+            atomicAdd(&bins[3u * 256u + level(y)], 1u);
         }
     }
 }
@@ -127,7 +129,7 @@ fn draw(@builtin(global_invocation_id) id: vec3<u32>) {
                 let cr = 0.5 - q.y;
                 let count = atomicLoad(&bins[level(cr + 0.5) * 256u + level(cb + 0.5)]);
                 let hue = clamp(
-                    vec3<f32>(0.5 + 1.5748 * cr, 0.5 - 0.1873 * cb - 0.4681 * cr, 0.5 + 1.8556 * cb),
+                    vec3<f32>(0.5) + cb_cr_to_rgb(cb, cr),
                     vec3<f32>(0.0),
                     vec3<f32>(1.0),
                 );
