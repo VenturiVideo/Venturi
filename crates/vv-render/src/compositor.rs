@@ -900,6 +900,23 @@ impl Compositor {
         self.precision
     }
 
+    /// GPU memory of the textures kept for reuse, i.e. the working set of
+    /// the frames rendered so far; owned textures still held are not counted.
+    pub fn pooled_texture_bytes(&self) -> u64 {
+        let bytes = |t: &wgpu::Texture| {
+            let block = t.format().block_copy_size(None).unwrap_or(4) as u64;
+            t.width() as u64 * t.height() as u64 * block
+        };
+        let pool = self.pool.lock().unwrap();
+        let scratch = self.scratch.lock().unwrap();
+        pool.planes
+            .iter()
+            .chain(&pool.outputs)
+            .chain(scratch.iter())
+            .map(bytes)
+            .sum()
+    }
+
     /// The textures already handed out keep their format: an owned one
     /// still works as a `LayerContent::Texture`.
     pub fn set_precision(&mut self, precision: ProcessingPrecision) {

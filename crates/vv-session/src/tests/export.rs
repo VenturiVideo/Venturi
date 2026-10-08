@@ -961,3 +961,321 @@ fn mix_audio_track_of_a_range_is_the_same_part_of_the_whole_mix() {
         "{windows:?}"
     );
 }
+
+const PRECISION_BENCH_SCENES: [&str; 4] = ["plain", "blur", "chain", "compound"];
+
+fn bench_filter(kind: vv_core::FilterKind, radius: f32, amount: f32) -> vv_core::ClipFilter {
+    vv_core::ClipFilter {
+        radius: Keyframed::constant(radius),
+        amount: Keyframed::constant(amount),
+        ..vv_core::ClipFilter::new(kind)
+    }
+}
+
+fn bench_video_track(clips: Vec<Clip>) -> Track {
+    Track {
+        clips,
+        ..Track::new(TrackKind::Video)
+    }
+}
+
+/// The scenes of plans/FLOAT_INTERMEDIATES.md §4, `frames` long, on `clips`
+/// (the second one only for the blur picture-in-picture).
+fn precision_bench_project(
+    scene: &str,
+    clips: &[std::path::PathBuf],
+    resolution: (u32, u32),
+    frames: FrameIdx,
+) -> (Project, TimelineId) {
+    use vv_core::FilterKind::{BoxBlur, Exposure, GaussianBlur};
+    let mut project = Project::default();
+    let media: Vec<_> = clips
+        .iter()
+        .map(|path| {
+            let meta = vv_media::probe::probe_media(path).expect("probe failed");
+            project.media_pool.insert(vv_core::MediaItem {
+                path: path.clone(),
+                meta,
+                content_hash: 1,
+                compound: None,
+                folder: None,
+            })
+        })
+        .collect();
+    let fps = project.media_pool[media[0]].meta.fps;
+    let clip = |id, source| {
+        Clip::from_source_range(ClipId(id), source, 0, frames, 0, vv_core::Rational::one())
+    };
+    let adjustment = |id, stops| {
+        let mut adjustment = clip(id, ClipSource::Adjustment);
+        adjustment
+            .effects
+            .filters
+            .push(bench_filter(Exposure, 0.0, stops));
+        adjustment
+    };
+    let timeline = |name: &str, tracks| Timeline {
+        name: name.into(),
+        fps,
+        resolution,
+        tracks,
+        markers: Vec::new(),
+        master: Default::default(),
+    };
+    let chain = || {
+        let mut graded = clip(1, ClipSource::Media(media[0]));
+        graded.effects.filters.extend([
+            bench_filter(Exposure, 0.0, -3.0),
+            bench_filter(GaussianBlur, 20.0, 0.0),
+        ]);
+        vec![
+            bench_video_track(vec![graded]),
+            bench_video_track(vec![adjustment(2, 3.0)]),
+        ]
+    };
+    let tracks = match scene {
+        "plain" => vec![bench_video_track(vec![clip(
+            1,
+            ClipSource::Media(media[0]),
+        )])],
+        "blur" => {
+            let mut full = clip(1, ClipSource::Media(media[0]));
+            full.effects
+                .filters
+                .push(bench_filter(GaussianBlur, 250.0, 0.0));
+            let mut inset = clip(2, ClipSource::Media(*media.last().unwrap()));
+            inset.effects.filters.push(bench_filter(BoxBlur, 40.0, 0.0));
+            inset.effects.transform = vv_core::TransformTracks::constant(vv_core::Transform {
+                zoom: [0.5, 0.5],
+                ..Default::default()
+            });
+            vec![
+                bench_video_track(vec![full]),
+                bench_video_track(vec![inset]),
+            ]
+        }
+        "chain" => chain(),
+        "compound" => {
+            let nested = project.timelines.insert(timeline("Nested", chain()));
+            let meta = vv_core::MediaMeta {
+                duration_frames: frames,
+                fps,
+                width: resolution.0,
+                height: resolution.1,
+                has_video: true,
+                has_audio: false,
+                sample_rate: 0,
+                channels: 0,
+                audio_streams: 0,
+                file: Default::default(),
+            };
+            let compound = project.media_pool.insert(vv_core::MediaItem {
+                path: "Compound Clip 1".into(),
+                meta,
+                content_hash: 2,
+                compound: Some(nested),
+                folder: None,
+            });
+            vec![
+                bench_video_track(vec![clip(3, ClipSource::Media(compound))]),
+                bench_video_track(vec![adjustment(4, 0.5)]),
+            ]
+        }
+        other => panic!("unknown scene {other}"),
+    };
+    let id = project.timelines.insert(timeline("Bench", tracks));
+    (project, id)
+}
+
+/// Peak of `VmHWM`-like fields of /proc/self/status, in MiB.
+fn proc_status_mib(field: &str) -> Option<f64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|l| l.starts_with(field))?;
+    let kib: f64 = line.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kib / 1024.0)
+}
+
+/// This process's GPU memory and the GPU's memory-controller load, from
+/// `nvidia-smi` (absent elsewhere): `(MiB, percent)`.
+fn nvidia_sample() -> Option<(Option<f64>, f64)> {
+    let pid = std::process::id().to_string();
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new("nvidia-smi")
+            .args(args)
+            .output()
+            .ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    let util: f64 = run(&[
+        "--query-gpu=utilization.memory",
+        "--format=csv,noheader,nounits",
+    ])?
+    .trim()
+    .lines()
+    .next()?
+    .trim()
+    .parse()
+    .ok()?;
+    let table = run(&[])?;
+    let vram = table
+        .lines()
+        .find(|l| l.split_whitespace().any(|w| w == pid))
+        .and_then(|l| {
+            l.split_whitespace()
+                .find_map(|w| w.strip_suffix("MiB"))?
+                .parse()
+                .ok()
+        });
+    Some((vram, util))
+}
+
+/// One scene at one precision and resolution, in this process: decode and
+/// compose `VV_BENCH_FRAMES` frames as the export does, then print a
+/// `RESULT` line for `bench_processing_precision`.
+fn run_precision_bench(scene: &str, precision: vv_core::ProcessingPrecision, height: u32) {
+    let frames: FrameIdx = std::env::var("VV_BENCH_FRAMES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(120);
+    let clips: Vec<std::path::PathBuf> = std::env::var("VV_BENCH_CLIPS")
+        .map(|v| std::env::split_paths(&v).collect())
+        .unwrap_or_default();
+    let clips = if clips.is_empty() {
+        let path = std::env::temp_dir().join("vv-precision-bench-1080p.mkv");
+        if !path.exists() {
+            vv_media::test_support::ffmpeg(
+                &[
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc2=size=1920x1080:rate=30:duration=10",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                ],
+                &path,
+            );
+        }
+        vec![path]
+    } else {
+        clips
+    };
+    let resolution = (height * 16 / 9, height);
+    let (project, timeline_id) = precision_bench_project(scene, &clips, resolution, frames);
+    let timeline = &project.timelines[timeline_id];
+
+    let compositor = vv_render::Compositor::new_headless_with_precision(precision);
+    let baseline = nvidia_sample().and_then(|(vram, _)| vram);
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    let composing = std::sync::atomic::AtomicBool::new(false);
+    let (decode, compose, samples) = std::thread::scope(|scope| {
+        let sampler = scope.spawn(|| {
+            let mut samples = Vec::new();
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                if let Some(sample) = nvidia_sample() {
+                    samples.push((sample, composing.load(std::sync::atomic::Ordering::Relaxed)));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            samples
+        });
+        let output = vv_render::OutputFrame::exact(resolution.0, resolution.1);
+        let mut provider = StreamingFrameProvider::default();
+        let (mut decode, mut compose) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
+        // The first frames allocate the pools and the decoders.
+        const WARMUP: FrameIdx = 5;
+        for frame in 0..frames {
+            let start = std::time::Instant::now();
+            let layers = decode_video_frame(
+                &project,
+                timeline,
+                &mut provider,
+                &compositor,
+                frame,
+                resolution,
+            )
+            .unwrap();
+            let decoded = std::time::Instant::now();
+            composing.store(true, std::sync::atomic::Ordering::Relaxed);
+            compose_video_frame(&compositor, &layers, output);
+            composing.store(false, std::sync::atomic::Ordering::Relaxed);
+            if frame >= WARMUP {
+                decode += decoded - start;
+                compose += decoded.elapsed();
+            }
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        (decode, compose, sampler.join().unwrap())
+    });
+    let timed = (frames - 5).max(1) as f64;
+    let peak_vram = samples
+        .iter()
+        .filter_map(|((v, _), _)| *v)
+        .fold(None, |a: Option<f64>, v| Some(a.map_or(v, |a| a.max(v))));
+    let utils: Vec<f64> = samples.iter().map(|((_, u), _)| *u).collect();
+    let mean_util = (!utils.is_empty()).then(|| utils.iter().sum::<f64>() / utils.len() as f64);
+    let fmt = |v: Option<f64>| v.map_or("-".to_owned(), |v| format!("{v:.0}"));
+    println!(
+        "RESULT {scene} {precision:?} {height}p | decode {:.1} ms | compose {:.1} ms | pools {:.0} MiB | VRAM {} MiB (+{}) | RSS peak {} MiB | mem ctrl {}% | {}",
+        decode.as_secs_f64() * 1000.0 / timed,
+        compose.as_secs_f64() * 1000.0 / timed,
+        compositor.pooled_texture_bytes() as f64 / (1024.0 * 1024.0),
+        fmt(peak_vram),
+        fmt(peak_vram.zip(baseline).map(|(p, b)| p - b)),
+        fmt(proc_status_mib("VmHWM")),
+        fmt(mean_util),
+        compositor.adapter_name(),
+    );
+}
+
+/// Processing precision cost, one child process per scene x precision x
+/// resolution so the peaks do not mix. Clips: `VV_BENCH_CLIPS` (a PATH-style
+/// list; a synthetic 1080p clip without it), frames: `VV_BENCH_FRAMES`.
+/// `cargo test --release -p vv-session bench_processing_precision -- --ignored --nocapture`.
+#[test]
+#[ignore = "manual measurement, not a correctness assertion"]
+fn bench_processing_precision() {
+    if let Ok(config) = std::env::var("VV_BENCH_CONFIG") {
+        let mut parts = config.split(',');
+        let (scene, precision, height) = (
+            parts.next().unwrap(),
+            parts.next().unwrap(),
+            parts.next().unwrap().parse().unwrap(),
+        );
+        let precision = match precision {
+            "High" => vv_core::ProcessingPrecision::High,
+            _ => vv_core::ProcessingPrecision::Standard,
+        };
+        run_precision_bench(scene, precision, height);
+        return;
+    }
+    let exe = std::env::current_exe().unwrap();
+    for height in [1080, 2160] {
+        for scene in PRECISION_BENCH_SCENES {
+            for precision in ["Standard", "High"] {
+                let out = std::process::Command::new(&exe)
+                    .args([
+                        "--exact",
+                        "export::tests::bench_processing_precision",
+                        "--ignored",
+                        "--nocapture",
+                    ])
+                    .env("VV_BENCH_CONFIG", format!("{scene},{precision},{height}"))
+                    .output()
+                    .unwrap();
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                // libtest prints it on the line of the test name.
+                match stdout.lines().find_map(|l| l.split_once("RESULT ")) {
+                    Some((_, result)) => println!("{result}"),
+                    None => println!(
+                        "{scene} {precision} {height}p failed:\n{}",
+                        String::from_utf8_lossy(&out.stderr)
+                    ),
+                }
+            }
+        }
+    }
+}
