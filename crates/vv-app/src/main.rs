@@ -688,9 +688,11 @@ impl VenturiApp {
     }
 
     /// With "selection follows playhead" on, it selects the video clip under
-    /// the playhead and its group (nothing on a gap).
+    /// the playhead and its group (nothing on a gap). Not while the Color
+    /// window is open: it would take the selection, and the isolation, off
+    /// the clip being graded to the topmost one.
     fn sync_selection_to_playhead(&mut self) {
-        if !self.selection_follows_playhead {
+        if !self.selection_follows_playhead || self.settings.panels.color_window_open {
             return;
         }
         let Some((track_index, clip_id)) = self.active_video_clip_at(self.timeline_state.playhead)

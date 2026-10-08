@@ -2253,6 +2253,18 @@ fn selection_follows_playhead_during_normal_playback() {
     assert_eq!(app.timeline_state.selected, BTreeSet::from([(0, clip_b)]));
 }
 
+#[test]
+fn the_selection_stays_on_the_graded_clip_while_the_color_window_is_open() {
+    let mut app = VenturiApp::default();
+    let clip_a = make_timeline_with_clip(&mut app, 0, 0, 25);
+    make_timeline_with_clip(&mut app, 0, 25, 25);
+    app.timeline_state.set_single_selection(Some((0, clip_a)));
+    app.settings.panels.color_window_open = true;
+    app.timeline_state.playhead = 30;
+    app.sync_selection_to_playhead();
+    assert_eq!(app.timeline_state.selected, BTreeSet::from([(0, clip_a)]));
+}
+
 /// Bug: "playback starts only if I select the clip".
 #[test]
 fn toggle_playback_works_without_any_selection() {
