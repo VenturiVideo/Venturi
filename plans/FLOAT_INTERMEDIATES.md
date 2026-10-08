@@ -188,6 +188,15 @@ free. Needs more than the one scalar per slot of today's
 
 **Phase 4 — Scopes.** Waveform + vectorscope (then RGB parade, histogram),
 computed on the GPU from the composed frame, independent of the filter.
+Decided (2026-10-08): they live in a **Color window**, a floating
+`egui::Window` like the mixer (`mixer_panel.rs:143`, open state and size
+persisted as `settings.panels.mixer_open`/size are). It shows the color
+correction of the selected clip with the wheels in one row (the
+responsive `grade_panel::grade_section`, which already goes to four per
+row when wide) next to the scopes, a small "Color page" in Resolve's
+style. While it is open the inspector shows only a line pointing to it,
+so the controls are never in two places at once. Opened from the
+inspector's color correction header and from the View menu.
 
 **Not planned now:** OpenColorIO (heavy C++ dependency, GLSL-only shader
 generation, no current need for log/ACES workflows). A `.cube` 3D LUT

@@ -5,7 +5,9 @@ use vv_core::{
     FrameIdx, GradeParam, GradePreset, GradeValue, GradeWheel, KeyframeTarget, KeyframeValue,
 };
 
-use crate::properties_panel::{KeyframeEdit, RowKeyframe, param_row, slider_field};
+use crate::properties_panel::{
+    KeyframeEdit, RowKeyframe, drag_field, keyframe_arrow, keyframe_button, param_row, slider_field,
+};
 
 fn wheel_label(wheel: GradeWheel) -> std::borrow::Cow<'static, str> {
     match wheel {
@@ -60,7 +62,7 @@ fn hue_at(angle: f32) -> egui::Color32 {
 /// relative to where it is, finer with Shift. `true` if it moved; a double
 /// click asks for a reset.
 fn wheel(ui: &mut egui::Ui, id: egui::Id, x: &mut f32, y: &mut f32, reset: &mut bool) -> bool {
-    const SIZE: f32 = 104.0;
+    const SIZE: f32 = WHEEL_BLOCK_WIDTH - 20.0;
     let (rect, _) = ui.allocate_exact_size(egui::vec2(SIZE, SIZE), egui::Sense::hover());
     let response = ui
         .interact(rect, id, egui::Sense::click_and_drag())
@@ -127,20 +129,36 @@ fn wheel(ui: &mut egui::Ui, id: egui::Id, x: &mut f32, y: &mut f32, reset: &mut 
     changed
 }
 
-/// The X and Y rows of a wheel act as one: the diamond and the arrows follow
-/// whichever of the two has keyframes.
-fn joint_keyframe(a: RowKeyframe, b: RowKeyframe) -> RowKeyframe {
-    let pick =
-        |p: Option<FrameIdx>, q: Option<FrameIdx>, nearest: fn(FrameIdx, FrameIdx) -> FrameIdx| {
-            match (p, q) {
-                (Some(p), Some(q)) => Some(nearest(p, q)),
-                (p, q) => p.or(q),
-            }
-        };
-    RowKeyframe {
-        on_keyframe: a.on_keyframe || b.on_keyframe,
-        prev: pick(a.prev, b.prev, FrameIdx::max),
-        next: pick(a.next, b.next, FrameIdx::min),
+/// A wheel's params act as one keyframe row: the diamond and the arrows
+/// follow whichever of them has keyframes.
+fn joint_keyframe(keys: impl IntoIterator<Item = RowKeyframe>) -> RowKeyframe {
+    let nearest = |p: Option<FrameIdx>,
+                   q: Option<FrameIdx>,
+                   pick: fn(FrameIdx, FrameIdx) -> FrameIdx| {
+        match (p, q) {
+            (Some(p), Some(q)) => Some(pick(p, q)),
+            (p, q) => p.or(q),
+        }
+    };
+    keys.into_iter()
+        .reduce(|a, b| RowKeyframe {
+            on_keyframe: a.on_keyframe || b.on_keyframe,
+            prev: nearest(a.prev, b.prev, FrameIdx::max),
+            next: nearest(a.next, b.next, FrameIdx::min),
+        })
+        .expect("a wheel has params")
+}
+
+/// Width of one wheel with its controls; the grid fits as many per row as
+/// the panel allows.
+const WHEEL_BLOCK_WIDTH: f32 = 124.0;
+
+/// Wheels per row for `width`: 1, 2 or all 4 (never 3 + 1).
+fn wheel_columns(width: f32, spacing: f32) -> usize {
+    match ((width + spacing) / (WHEEL_BLOCK_WIDTH + spacing)) as usize {
+        0 | 1 => 1,
+        2 | 3 => 2,
+        _ => 4,
     }
 }
 
@@ -192,52 +210,20 @@ pub(crate) fn grade_section(
         }
     });
 
-    for wheel_kind in GradeWheel::ALL {
-        ui.add_space(4.0);
-        let (px, py) = (wheel_kind.x(), wheel_kind.y());
-        let joint = joint_keyframe(key(px), key(py));
-        let (mut x, mut y) = (grade.get(px), grade.get(py));
-        let mut reset_wheel = false;
-        let row = param_row(ui, &wheel_label(wheel_kind), Some(joint), |ui| {
-            wheel(
-                ui,
-                ui.id().with(("grade_wheel", px)),
-                &mut x,
-                &mut y,
-                &mut reset_wheel,
-            )
+    ui.add_space(4.0);
+    let spacing = ui.spacing().item_spacing.x;
+    let columns = wheel_columns(ui.available_width(), spacing);
+    for row in GradeWheel::ALL.chunks(columns) {
+        ui.horizontal_top(|ui| {
+            for wheel_kind in row {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(WHEEL_BLOCK_WIDTH, 0.0),
+                    egui::Layout::top_down(egui::Align::Center),
+                    |ui| wheel_block(ui, &mut response, grade, *wheel_kind, &key),
+                );
+            }
         });
-        if row.changed {
-            response.set(px, x);
-            response.set(py, y);
-        }
-        if row.toggled_keyframe {
-            response.toggle(px, joint.on_keyframe);
-            response.toggle(py, joint.on_keyframe);
-        }
-        if row.reset || reset_wheel {
-            response.reset.extend([px, py]);
-        }
-        response.goto = response.goto.or(row.goto);
-
-        let luma = wheel_kind.luma();
-        scalar_row(
-            ui,
-            &mut response,
-            grade,
-            luma,
-            key(luma),
-            &t!("props.grade_luminance"),
-        );
-        let saturation = wheel_kind.saturation();
-        scalar_row(
-            ui,
-            &mut response,
-            grade,
-            saturation,
-            key(saturation),
-            &t!("props.saturation"),
-        );
+        ui.add_space(4.0);
     }
     ui.add_space(4.0);
     for param in [GradeParam::LowRange, GradeParam::HighRange] {
@@ -251,6 +237,86 @@ pub(crate) fn grade_section(
         );
     }
     response
+}
+
+/// Name and keyframe group, the wheel, then luminance and saturation.
+fn wheel_block(
+    ui: &mut egui::Ui,
+    response: &mut GradeSectionResponse,
+    grade: &GradeValue,
+    wheel_kind: GradeWheel,
+    key: &dyn Fn(GradeParam) -> RowKeyframe,
+) {
+    let params = [
+        wheel_kind.x(),
+        wheel_kind.y(),
+        wheel_kind.luma(),
+        wheel_kind.saturation(),
+    ];
+    let joint = joint_keyframe(params.map(key));
+    ui.horizontal(|ui| {
+        ui.set_width(WHEEL_BLOCK_WIDTH);
+        let prev = keyframe_arrow(ui, true, joint.prev, &t!("props.prev_keyframe"));
+        if keyframe_button(ui, joint.on_keyframe).clicked() {
+            for param in params {
+                response.toggle(param, joint.on_keyframe);
+            }
+        }
+        let next = keyframe_arrow(ui, false, joint.next, &t!("props.next_keyframe"));
+        response.goto = response.goto.or(prev.or(next));
+        let label = ui
+            .add(
+                egui::Label::new(egui::RichText::new(wheel_label(wheel_kind)).strong())
+                    .truncate()
+                    .sense(egui::Sense::click()),
+            )
+            .on_hover_text(format!(
+                "{}\n{}",
+                wheel_label(wheel_kind),
+                t!("props.reset_hint")
+            ));
+        if label.double_clicked() {
+            response.reset.extend(params);
+        }
+    });
+
+    let (px, py) = (wheel_kind.x(), wheel_kind.y());
+    let (mut x, mut y) = (grade.get(px), grade.get(py));
+    let mut reset_wheel = false;
+    if wheel(
+        ui,
+        ui.id().with(("grade_wheel", px)),
+        &mut x,
+        &mut y,
+        &mut reset_wheel,
+    ) {
+        response.set(px, x);
+        response.set(py, y);
+    }
+    if reset_wheel {
+        response.reset.extend([px, py]);
+    }
+
+    for (param, label) in [
+        (wheel_kind.luma(), t!("props.grade_luminance_short")),
+        (wheel_kind.saturation(), t!("props.grade_saturation_short")),
+    ] {
+        ui.horizontal(|ui| {
+            ui.label(label).on_hover_text(grade_param_label(param));
+            let mut value = grade.get(param) as f64;
+            let range = param.range();
+            if drag_field(
+                ui,
+                &mut value,
+                0.005,
+                (*range.start() as f64)..=(*range.end() as f64),
+                3,
+                "",
+            ) {
+                response.set(param, value as f32);
+            }
+        });
+    }
 }
 
 fn scalar_row(
@@ -276,3 +342,7 @@ fn scalar_row(
     }
     response.goto = response.goto.or(row.goto);
 }
+
+#[cfg(test)]
+#[path = "tests/grade_panel.rs"]
+mod tests;

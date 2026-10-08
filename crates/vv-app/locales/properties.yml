@@ -193,6 +193,14 @@ props.saturation:
   en: "Saturation"
   it: "Saturazione"
 
+props.grade_luminance_short:
+  en: "Lum"
+  it: "Lum"
+
+props.grade_saturation_short:
+  en: "Sat"
+  it: "Sat"
+
 props.grade_low_range:
   en: "Shadows range"
   it: "Soglia ombre"
