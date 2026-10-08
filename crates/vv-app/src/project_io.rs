@@ -8,11 +8,11 @@ use std::sync::Arc;
 /// to show `.MP4` (GoPro). macOS and Windows are already case-insensitive and
 /// do not take globs here.
 fn case_insensitive(exts: &[&str]) -> Vec<String> {
+    if !cfg!(target_os = "linux") {
+        return exts.iter().map(ToString::to_string).collect();
+    }
     exts.iter()
         .map(|e| {
-            if !cfg!(target_os = "linux") {
-                return e.to_string();
-            }
             e.chars()
                 .map(|c| match c.is_ascii_alphabetic() {
                     true => format!("[{}{}]", c.to_ascii_lowercase(), c.to_ascii_uppercase()),
