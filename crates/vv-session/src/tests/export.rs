@@ -183,6 +183,96 @@ fn render_video_frame_recurses_into_a_compound_clips_nested_timeline() {
     );
 }
 
+/// The decoder of a clip inside a compound clip stays open from one frame to
+/// the next: reopening and seeking it cost about 90 ms a frame.
+#[test]
+fn the_decoders_of_nested_clips_stay_open_between_frames() {
+    let dir = std::env::temp_dir().join("vv-app-export-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("nested_decoder_source.mkv");
+    vv_media::test_support::ffmpeg(
+        &["-f", "lavfi", "-i", "color=c=red:size=4x2:rate=25:d=1"],
+        &path,
+    );
+    let mut project = Project::default();
+    let media = project.media_pool.insert(vv_core::MediaItem {
+        path: path.clone(),
+        meta: vv_media::probe::probe(&path).unwrap(),
+        content_hash: 1,
+        compound: None,
+        folder: None,
+    });
+    let nested_clip = Clip::from_source_range(
+        ClipId(1),
+        ClipSource::Media(media),
+        0,
+        20,
+        0,
+        vv_core::Rational::one(),
+    );
+    let nested_id = project.timelines.insert(Timeline {
+        name: "Nested".into(),
+        fps: vv_core::Rational::new(25, 1),
+        resolution: (4, 2),
+        tracks: vec![Track {
+            kind: TrackKind::Video,
+            clips: vec![nested_clip],
+            muted: false,
+            solo: false,
+            locked: false,
+            crossings: Vec::new(),
+            mix: Default::default(),
+            armed: Default::default(),
+        }],
+        markers: Vec::new(),
+        master: Default::default(),
+    });
+    let compound_media = project.media_pool.insert(vv_core::MediaItem {
+        path: "Compound Clip 1".into(),
+        meta: vv_core::MediaMeta {
+            duration_frames: 20,
+            fps: vv_core::Rational::new(25, 1),
+            width: 4,
+            height: 2,
+            has_video: true,
+            has_audio: false,
+            sample_rate: 0,
+            channels: 0,
+            audio_streams: 0,
+            file: Default::default(),
+        },
+        content_hash: 2,
+        compound: Some(nested_id),
+        folder: None,
+    });
+    let compound_clip = Clip::from_source_range(
+        ClipId(2),
+        ClipSource::Media(compound_media),
+        0,
+        10,
+        0,
+        vv_core::Rational::one(),
+    );
+    let tl = timeline_with(vec![Track {
+        kind: TrackKind::Video,
+        clips: vec![compound_clip],
+        muted: false,
+        solo: false,
+        locked: false,
+        crossings: Vec::new(),
+        mix: Default::default(),
+        armed: Default::default(),
+    }]);
+    let compositor = vv_render::Compositor::new_headless();
+    let mut provider = StreamingFrameProvider::default();
+    for frame in [3, 4] {
+        render_video_frame(&project, &tl, &compositor, &mut provider, frame, (4, 2)).unwrap();
+        assert!(provider.active.contains_key(&ClipId(1)), "frame {frame}");
+    }
+    render_video_frame(&project, &tl, &compositor, &mut provider, 15, (4, 2)).unwrap();
+    assert!(provider.active.is_empty(), "past the compound clip: closed");
+}
+
 /// Bug reported by the user: a compound clip is a timeline like any
 /// other, so where its nested timeline has nothing to show it must
 /// stay transparent and let the track below show through —

@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 use vv_core::{
-    Clip, ClipId, ClipSource, FrameIdx, MediaId, Project, Rgba, Timeline, TitleParams, Transform,
+    Clip, ClipSource, FrameIdx, MediaId, Project, Rgba, Timeline, TitleParams, Transform,
 };
 use vv_media::FrameYuv420;
 
@@ -44,43 +44,6 @@ fn nested_timeline_of<'a>(project: &'a Project, clip: &Clip) -> Option<&'a Timel
     };
     let nested_id = project.media_pool.get(*media_id)?.compound?;
     project.timelines.get(nested_id)
-}
-
-/// The clips decoded to compose `timeline` at `frame`: the active ones, both
-/// sides of a crossing in progress, and the same inside the nested timelines
-/// of compound clips.
-pub(crate) fn clips_decoded_at(
-    project: &Project,
-    timeline: &Timeline,
-    frame: FrameIdx,
-) -> Vec<ClipId> {
-    let mut clips = Vec::new();
-    collect_clips_decoded_at(project, timeline, frame, 0, &mut clips);
-    clips
-}
-
-fn collect_clips_decoded_at(
-    project: &Project,
-    timeline: &Timeline,
-    frame: FrameIdx,
-    depth: u32,
-    clips: &mut Vec<ClipId>,
-) {
-    for (track_index, clip) in timeline.active_video_clips_at(frame) {
-        let mut sides = vec![clip];
-        if let Some((left, right, _)) = timeline.tracks[track_index].crossing_at(frame) {
-            sides.extend([left, right]);
-        }
-        for side in sides {
-            clips.push(side.id);
-            if depth < vv_core::MAX_COMPOUND_DEPTH
-                && let Some(nested) = nested_timeline_of(project, side)
-            {
-                let local_frame = side.source_frame_at(frame);
-                collect_clips_decoded_at(project, nested, local_frame, depth + 1, clips);
-            }
-        }
-    }
 }
 
 /// `(media, source frame)` of `clip` at `timeline_frame`; `None` if it is not

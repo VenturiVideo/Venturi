@@ -2,8 +2,8 @@
 //! the same mix as the preview. Runs on a dedicated thread, on a
 //! snapshot of the project.
 
-use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,7 +17,7 @@ use vv_audio::mixer::{
 };
 
 use crate::frame_provider::{
-    FrameProvider, GpuCompounds, OwnedLayer, clips_decoded_at, media_source_frame, track_layers_at,
+    FrameProvider, GpuCompounds, OwnedLayer, media_source_frame, track_layers_at,
 };
 
 pub(crate) const PROJECT_CHANNELS: u16 = 2;
@@ -231,16 +231,22 @@ impl ActiveClipDecoder {
 #[derive(Default)]
 struct StreamingFrameProvider {
     /// One per clip: several tracks can be active on the same frame.
-    /// Pruned by `retain_clips`.
+    /// Pruned by `sweep`.
     active: HashMap<ClipId, ActiveClipDecoder>,
+    /// The clips asked for since the last `sweep`.
+    touched: HashSet<ClipId>,
     hw: Vec<vv_media::HwDevice>,
     /// As `ExportProgress::decoders`.
     used: Vec<Option<vv_media::HwDevice>>,
 }
 
 impl StreamingFrameProvider {
-    fn retain_clips(&mut self, keep: &[ClipId]) {
-        self.active.retain(|id, _| keep.contains(id));
+    /// Closes the decoders of the clips not asked for since the last call:
+    /// whatever `track_layers_at` decoded, nested timelines and crossings
+    /// included, stays open for the next frame.
+    fn sweep(&mut self) {
+        let touched = std::mem::take(&mut self.touched);
+        self.active.retain(|id, _| touched.contains(id));
     }
 }
 
@@ -251,6 +257,7 @@ impl FrameProvider for StreamingFrameProvider {
         clip: &Clip,
         timeline_frame: FrameIdx,
     ) -> Result<Option<Arc<vv_media::FrameYuv420>>, ExportError> {
+        self.touched.insert(clip.id);
         let Some((media_id, source_frame)) = media_source_frame(clip, timeline_frame) else {
             self.active.remove(&clip.id);
             return Ok(None);
@@ -506,9 +513,6 @@ fn decode_video_frame(
     resolution: (u32, u32),
 ) -> Result<Vec<OwnedLayer>, ExportError> {
     let clips = timeline.active_video_clips_at(frame);
-    // Every clip `track_layers_at` decodes, or `retain_clips` would close its
-    // decoder and reopen it on the next frame.
-    provider.retain_clips(&clips_decoded_at(project, timeline, frame));
     let mut gpu = GpuCompounds::new(provider, compositor);
     let mut layers = Vec::with_capacity(clips.len());
     for (track_index, clip) in clips {
@@ -522,6 +526,7 @@ fn decode_video_frame(
             &mut gpu,
         )?);
     }
+    provider.sweep();
     Ok(layers)
 }
 
