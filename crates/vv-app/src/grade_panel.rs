@@ -248,7 +248,7 @@ pub(crate) fn grade_commands(
         let mut filters = effects.filters.clone();
         let grade = &mut filters[pos].grade;
         if let Some(preset) = section.preset {
-            *grade = vv_core::GradeTracks::constant(preset.value());
+            grade.apply_preset(preset);
         }
         for param in &section.reset {
             *grade.track_mut(*param) = vv_core::Keyframed::constant(param.neutral());

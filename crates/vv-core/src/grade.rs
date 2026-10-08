@@ -441,26 +441,58 @@ impl GradePreset {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GradeTracks {
     /// One per `GradeParam`, in the order of `GradeParam::ALL`.
     params: Vec<Keyframed<f32>>,
 }
 
-/// Files saved before a parameter existed have fewer tracks: the missing
-/// tail is neutral.
+/// Saved by name, so the order of `GradeParam` is free to change.
+impl Serialize for GradeTracks {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        struct Tracks<'a>(&'a [Keyframed<f32>]);
+        impl Serialize for Tracks<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.collect_map(GradeParam::ALL.iter().zip(self.0))
+            }
+        }
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("GradeTracks", 1)?;
+        state.serialize_field("tracks", &Tracks(&self.params))?;
+        state.end()
+    }
+}
+
+/// A param missing from the file (saved before it existed) is neutral.
 impl<'de> Deserialize<'de> for GradeTracks {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
         struct Repr {
+            #[serde(default)]
+            tracks: std::collections::HashMap<GradeParam, Keyframed<f32>>,
+            /// Positional, in the order of `ALL`: the first builds with
+            /// color correction.
+            #[serde(default)]
             params: Vec<Keyframed<f32>>,
         }
-        let mut params = Repr::deserialize(deserializer)?.params;
+        let Repr {
+            mut tracks,
+            mut params,
+        } = Repr::deserialize(deserializer)?;
         params.truncate(GradeParam::COUNT);
-        for p in GradeParam::ALL.iter().skip(params.len()) {
-            params.push(Keyframed::constant(p.neutral()));
-        }
-        Ok(Self { params })
+        let mut params = params.into_iter();
+        Ok(Self {
+            params: GradeParam::ALL
+                .iter()
+                .map(|p| {
+                    let positional = params.next();
+                    tracks
+                        .remove(p)
+                        .or(positional)
+                        .unwrap_or_else(|| Keyframed::constant(p.neutral()))
+                })
+                .collect(),
+        })
     }
 }
 
@@ -483,6 +515,18 @@ impl GradeTracks {
 
     pub fn track_mut(&mut self, param: GradeParam) -> &mut Keyframed<f32> {
         &mut self.params[param.index()]
+    }
+
+    /// `Neutral` resets every param; another preset sets only the params it
+    /// moves from neutral, so black and white on a graded clip only
+    /// desaturates it.
+    pub fn apply_preset(&mut self, preset: GradePreset) {
+        let value = preset.value();
+        for (param, track) in GradeParam::ALL.iter().zip(&mut self.params) {
+            if preset == GradePreset::Neutral || value.get(*param) != param.neutral() {
+                *track = Keyframed::constant(value.get(*param));
+            }
+        }
     }
 
     pub fn tracks_mut(&mut self) -> impl Iterator<Item = &mut Keyframed<f32>> {

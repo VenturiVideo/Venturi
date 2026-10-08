@@ -32,7 +32,32 @@ fn tracks_survive_save_and_load() {
 }
 
 #[test]
-fn files_with_fewer_params_load_the_missing_ones_neutral() {
+fn tracks_are_saved_by_name() {
+    let mut tracks = GradeTracks::default();
+    tracks.track_mut(GradeParam::HighRange).default = 0.75;
+    let text = ron::to_string(&tracks).unwrap();
+    assert!(
+        text.contains("HighRange:(keyframes:[],default:0.75)"),
+        "{text}"
+    );
+}
+
+#[test]
+fn params_missing_from_a_file_load_neutral() {
+    let tracks: GradeTracks =
+        ron::from_str("(tracks: {Saturation: (keyframes: [], default: 0.5)})").unwrap();
+    let value = tracks.value_at(0);
+    assert_eq!(value.get(GradeParam::Saturation), 0.5);
+    for param in GradeParam::ALL
+        .into_iter()
+        .filter(|p| *p != GradeParam::Saturation)
+    {
+        assert_eq!(value.get(param), param.neutral(), "{param:?}");
+    }
+}
+
+#[test]
+fn positional_files_with_fewer_params_load_the_missing_ones_neutral() {
     let tracks: GradeTracks =
         ron::from_str("(params: [(keyframes: [], default: 0.25), (keyframes: [], default: -0.5)])")
             .unwrap();
@@ -43,6 +68,27 @@ fn files_with_fewer_params_load_the_missing_ones_neutral() {
         value.get(GradeParam::HighRange),
         GradeParam::HighRange.neutral()
     );
+}
+
+#[test]
+fn black_and_white_keeps_the_rest_of_the_grade() {
+    let mut tracks = GradeTracks::default();
+    tracks.track_mut(GradeParam::MidtonesX).default = 0.3;
+    tracks.apply_preset(GradePreset::BlackAndWhite);
+    let value = tracks.value_at(0);
+    assert_eq!(value.get(GradeParam::MidtonesX), 0.3);
+    assert_eq!(value.get(GradeParam::Saturation), 0.0);
+}
+
+#[test]
+fn the_neutral_preset_resets_every_param() {
+    let mut tracks = GradeTracks::default();
+    tracks
+        .track_mut(GradeParam::MidtonesX)
+        .upsert(10, 0.5, crate::Interpolation::Linear);
+    tracks.track_mut(GradeParam::Saturation).default = 0.0;
+    tracks.apply_preset(GradePreset::Neutral);
+    assert_eq!(tracks, GradeTracks::default());
 }
 
 #[test]

@@ -1760,21 +1760,6 @@ impl FilterEntry {
             _ => filter_label(self.kind),
         }
     }
-
-    /// The preset's non-neutral params onto `filter`, the others left as
-    /// they are: dropping "black and white" on a graded clip only
-    /// desaturates it.
-    pub fn apply_preset(self, filter: &mut vv_core::ClipFilter) {
-        let Some(preset) = self.preset else {
-            return;
-        };
-        let value = preset.value();
-        for param in vv_core::GradeParam::ALL {
-            if value.get(param) != param.neutral() {
-                *filter.grade.track_mut(param) = vv_core::Keyframed::constant(value.get(param));
-            }
-        }
-    }
 }
 
 pub fn filter_label(kind: vv_core::FilterKind) -> std::borrow::Cow<'static, str> {
@@ -5454,7 +5439,9 @@ fn apply_pending_action(
                         }
                     };
                     own.enabled = true;
-                    filter.apply_preset(own);
+                    if let Some(preset) = filter.preset {
+                        own.grade.apply_preset(preset);
+                    }
                     filters
                 });
             if let Some(filters) = new_filters {
