@@ -4,6 +4,25 @@
 use super::*;
 use std::sync::Arc;
 
+/// Linux dialog filters are case-sensitive globs, so `mp4` becomes `[mM][pP]4`
+/// to show `.MP4` (GoPro). macOS and Windows are already case-insensitive and
+/// do not take globs here.
+fn case_insensitive(exts: &[&str]) -> Vec<String> {
+    exts.iter()
+        .map(|e| {
+            if !cfg!(target_os = "linux") {
+                return e.to_string();
+            }
+            e.chars()
+                .map(|c| match c.is_ascii_alphabetic() {
+                    true => format!("[{}{}]", c.to_ascii_lowercase(), c.to_ascii_uppercase()),
+                    false => c.to_string(),
+                })
+                .collect()
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ProjectSwitch {
     New,
@@ -347,22 +366,19 @@ impl VenturiApp {
     // Opens the file dialog and imports the chosen files (used by the toolbar
     // button and by the Ctrl+I shortcut).
     pub(crate) fn import_media_dialog(&mut self) {
-        self.spawn_dialog(DialogKind::ImportMedia, |dlg| {
+        const VIDEO: &[&str] = &["mp4", "mov", "mkv", "avi"];
+        const AUDIO: &[&str] = &["wav", "mp3", "flac", "m4a", "aac", "ogg", "opus"];
+        let media: Vec<&str> = [VIDEO, AUDIO, vv_media::IMAGE_EXTENSIONS].concat();
+        self.spawn_dialog(DialogKind::ImportMedia, move |dlg| {
             DialogOutcome::Files(
-                dlg.add_filter(
-                    "media",
-                    &[
-                        "mp4", "mov", "mkv", "avi", "wav", "mp3", "flac", "m4a", "aac", "ogg",
-                        "opus", "jpg", "jpeg", "png", "bmp", "webp", "tif", "tiff",
-                    ],
-                )
-                .add_filter("video", &["mp4", "mov", "mkv", "avi"])
-                .add_filter(
-                    "audio",
-                    &["wav", "mp3", "flac", "m4a", "aac", "ogg", "opus"],
-                )
-                .add_filter(t!("file_filter.images"), vv_media::IMAGE_EXTENSIONS)
-                .pick_files(),
+                dlg.add_filter("media", &case_insensitive(&media))
+                    .add_filter("video", &case_insensitive(VIDEO))
+                    .add_filter("audio", &case_insensitive(AUDIO))
+                    .add_filter(
+                        t!("file_filter.images"),
+                        &case_insensitive(vv_media::IMAGE_EXTENSIONS),
+                    )
+                    .pick_files(),
             )
         });
     }
@@ -1308,3 +1324,7 @@ fn format_elapsed(d: std::time::Duration) -> String {
         _ => format!("{}h {:02}m {:02}s", secs / 3600, secs / 60 % 60, secs % 60),
     }
 }
+
+#[cfg(test)]
+#[path = "tests/project_io.rs"]
+mod tests;
