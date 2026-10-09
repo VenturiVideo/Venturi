@@ -3693,6 +3693,20 @@ impl egui::DroppedFile for TestDroppedFile {
     }
 }
 
+fn drop_files(app: &mut VenturiApp, paths: &[PathBuf]) {
+    let ctx = egui::Context::default();
+    let mut input = egui::RawInput::default();
+    input.dropped_files = paths
+        .iter()
+        .map(|p| {
+            std::sync::Arc::new(TestDroppedFile(p.clone()))
+                as std::sync::Arc<dyn egui::DroppedFile + Send + Sync>
+        })
+        .collect();
+    let mut output = ctx.run_ui(input, |ui| app.poll_dropped_files(ui.ctx()));
+    output.textures_delta.clear();
+}
+
 /// Drag & drop from the file manager: a file dropped on the window
 /// (`i.raw.dropped_files`) is imported into the media pool exactly as
 /// from the file dialog.
@@ -3701,11 +3715,7 @@ fn dropping_a_file_from_the_file_manager_imports_it_into_the_pool() {
     let path = make_wav("dropped.wav");
     let mut app = VenturiApp::default();
 
-    let ctx = egui::Context::default();
-    let mut input = egui::RawInput::default();
-    input.dropped_files = vec![std::sync::Arc::new(TestDroppedFile(path.clone()))];
-    let mut output = ctx.run_ui(input, |ui| app.poll_dropped_files(ui.ctx()));
-    output.textures_delta.clear();
+    drop_files(&mut app, std::slice::from_ref(&path));
     app.wait_for_import();
 
     assert!(app.import_warnings.is_empty(), "{:?}", app.import_warnings);
@@ -3728,6 +3738,67 @@ fn dropping_a_file_from_the_file_manager_imports_it_into_the_pool() {
         .find(|m| m.compound.is_none())
         .unwrap();
     assert_eq!(item.path, path);
+}
+
+/// A dropped project goes through the same "save the changes?" path as
+/// File → Open; media dropped along with it are not imported.
+#[test]
+fn dropping_a_project_opens_it_after_the_unsaved_changes_question() {
+    let dir = std::env::temp_dir().join("vv-app-drop-project-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let project_path = dir.join("dropped.vvproj");
+    let mut saved = VenturiApp::default();
+    saved.create_timeline("Dropped".into(), vv_core::Rational::new(25, 1), (64, 48));
+    saved.save_project_to(&project_path);
+
+    let mut app = VenturiApp::default();
+    make_timeline_with_clip(&mut app, 0, 0, 10);
+    drop_files(
+        &mut app,
+        &[make_wav("dropped-with-project.wav"), project_path.clone()],
+    );
+    assert_eq!(
+        app.pending_project_switch,
+        Some(ProjectSwitch::OpenPath(project_path.clone()))
+    );
+    app.resolve_unsaved_changes(UnsavedChoice::Discard);
+
+    assert_eq!(app.session.path(), Some(project_path.as_path()));
+    let timeline_id = app.timeline_id.unwrap();
+    assert_eq!(app.session.project.timelines[timeline_id].name, "Dropped");
+    app.wait_for_import();
+    assert!(
+        app.session
+            .project
+            .media_pool
+            .values()
+            .all(|m| m.compound.is_some()),
+        "the wav was not imported"
+    );
+}
+
+/// A dropped `.otio` is imported as from Timeline → Import.
+#[test]
+fn dropping_an_otio_imports_it_as_a_timeline() {
+    let dir = std::env::temp_dir().join("vv-app-drop-otio-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let otio_path = dir.join("Dropped.OTIO");
+    let otio = serde_json::json!({
+        "OTIO_SCHEMA": "Timeline.1",
+        "name": "Dropped",
+        "tracks": { "OTIO_SCHEMA": "Stack.1", "children": [
+            { "OTIO_SCHEMA": "Track.1", "kind": "Video", "children": [] },
+        ]},
+    });
+    std::fs::write(&otio_path, otio.to_string()).unwrap();
+
+    let mut app = VenturiApp::default();
+    drop_files(&mut app, &[otio_path]);
+    app.wait_for_otio_import();
+
+    assert!(app.project_error.is_none(), "{:?}", app.project_error);
+    let timeline_id = app.timeline_id.expect("the imported timeline is opened");
+    assert_eq!(app.session.project.timelines[timeline_id].name, "Dropped");
 }
 
 /// With the "use proxy" toggle off nothing is generated; turning it back on

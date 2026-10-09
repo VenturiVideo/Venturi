@@ -27,7 +27,7 @@ fn case_insensitive(exts: &[&str]) -> Vec<String> {
 pub(crate) enum ProjectSwitch {
     New,
     Open,
-    OpenRecent(PathBuf),
+    OpenPath(PathBuf),
     Quit,
 }
 
@@ -348,8 +348,9 @@ impl VenturiApp {
         }
     }
 
-    /// Files dropped by the file manager onto the window: they are imported into
-    /// the pool, wherever they land.
+    /// Files dropped by the file manager onto the window, wherever they land:
+    /// a project is opened and an `.otio` imported as from the menus, the
+    /// rest goes into the pool.
     pub(crate) fn poll_dropped_files(&mut self, ctx: &egui::Context) {
         let paths: Vec<PathBuf> = ctx.input(|i| {
             i.raw
@@ -358,8 +359,21 @@ impl VenturiApp {
                 .map(|f| f.path().to_path_buf())
                 .collect()
         });
-        if !paths.is_empty() {
-            self.import_media_files(paths);
+        let has_extension =
+            |p: &Path, ext: &str| p.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext));
+        if let Some(project) = paths.iter().find(|p| has_extension(p, "vvproj")) {
+            // Anything else dropped with it would land in the project being replaced.
+            self.request_project_switch(ProjectSwitch::OpenPath(project.clone()));
+            return;
+        }
+        let (otio, media): (Vec<_>, Vec<_>) =
+            paths.into_iter().partition(|p| has_extension(p, "otio"));
+        // The session runs one OTIO import at a time.
+        if let Some(otio) = otio.first() {
+            self.import_otio_from(otio);
+        }
+        if !media.is_empty() {
+            self.import_media_files(media);
         }
     }
 
@@ -471,7 +485,7 @@ impl VenturiApp {
         match switch {
             ProjectSwitch::New => self.new_project(),
             ProjectSwitch::Open => self.open_project_dialog(),
-            ProjectSwitch::OpenRecent(path) => self.load_project_from(path),
+            ProjectSwitch::OpenPath(path) => self.load_project_from(path),
             ProjectSwitch::Quit => self.quit_confirmed = true,
         }
     }

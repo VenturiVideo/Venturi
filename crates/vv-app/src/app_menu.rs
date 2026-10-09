@@ -563,7 +563,7 @@ impl VenturiApp {
             });
         });
         if let Some(path) = chosen {
-            self.request_project_switch(ProjectSwitch::OpenRecent(path));
+            self.request_project_switch(ProjectSwitch::OpenPath(path));
             ui.close();
         }
     }
