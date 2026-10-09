@@ -1,0 +1,41 @@
+_version: 2
+
+paste_image.title:
+  en: "Paste image"
+  it: "Incolla immagine"
+
+paste_image.name:
+  en: "Name"
+  it: "Nome"
+
+paste_image.add:
+  en: "Add to media pool"
+  it: "Aggiungi al media pool"
+
+paste_image.saved_in:
+  en: "Saved in the %{dir} folder next to the project file."
+  it: "Salvata nella cartella %{dir} accanto al file del progetto."
+
+paste_image.name_empty:
+  en: "Enter a name."
+  it: "Inserisci un nome."
+
+paste_image.name_invalid:
+  en: "The name cannot contain / or \\."
+  it: "Il nome non può contenere / o \\."
+
+paste_image.name_taken:
+  en: "A file with this name already exists."
+  it: "Esiste già un file con questo nome."
+
+paste_image.save_failed:
+  en: "The pasted image could not be saved: %{error}"
+  it: "Non è stato possibile salvare l'immagine incollata: %{error}"
+
+paste_image.needs_save_title:
+  en: "Save the project to paste images"
+  it: "Salva il progetto per incollare immagini"
+
+paste_image.needs_save:
+  en: "Pasted images go into the %{dir} folder next to the project file, and this project has not been saved yet. Save it, then paste again."
+  it: "Le immagini incollate vanno nella cartella %{dir} accanto al file del progetto, e questo progetto non è ancora stato salvato. Salvalo, poi incolla di nuovo."

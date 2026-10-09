@@ -116,10 +116,18 @@ impl VenturiApp {
                 self.start_export();
             }
             // Only collected: handled outside here, see above.
+            let pasted_text = i
+                .events
+                .iter()
+                .find_map(|e| match e {
+                    egui::Event::Paste(text) => Some(text.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
             for (action, event) in [
                 (Action::Copy, egui::Event::Copy),
                 (Action::Cut, egui::Event::Cut),
-                (Action::Paste, egui::Event::Paste(String::new())),
+                (Action::Paste, egui::Event::Paste(pasted_text)),
             ] {
                 if pressed(action) {
                     clipboard_events.push(event);

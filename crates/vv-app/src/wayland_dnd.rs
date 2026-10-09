@@ -1,6 +1,8 @@
 //! Dropping files from the file manager on Wayland, where winit 0.30 does not
-//! handle it (X11 only). A thread with its own queue on winit's connection,
-//! like smithay-clipboard does; the files reach egui in `raw_input_hook`.
+//! handle it (X11 only), and reading images from the clipboard, which
+//! egui-winit reads only as text. A thread with its own queue on winit's
+//! connection, like smithay-clipboard does; the files reach egui in
+//! `raw_input_hook`.
 
 use std::ffi::OsString;
 use std::io::Read;
@@ -10,9 +12,9 @@ use std::sync::{Arc, Mutex};
 
 use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
 use sctk::data_device_manager::data_device::{DataDevice, DataDeviceHandler};
-use sctk::data_device_manager::data_offer::{DataOfferHandler, DragOffer};
+use sctk::data_device_manager::data_offer::{DataOfferHandler, DragOffer, SelectionOffer};
 use sctk::data_device_manager::data_source::DataSourceHandler;
-use sctk::data_device_manager::{DataDeviceManagerState, WritePipe};
+use sctk::data_device_manager::{DataDeviceManagerState, ReadPipe, WritePipe};
 use sctk::reexports::client::globals::registry_queue_init;
 use sctk::reexports::client::protocol::wl_data_device::WlDataDevice;
 use sctk::reexports::client::protocol::wl_data_device_manager::DndAction;
@@ -24,16 +26,20 @@ use sctk::registry::{ProvidesRegistryState, RegistryState};
 use sctk::seat::{Capability, SeatHandler, SeatState};
 use sctk::{delegate_data_device, delegate_registry, delegate_seat, registry_handlers};
 
+use crate::paste_image::IMAGE_MIME_TYPES;
+
 const URI_LIST: &str = "text/uri-list";
 
 #[derive(Default)]
 struct Shared {
     hovering: bool,
     dropped: Vec<PathBuf>,
+    selection: Option<SelectionOffer>,
 }
 
 pub struct WaylandDnd {
     shared: Arc<Mutex<Shared>>,
+    conn: Connection,
 }
 
 impl WaylandDnd {
@@ -71,7 +77,21 @@ impl WaylandDnd {
                 }
             })
             .ok()?;
-        Some(Self { shared })
+        Some(Self { shared, conn })
+    }
+
+    /// The pipe the clipboard's image arrives from, and its extension;
+    /// `None` if the clipboard holds no image.
+    pub fn clipboard_image(&self) -> Option<(ReadPipe, &'static str)> {
+        let offer = self.shared.lock().unwrap().selection.clone()?;
+        let (mime, extension) = offer.with_mime_types(|mimes| {
+            IMAGE_MIME_TYPES
+                .into_iter()
+                .find(|(mime, _)| mimes.iter().any(|m| m == mime))
+        })?;
+        let pipe = offer.receive(mime.to_string()).ok()?;
+        let _ = self.conn.flush();
+        Some((pipe, extension))
     }
 
     pub fn feed(&self, raw_input: &mut egui::RawInput) {
@@ -155,7 +175,13 @@ impl DataDeviceHandler for State {
 
     fn motion(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice, _: f64, _: f64) {}
 
-    fn selection(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+    fn selection(&mut self, _: &Connection, _: &QueueHandle<Self>, device: &WlDataDevice) {
+        self.shared.lock().unwrap().selection = self
+            .devices
+            .iter()
+            .find(|d| d.inner() == device)
+            .and_then(|d| d.data().selection_offer());
+    }
 
     fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, device: &WlDataDevice) {
         self.set_hovering(false);

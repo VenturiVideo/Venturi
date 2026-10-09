@@ -25,6 +25,7 @@ mod mix_buffers;
 mod mixer_panel;
 mod new_timeline_dialog;
 mod paste_attributes;
+mod paste_image;
 mod project_io;
 mod properties_panel;
 mod proxy_worker;
@@ -381,6 +382,11 @@ struct VenturiApp {
     export_dialog: Option<export_dialog::ExportDialog>,
     new_timeline_dialog: Option<NewTimelineDialog>,
     paste_attributes: Option<PasteAttributesDialog>,
+    /// A clipboard read for a paste in flight, see `request_clipboard_image`.
+    clipboard_image_rx: Option<mpsc::Receiver<Option<paste_image::ClipboardImage>>>,
+    paste_image_dialog: Option<paste_image::PasteImageDialog>,
+    paste_image_needs_save: bool,
+    paste_key_watch: paste_image::PasteKeyWatch,
     speed_dialog: Option<speed_dialog::SpeedDialog>,
     silence_dialog: Option<silence_dialog::SilenceDialog>,
     /// Proposed again at the next silence removal of the session.
@@ -510,6 +516,10 @@ impl Default for VenturiApp {
             export_dialog: None,
             new_timeline_dialog: None,
             paste_attributes: None,
+            clipboard_image_rx: None,
+            paste_image_dialog: None,
+            paste_image_needs_save: false,
+            paste_key_watch: Default::default(),
             speed_dialog: None,
             silence_dialog: None,
             silence_params: Default::default(),
@@ -2596,7 +2606,7 @@ impl VenturiApp {
 
     /// Copy/cut/paste from the keyboard. After a copy it writes a placeholder
     /// into the system clipboard: egui-winit generates `Event::Paste` only if
-    /// that is not empty.
+    /// that is not empty. An empty `Paste` may be an image in the clipboard.
     fn handle_clipboard_events(&mut self, ui: &egui::Ui, events: &[egui::Event]) {
         for event in events {
             match event {
@@ -2614,6 +2624,9 @@ impl VenturiApp {
                     self.copy_selected_clips();
                     ui.ctx().copy_text("venturi:clip".to_owned());
                     self.delete_selected();
+                }
+                egui::Event::Paste(text) if text.is_empty() => {
+                    self.request_clipboard_image(ui.ctx())
                 }
                 egui::Event::Paste(_) => self.paste_clipboard_at_playhead(),
                 _ => {}
@@ -3470,6 +3483,7 @@ fn fix_iso_key(raw_input: &mut egui::RawInput, iso_key_down: &mut bool) {
 impl eframe::App for VenturiApp {
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         unstick_wheel_modifiers(raw_input);
+        self.paste_key_watch.feed(raw_input);
         #[cfg(target_os = "macos")]
         fix_iso_key(raw_input, &mut self.iso_key_down);
         #[cfg(target_os = "linux")]
@@ -3499,6 +3513,7 @@ impl VenturiApp {
         self.handle_close_request(&ui.ctx().clone());
         self.poll_pending_dialog(&ui.ctx().clone());
         self.poll_dropped_files(&ui.ctx().clone());
+        self.poll_clipboard_image();
         self.follow_hw_decode_fallback();
         // What the session applies would land inside the open group.
         if self.edit_drag_group.is_none() && !self.timeline_state.holds_undo_group() {
@@ -3620,6 +3635,8 @@ impl VenturiApp {
         self.show_unsaved_changes_dialog(ui);
         self.show_new_timeline_dialog(ui.ctx());
         self.show_record_needs_save(ui.ctx());
+        self.show_paste_image_dialog(ui.ctx());
+        self.show_paste_image_needs_save(ui.ctx());
         if std::mem::take(&mut self.timeline_state.paste_attributes_requested) {
             self.open_paste_attributes_dialog();
         }
