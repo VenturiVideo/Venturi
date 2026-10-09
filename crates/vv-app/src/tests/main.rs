@@ -4863,3 +4863,23 @@ fn a_replaced_project_does_not_inherit_the_last_export_destination() {
     app.new_project();
     assert!(app.last_export_settings.is_none());
 }
+
+#[test]
+fn ctrl_comma_opens_the_settings() {
+    let mut app = VenturiApp::default();
+    let ctx = egui::Context::default();
+    let mut input = egui::RawInput::default();
+    input
+        .events
+        .push(egui::Event::ModifiersChanged(egui::Modifiers::COMMAND));
+    input.events.push(egui::Event::Key {
+        key: egui::Key::Comma,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::COMMAND,
+    });
+    let mut output = ctx.run_ui(input, |ui| app.handle_shortcuts(ui));
+    output.textures_delta.clear();
+    assert!(app.settings_dialog.is_some());
+}

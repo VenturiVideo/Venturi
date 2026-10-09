@@ -285,6 +285,9 @@ action.import_media:
 action.export:
   en: Export
   it: Esporta
+action.open_settings:
+  en: Settings
+  it: Impostazioni
 action.zoom_in:
   en: Zoom timeline in
   it: Zoom avanti timeline

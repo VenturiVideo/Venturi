@@ -115,6 +115,9 @@ impl VenturiApp {
             if pressed(Action::Export) {
                 self.start_export();
             }
+            if pressed(Action::OpenSettings) {
+                self.open_settings(settings_dialog::Section::General);
+            }
             // Only collected: handled outside here, see above.
             let pasted_text = i
                 .events
@@ -260,7 +263,10 @@ impl VenturiApp {
                             ui.close();
                         }
                         ui.separator();
-                        if ui.button(t!("menu.settings")).clicked() {
+                        if ui
+                            .button(keymap.menu_label(&t!("menu.settings"), Action::OpenSettings))
+                            .clicked()
+                        {
                             self.open_settings(settings_dialog::Section::General);
                             ui.close();
                         }
