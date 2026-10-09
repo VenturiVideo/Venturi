@@ -197,7 +197,10 @@ fn clip_to_otio(
             "start_time": {
                 "OTIO_SCHEMA": "RationalTime.1",
                 "rate": fps.as_f64(),
-                "value": clip.source_offset as f64 * clip.speed().as_f64(),
+                "value": match clip.freeze {
+                    Some(frame) => clip.conform_rate().scale_round(frame) as f64,
+                    None => clip.source_offset as f64 * clip.speed().as_f64(),
+                },
             },
             "duration": rational_time(clip.timeline_len, fps),
         },
@@ -215,6 +218,10 @@ fn clip_to_otio(
                 "display_color": clip.display_color,
                 "speed": clip.speed(),
                 "pitch_correction": clip.pitch_correction,
+                "freeze": clip.freeze.map(|frame| json!({
+                    "frame": frame,
+                    "source_offset": clip.source_offset,
+                })),
             }
         },
         "media_references": { "DEFAULT_MEDIA": media_reference },

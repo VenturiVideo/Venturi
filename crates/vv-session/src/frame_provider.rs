@@ -52,7 +52,7 @@ pub fn media_source_frame(clip: &Clip, timeline_frame: FrameIdx) -> Option<(Medi
     let ClipSource::Media(media_id) = &clip.source else {
         return None;
     };
-    Some((*media_id, clip.source_frame_at(timeline_frame)))
+    Some((*media_id, clip.picture_frame_at(timeline_frame)))
 }
 
 /// *Native* resolution of the media, the unit of the crop even when decoding
@@ -312,7 +312,7 @@ fn clip_content(
     }
     if let Some(nested) = nested_timeline_of(project, clip)
         && let Some(texture) =
-            provider.compound_texture(project, nested, clip.source_frame_at(timeline_frame))?
+            provider.compound_texture(project, nested, clip.picture_frame_at(timeline_frame))?
     {
         return Ok(ClipContent::Texture(texture));
     }
@@ -402,7 +402,7 @@ fn held_timeline_frame(project: &Project, clip: &Clip, timeline_frame: FrameIdx)
     let Some(media) = project.media_pool.get(*media_id) else {
         return timeline_frame;
     };
-    let wanted = clip.source_frame_at(timeline_frame);
+    let wanted = clip.picture_frame_at(timeline_frame);
     let clamped = wanted.clamp(0, (media.meta.duration_frames - 1).max(0));
     clip.timeline_frame_at(clamped)
 }

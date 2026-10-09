@@ -2928,6 +2928,15 @@ fn map_source_ranges_to_timeline(
     clip: &vv_core::Clip,
     source_ranges: &[(FrameIdx, FrameIdx)],
 ) -> Vec<(FrameIdx, FrameIdx)> {
+    if let Some(frozen) = clip.freeze {
+        let cached = source_ranges
+            .iter()
+            .any(|&(start, end)| (start..=end).contains(&frozen));
+        return match cached {
+            true => vec![(clip.timeline_start, clip.timeline_end() - 1)],
+            false => Vec::new(),
+        };
+    }
     source_ranges
         .iter()
         .filter_map(|&(s_start, s_end)| {
@@ -2958,7 +2967,11 @@ fn compose_compound_waveform(
     let mut peaks = vec![0.0f32; num_peaks];
     let mut complete = true;
     for (_, track) in timeline.audible_tracks() {
-        for clip in track.clips.iter().filter(|c| !c.disabled) {
+        for clip in track
+            .clips
+            .iter()
+            .filter(|c| !c.disabled && c.freeze.is_none())
+        {
             let vv_core::ClipSource::Media(source_id) = clip.source else {
                 continue;
             };

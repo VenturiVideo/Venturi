@@ -44,6 +44,10 @@ history.clip_speed:
   en: "Clip speed"
   it: "Velocità clip"
 
+history.freeze_frame:
+  en: "Freeze frame"
+  it: "Fermo immagine"
+
 history.remove_silences:
   en: "Remove silences"
   it: "Rimuovi silenzi"

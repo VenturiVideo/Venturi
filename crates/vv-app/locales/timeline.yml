@@ -52,6 +52,18 @@ timeline.change_clip_speed:
   en: "Clip speed…"
   it: "Velocità clip…"
 
+timeline.clip_speed:
+  en: "Clip speed"
+  it: "Velocità clip"
+
+timeline.speed_advanced:
+  en: "Advanced…"
+  it: "Avanzate…"
+
+timeline.freeze_frame:
+  en: "Freeze frame"
+  it: "Fermo immagine"
+
 timeline.remove_silences:
   en: "Remove silences…"
   it: "Rimuovi silenzi…"

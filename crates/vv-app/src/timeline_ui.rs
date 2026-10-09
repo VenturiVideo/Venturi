@@ -722,6 +722,11 @@ enum PendingAction {
         clips: Vec<ClipKey>,
         delta: FrameIdx,
     },
+    /// See `vv_core::SetClipFreeze`.
+    SetFreeze {
+        clips: Vec<ClipKey>,
+        at: Option<FrameIdx>,
+    },
     SetSpeed {
         clips: Vec<ClipKey>,
         speed: vv_core::Rational,
@@ -2932,6 +2937,7 @@ pub fn show_timeline(
 
                     // Waveform: maximum of the bins per column, shape independent of the zoom.
                     if track_kinds[visual.track_index] == TrackKind::Audio
+                        && visual.clip.freeze.is_none()
                         && let ClipSource::Media(media_id) = &visual.clip.source
                         && let Some(item) = project.media_pool.get(*media_id)
                         && let Some(wf) =
@@ -3571,10 +3577,50 @@ pub fn show_timeline(
                                 }
                                 ui.close();
                             }
-                            if ui.button(t!("timeline.change_clip_speed")).clicked() {
-                                state.speed_dialog_requested = Some(targets());
-                                ui.close();
-                            }
+                            ui.menu_button(t!("timeline.clip_speed"), |ui| {
+                                let current = match visual.clip.freeze {
+                                    Some(_) => SpeedChoice::Freeze,
+                                    None => SpeedChoice::of(visual.clip.speed()),
+                                };
+                                let choices = [
+                                    (
+                                        SpeedChoice::Freeze,
+                                        format!("{} (0%)", t!("timeline.freeze_frame")),
+                                    ),
+                                    (SpeedChoice::Percent(50), "50%".to_owned()),
+                                    (SpeedChoice::Percent(100), "100%".to_owned()),
+                                    (SpeedChoice::Percent(200), "200%".to_owned()),
+                                    (SpeedChoice::Advanced, t!("timeline.speed_advanced").into()),
+                                ];
+                                for (choice, label) in choices {
+                                    if !ui.radio(current == choice, label).clicked() {
+                                        continue;
+                                    }
+                                    ui.close();
+                                    match choice {
+                                        SpeedChoice::Advanced => {
+                                            state.speed_dialog_requested = Some(targets());
+                                        }
+                                        _ if choice == current => {}
+                                        SpeedChoice::Freeze => {
+                                            pending = Some(PendingAction::SetFreeze {
+                                                clips: targets(),
+                                                at: Some(state.playhead),
+                                            });
+                                        }
+                                        SpeedChoice::Percent(percent) => {
+                                            pending = Some(PendingAction::SetSpeed {
+                                                clips: targets(),
+                                                speed: vv_core::Rational::from_percent(f64::from(
+                                                    percent,
+                                                )),
+                                                pitch_correction: visual.clip.pitch_correction,
+                                                resize_to: None,
+                                            });
+                                        }
+                                    }
+                                }
+                            });
                             let has_audio = targets()
                                 .iter()
                                 .any(|&(track, _)| track_kinds[track] == TrackKind::Audio);
@@ -4074,6 +4120,24 @@ fn retime_bar_height(clip_rect: egui::Rect) -> f32 {
 }
 
 /// Presets of the speed menu of the retime bar, in percent.
+/// The radio entries of the clip menu's speed submenu.
+#[derive(Clone, Copy, PartialEq)]
+enum SpeedChoice {
+    Freeze,
+    Percent(u32),
+    /// Any speed without its own entry; opens the speed dialog.
+    Advanced,
+}
+
+impl SpeedChoice {
+    fn of(speed: vv_core::Rational) -> Self {
+        [50, 100, 200]
+            .into_iter()
+            .find(|&p| speed == vv_core::Rational::from_percent(f64::from(p)))
+            .map_or(Self::Advanced, Self::Percent)
+    }
+}
+
 const SPEED_PRESETS: [f64; 10] = [
     10.0, 25.0, 50.0, 75.0, 100.0, 125.0, 150.0, 200.0, 400.0, 1000.0,
 ];
@@ -5665,6 +5729,12 @@ fn apply_pending_action(
                 )),
             );
         }
+        PendingAction::SetFreeze { clips, at } => {
+            history.do_command(
+                project,
+                Box::new(vv_core::SetClipFreeze::new(timeline_id, clips, at)),
+            );
+        }
         // As a trim: the stretch gained overwrites what was there, a shorter
         // clip leaves a gap.
         PendingAction::SetSpeed {
@@ -5686,6 +5756,7 @@ fn apply_pending_action(
                         Some((from, to)) if from == clip.timeline_end() => to,
                         _ => {
                             let mut retimed = clip.clone();
+                            retimed.unfreeze(media.meta.duration_frames);
                             retimed.set_speed(
                                 speed,
                                 vv_core::Rational::conform_rate(tl.fps, media.meta.fps),
@@ -5805,7 +5876,9 @@ fn clip_label_and_color(
                 return (t!("timeline.media_offline").into_owned(), OFFLINE_COLOR);
             }
             let mut label = media_labels(*media_id);
-            if !clip.speed().is_one() {
+            if clip.freeze.is_some() {
+                label = format!("{label} ({})", t!("timeline.freeze_frame"));
+            } else if !clip.speed().is_one() {
                 label = format!("{label} ({})", format_speed(clip.speed()));
             }
             let color = if track.kind == TrackKind::Video {

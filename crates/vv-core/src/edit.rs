@@ -605,8 +605,9 @@ pub fn trim_range(project: &Project, clip: &Clip, edge: TrimEdge) -> (FrameIdx, 
             (min_value, max_value.max(min_value))
         }
         TrimEdge::End => {
-            // Generators have no source length.
+            // Generators and freeze frames have no source length.
             let max_value = match &clip.source {
+                ClipSource::Media(_) if clip.freeze.is_some() => None,
                 ClipSource::Media(media_id) => project
                     .media_pool
                     .get(*media_id)

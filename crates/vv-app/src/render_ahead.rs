@@ -498,7 +498,7 @@ fn strip_track(segments: Vec<(usize, WantedRange)>) -> Vec<WantedRange> {
 /// track so they can be sorted afterwards. Not sorted. Recursive: a clip
 /// referencing a compound clip (`MediaItem::compound`) does not generate a
 /// segment to decode, but — on the same range, translated into frames
-/// of its nested timeline by `Clip::source_frame_at` — the segments
+/// of its nested timeline by `Clip::picture_frame_at` — the segments
 /// collected inside that timeline, at any depth (within
 /// `MAX_COMPOUND_DEPTH`).
 fn clipped_media_segments(
@@ -522,10 +522,10 @@ fn clipped_media_segments(
             continue;
         }
         // clip→source-frame mapping shared with the export
-        // (`vv_core::Clip::source_frame_at`, see the docs there for the
+        // (`vv_core::Clip::picture_frame_at`, see the docs there for the
         // reason — plans/REFACTOR_PIPELINE.md B1).
-        let source_start = clip.source_frame_at(segment_start);
-        let source_end = clip.source_frame_at(segment_end - 1);
+        let source_start = clip.picture_frame_at(segment_start);
+        let source_end = clip.picture_frame_at(segment_end - 1);
         let segment = WantedRange {
             media_id: *media_id,
             source_start,
@@ -639,8 +639,8 @@ fn push_borrowed_segment(
         return;
     };
     let last = (item.meta.duration_frames - 1).max(0);
-    let a = clip.source_frame_at(from_timeline).clamp(0, last);
-    let b = clip.source_frame_at(to_timeline).clamp(0, last);
+    let a = clip.picture_frame_at(from_timeline).clamp(0, last);
+    let b = clip.picture_frame_at(to_timeline).clamp(0, last);
     let segment = WantedRange {
         media_id: *media_id,
         source_start: a.min(b),

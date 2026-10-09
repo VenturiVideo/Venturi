@@ -1618,6 +1618,10 @@ pub struct Clip {
     /// instead of following the speed.
     #[serde(default = "pitch_correction_default")]
     pub pitch_correction: bool,
+    /// Freeze frame: the source frame shown for the whole clip, which is
+    /// silent. Keyframes keep the mapping of `rate`, so they still animate.
+    #[serde(default)]
+    pub freeze: Option<FrameIdx>,
     /// Excluded from compositing and mixing, but stays on the timeline.
     #[serde(default)]
     pub disabled: bool,
@@ -1662,6 +1666,7 @@ impl Clip {
             rate,
             speed: Rational::one(),
             pitch_correction: pitch_correction_default(),
+            freeze: None,
             disabled: false,
             fade_in: 0,
             fade_out: 0,
@@ -1758,9 +1763,28 @@ impl Clip {
         frame >= self.timeline_start && frame < self.timeline_end()
     }
 
-    /// Source frame shown at timeline position `timeline_frame`
-    /// (inside the clip). The single point of the mapping, shared by preview
-    /// and export: a future time-remap must be applied here.
+    /// Source frame whose picture is shown at `timeline_frame`: the one of
+    /// `source_frame_at`, or the frozen one.
+    pub fn picture_frame_at(&self, timeline_frame: FrameIdx) -> FrameIdx {
+        self.freeze
+            .unwrap_or_else(|| self.source_frame_at(timeline_frame))
+    }
+
+    /// Clears the freeze and shortens the clip back within a media of
+    /// `duration_frames` source frames.
+    pub fn unfreeze(&mut self, duration_frames: FrameIdx) {
+        if self.freeze.take().is_none() {
+            return;
+        }
+        let available = self.rate.scale_round(duration_frames) - self.source_offset;
+        self.timeline_len = self.timeline_len.min(available).max(1);
+        self.fade_in = self.fade_in.min(self.timeline_len);
+        self.fade_out = self.fade_out.min(self.timeline_len);
+    }
+
+    /// Source frame at timeline position `timeline_frame` (inside the clip),
+    /// where keyframes are evaluated. The single point of the mapping, shared
+    /// by preview and export: a future time-remap must be applied here.
     pub fn source_frame_at(&self, timeline_frame: FrameIdx) -> FrameIdx {
         self.rate
             .unscale_round(timeline_frame - self.timeline_start + self.source_offset)

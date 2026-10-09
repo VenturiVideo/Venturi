@@ -701,6 +701,7 @@ fn command_label(label: vv_core::CommandLabel) -> std::borrow::Cow<'static, str>
         L::SetInterpolation => t!("history.set_interpolation"),
         L::PasteAttributes => t!("history.paste_attributes"),
         L::ClipSpeed => t!("history.clip_speed"),
+        L::FreezeFrame => t!("history.freeze_frame"),
         L::RemoveSilences => t!("history.remove_silences"),
         L::AddMarker => t!("history.add_marker"),
         L::EditMarker => t!("history.edit_marker"),

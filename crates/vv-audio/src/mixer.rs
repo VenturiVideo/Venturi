@@ -662,7 +662,11 @@ fn collect_clips(
     let mut clips = Vec::new();
     let mut readiness = Readiness::Complete;
     for (track_index, track) in timeline.audible_tracks() {
-        for clip in track.clips.iter().filter(|c| !c.disabled) {
+        for clip in track
+            .clips
+            .iter()
+            .filter(|c| !c.disabled && c.freeze.is_none())
+        {
             let ClipSource::Media(media_id) = &clip.source else {
                 continue;
             };

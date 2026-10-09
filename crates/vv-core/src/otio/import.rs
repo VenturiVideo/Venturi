@@ -7,9 +7,9 @@
 use super::{MeasureTitle, OtioError, generator, resolve};
 use crate::model::{
     Clip, ClipId, ClipSource, CrossTransition, Ease, EffectStack, FrameIdx, IMAGE_DURATION_FRAMES,
-    Interpolation, Keyframed, LinkGroupId, MediaId, MediaItem, MediaMeta, Project, PushDirection,
-    Rational, Rgba, Timeline, TitleParams, Track, TrackKind, TransformParam, Transition,
-    TransitionKind,
+    Interpolation, Keyframed, LinkGroupId, MAX_COMPOUND_DEPTH, MediaId, MediaItem, MediaMeta,
+    Project, PushDirection, Rational, Rgba, Timeline, TimelineId, TitleParams, Track, TrackKind,
+    TransformParam, Transition, TransitionKind,
 };
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
@@ -137,6 +137,9 @@ pub fn project_from_otio(
         base_dir,
         probe,
         measure,
+        compounds: HashMap::new(),
+        new_compounds: Vec::new(),
+        depth: 0,
     };
     for timeline in timelines {
         importer.timeline(timeline);
@@ -164,6 +167,13 @@ struct Importer<'a> {
     base_dir: &'a Path,
     probe: &'a mut dyn FnMut(&Path) -> ProbeResult,
     measure: Option<MeasureTitle<'a>>,
+    /// Resolve's `Sequence ID` → pool item: the pieces of a split compound
+    /// clip share one nested timeline.
+    compounds: HashMap<String, MediaId>,
+    /// Built while reading the current top-level timeline, which lends them
+    /// its resolution.
+    new_compounds: Vec<(TimelineId, MediaId)>,
+    depth: u32,
 }
 
 /// Space of linked group numbers in the file: ours and Resolve's must not
@@ -193,11 +203,33 @@ impl Importer<'_> {
             })
             .or_else(|| first_item_rate(otio).map(Rational::from_fps))
             .unwrap_or(Rational::new(30, 1));
+        let tracks = self.tracks(&otio["tracks"], fps);
+        let resolution = serde_json::from_value::<(u32, u32)>(venturi["resolution"].clone())
+            .ok()
+            .or_else(|| self.first_video_resolution(&tracks))
+            .unwrap_or((1920, 1080));
+        // Resolve renders a compound clip at the resolution of the timeline.
+        for (timeline_id, media_id) in std::mem::take(&mut self.new_compounds) {
+            let nested = &mut self.project.timelines[timeline_id];
+            nested.resolution = resolution;
+            self.project.media_pool[media_id].meta = nested.compound_meta();
+        }
+        self.project.timelines.insert(Timeline {
+            name: otio["name"].as_str().unwrap_or("Timeline").to_owned(),
+            fps,
+            resolution,
+            tracks,
+            markers: Vec::new(),
+            master: Default::default(),
+        });
+    }
 
+    /// The tracks of a timeline's or a compound clip's `stack`.
+    fn tracks(&mut self, stack: &Value, fps: Rational) -> Vec<Track> {
         let mut groups: HashMap<GroupKey, LinkGroupId> = HashMap::new();
         let mut foreign = Vec::new();
         let mut tracks = Vec::new();
-        for otio_track in children(&otio["tracks"]) {
+        for otio_track in children(stack) {
             if schema(otio_track) != "Track" {
                 self.warn(OtioWarning::UnsupportedInStack {
                     schema: schema(otio_track).to_owned(),
@@ -227,7 +259,7 @@ impl Importer<'_> {
                         continue;
                     }
                     "Gap" => item_duration(item),
-                    "Clip" => {
+                    "Clip" | "Stack" => {
                         let (duration, clip) =
                             self.clip(item, kind, fps, start, cursor, &mut groups);
                         if let Some((mut clip, is_foreign)) = clip {
@@ -295,19 +327,49 @@ impl Importer<'_> {
             }
         }
         self.link_foreign_clips(&mut tracks, &foreign);
+        tracks
+    }
 
-        let resolution = serde_json::from_value::<(u32, u32)>(venturi["resolution"].clone())
-            .ok()
-            .or_else(|| self.first_video_resolution(&tracks))
-            .unwrap_or((1920, 1080));
-        self.project.timelines.insert(Timeline {
-            name: otio["name"].as_str().unwrap_or("Timeline").to_owned(),
+    /// The pool item of the compound clip a `Stack` inside a track stands
+    /// for, built the first time its sequence is met.
+    fn compound(&mut self, stack: &Value, fps: Rational) -> Option<MediaId> {
+        let resolve = &stack["metadata"]["Resolve_OTIO"];
+        let sequence = resolve["Sequence ID"].as_str();
+        if let Some(&media) = sequence.and_then(|id| self.compounds.get(id)) {
+            return Some(media);
+        }
+        if self.depth >= MAX_COMPOUND_DEPTH {
+            self.warn(OtioWarning::UnsupportedItem {
+                schema: schema(stack).to_owned(),
+            });
+            return None;
+        }
+        let fps = resolve["Sequence Fps"]
+            .as_f64()
+            .filter(|fps| *fps > 0.0)
+            .map_or(fps, Rational::from_fps);
+        self.depth += 1;
+        let tracks = self.tracks(stack, fps);
+        self.depth -= 1;
+        let resolution = self.first_video_resolution(&tracks).unwrap_or((1920, 1080));
+        let name = match stack["name"].as_str() {
+            Some(name) if !name.is_empty() => name.to_owned(),
+            _ => self.project.alloc_compound_name(),
+        };
+        let timeline_id = self.project.timelines.insert(Timeline {
+            name,
             fps,
             resolution,
             tracks,
             markers: Vec::new(),
             master: Default::default(),
         });
+        let media = self.project.insert_timeline_item(timeline_id, None);
+        self.new_compounds.push((timeline_id, media));
+        if let Some(id) = sequence {
+            self.compounds.insert(id.to_owned(), media);
+        }
+        Some(media)
     }
 
     /// A transition straddles the cut: `in_offset` extends into the clip
@@ -408,18 +470,26 @@ impl Importer<'_> {
             venturi["fade_in"].as_i64().unwrap_or(0) as FrameIdx,
             venturi["fade_out"].as_i64().unwrap_or(0) as FrameIdx,
         );
-        let speed = match serde_json::from_value::<Rational>(venturi["speed"].clone()) {
-            Ok(speed) => speed,
+        let (speed, frozen) = match serde_json::from_value::<Rational>(venturi["speed"].clone()) {
+            Ok(speed) => (speed, false),
             Err(_) => self.time_warp(item, name),
+        };
+        // `(media, start of its available range)`.
+        let media = match (schema(item), schema(reference)) {
+            ("Stack", _) => Some((self.compound(item, fps), 0.0)),
+            (_, "ExternalReference") => {
+                let url = reference["target_url"].as_str().unwrap_or("");
+                let available_start =
+                    time_range(&reference["available_range"]).map_or(0.0, |(start, _)| start);
+                Some((self.media(url, reference, kind), available_start))
+            }
+            _ => None,
         };
         // Seconds into the media at the start of the clip and the media fps, to
         // translate the effect keyframes of other editors.
-        let (source, conform_rate, source_offset, media_start) = match schema(reference) {
-            "ExternalReference" => {
-                let url = reference["target_url"].as_str().unwrap_or("");
-                let Some(media_id) = self.media(url, reference, kind) else {
-                    return (duration, None);
-                };
+        let (source, conform_rate, source_offset, media_start) = match (media, schema(reference)) {
+            (Some((None, _)), _) => return (duration, None),
+            (Some((Some(media_id), available_start)), _) => {
                 let meta = &self.project.media_pool[media_id].meta;
                 if kind == TrackKind::Video && !meta.has_video {
                     self.warn(OtioWarning::AudioOnlyOnVideoTrack {
@@ -430,8 +500,6 @@ impl Importer<'_> {
                 let media_fps = meta.fps;
                 let conform_rate = Rational::conform_rate(fps, media_fps);
                 let rate = conform_rate.divided_by(speed);
-                let available_start =
-                    time_range(&reference["available_range"]).map_or(0.0, |(start, _)| start);
                 let secs = source_start - available_start;
                 let source_frame = secs * media_fps.as_f64();
                 let offset = if (source_frame - source_frame.round()).abs() < 1e-6 {
@@ -446,17 +514,19 @@ impl Importer<'_> {
                     Some((secs, media_fps)),
                 )
             }
-            "MissingReference" if resolve::is_adjustment_clip(children_of(item, "effects")) => {
+            (None, "MissingReference")
+                if resolve::is_adjustment_clip(children_of(item, "effects")) =>
+            {
                 (ClipSource::Adjustment, Rational::one(), 0, None)
             }
-            "GeneratorReference" if reference["generator_kind"] == "Solid Color" => {
+            (None, "GeneratorReference") if reference["generator_kind"] == "Solid Color" => {
                 if effects.color.is_none() {
                     let color = generator::read_solid_color(reference).unwrap_or(Rgba::BLACK);
                     effects.color = Some(Keyframed::constant(color));
                 }
                 (ClipSource::SolidColor, Rational::one(), 0, None)
             }
-            "GeneratorReference" if reference["generator_kind"] == "Rich" => {
+            (None, "GeneratorReference") if reference["generator_kind"] == "Rich" => {
                 if effects.title.is_none() {
                     let frame = self.timeline_resolution(venturi, &ClipSource::Text);
                     effects.title = Some(generator::read_text(reference, frame, self.measure));
@@ -465,7 +535,7 @@ impl Importer<'_> {
             }
             // Adjustment clips were matched above by their effect; one without
             // it is broken, not a title to rebuild.
-            "MissingReference" if kind == TrackKind::Video && name != "Adjustment Clip" => {
+            (None, "MissingReference") if kind == TrackKind::Video && name != "Adjustment Clip" => {
                 self.warn(OtioWarning::Placeholder {
                     clip: name.to_owned(),
                 });
@@ -475,7 +545,7 @@ impl Importer<'_> {
                 });
                 (ClipSource::Text, Rational::one(), 0, None)
             }
-            other => {
+            (None, other) => {
                 self.warn(OtioWarning::UnsupportedReference {
                     clip: name.to_owned(),
                     schema: other.to_owned(),
@@ -491,7 +561,15 @@ impl Importer<'_> {
             let frame = self.timeline_resolution(venturi, &source);
             let media = self.media_resolution(&source).unwrap_or(frame);
             let fit = (frame.0 / media.0).min(frame.1 / media.1);
+            let clip_rate = match source {
+                ClipSource::Media(_) => conform_rate.divided_by(speed),
+                _ => Rational::one(),
+            };
             let context = ResolveContext {
+                span: (
+                    clip_rate.unscale_round(source_offset),
+                    clip_rate.unscale_round(source_offset + timeline_len - 1),
+                ),
                 media_start,
                 rate: item["source_range"]["start_time"]["rate"]
                     .as_f64()
@@ -542,6 +620,16 @@ impl Importer<'_> {
         clip.audio_stream_index = audio_stream_index;
         clip.pitch_correction = venturi["pitch_correction"].as_bool().unwrap_or(true);
         clip.disabled = disabled;
+        if let ClipSource::Media(_) = clip.source {
+            let saved = &venturi["freeze"];
+            match saved["frame"].as_i64() {
+                Some(frame) => {
+                    clip.freeze = Some(frame as FrameIdx);
+                    clip.source_offset = saved["source_offset"].as_i64().unwrap_or(0) as FrameIdx;
+                }
+                None => clip.freeze = frozen.then(|| clip.source_in()),
+            }
+        }
         clip.fade_in = fades.0.clamp(0, timeline_len);
         clip.fade_out = fades.1.clamp(0, timeline_len);
         clip.display_color =
@@ -549,24 +637,28 @@ impl Importer<'_> {
         (duration, Some((clip, is_foreign)))
     }
 
-    /// The clip speed from a `LinearTimeWarp`. Freeze frames (`time_scalar`
-    /// 0, also their own `FreezeFrame` schema) and reverse play at 100%, with
+    /// The clip speed from a `LinearTimeWarp`, and `true` for a freeze frame
+    /// (`time_scalar` 0, also its own `FreezeFrame` schema): it freezes on
+    /// the frame at the start of `source_range`. Reverse plays at 100%, with
     /// a warning.
-    fn time_warp(&mut self, item: &Value, name: &str) -> Rational {
+    fn time_warp(&mut self, item: &Value, name: &str) -> (Rational, bool) {
         let Some(scalar) = children_of(item, "effects")
             .filter(|e| is_time_warp(e))
             .find_map(|e| e["time_scalar"].as_f64())
         else {
-            return Rational::one();
+            return (Rational::one(), false);
         };
         if scalar > 0.0 {
-            return Rational::from_percent(scalar * 100.0);
+            return (Rational::from_percent(scalar * 100.0), false);
+        }
+        if scalar == 0.0 {
+            return (Rational::one(), true);
         }
         self.warn(OtioWarning::SpeedNotApplied {
             clip: name.to_owned(),
             percent: (scalar * 100.0).round() as i64,
         });
-        Rational::one()
+        (Rational::one(), false)
     }
 
     /// Brings into `effects` and `fades` what it knows how to translate; the
@@ -598,6 +690,15 @@ impl Importer<'_> {
             return;
         }
         let name = resolve["Effect Name"].as_str().unwrap_or("Resolve Effect");
+        if name == "Dynamic Zoom" {
+            if !resolve_dynamic_zoom(resolve, effects, context) {
+                *self
+                    .ignored_effects
+                    .entry((name.to_owned(), false))
+                    .or_default() += 1;
+            }
+            return;
+        }
         let (mut translated, mut untranslated) = (false, false);
         for parameter in children_of(resolve, "Parameters") {
             let id = parameter["Parameter ID"].as_str().unwrap_or("");
@@ -741,6 +842,8 @@ struct ResolveContext {
     display: (f32, f32),
     media: (f32, f32),
     speed: f64,
+    /// Source frames of the clip's first and last frame.
+    span: (FrameIdx, FrameIdx),
 }
 
 /// `true` if the parameter was translated. The `multiplier` is the inverse
@@ -807,6 +910,66 @@ fn resolve_parameter(
         }
         _ => false,
     }
+}
+
+/// Resolve moves a framing rectangle (`dynamicZoomScale` of the frame, centered
+/// at `dynamicZoomCenter`) from the start to the end of the clip, wherever its
+/// two keyframes are exported: it becomes a zoom on that rectangle, on top of
+/// the transform. `false` if the transform is animated already.
+fn resolve_dynamic_zoom(
+    resolve: &Value,
+    effects: &mut EffectStack,
+    context: &ResolveContext,
+) -> bool {
+    use TransformParam::*;
+    let ends = |id: &str| -> Option<[&Value; 2]> {
+        let parameter = children_of(resolve, "Parameters").find(|p| p["Parameter ID"] == id)?;
+        let mut keys: Vec<(f64, &Value)> = parameter["Key Frames"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(frame, key)| Some((frame.parse().ok()?, &key["Value"])))
+            .collect();
+        keys.sort_by(|a, b| a.0.total_cmp(&b.0));
+        match (keys.first(), keys.last()) {
+            (Some(first), Some(last)) => Some([first.1, last.1]),
+            _ => Some([&parameter["Parameter Value"]; 2]),
+        }
+    };
+    let scales = ends("dynamicZoomScale").map(|e| e.map(|v| v.as_f64().unwrap_or(1.0)));
+    let centers = ends("dynamicZoomCenter")
+        .map(|e| e.map(|v| [0, 1].map(|i| v.get(i).and_then(Value::as_f64).unwrap_or(0.0))));
+    let scales = scales.unwrap_or([1.0; 2]);
+    let centers = centers.unwrap_or([[0.0; 2]; 2]);
+    if scales.iter().all(|s| *s == 1.0) && centers.iter().flatten().all(|c| *c == 0.0) {
+        return true;
+    }
+    let params = [ZoomX, ZoomY, PositionX, PositionY];
+    if params
+        .iter()
+        .any(|p| !effects.transform.track(*p).is_constant())
+    {
+        return false;
+    }
+    let base = params.map(|p| effects.transform.track(p).default);
+    let display = [context.display.0, context.display.1];
+    let at = |end: usize| {
+        let zoom = 1.0 / scales[end].max(0.01) as f32;
+        let position =
+            |axis: usize| zoom * (base[2 + axis] - centers[end][axis] as f32 * display[axis]);
+        [base[0] * zoom, base[1] * zoom, position(0), position(1)]
+    };
+    let (start, end) = (at(0), at(1));
+    for (i, param) in params.into_iter().enumerate() {
+        let track = effects.transform.track_mut(param);
+        if start[i] == end[i] || context.span.0 == context.span.1 {
+            track.default = start[i];
+        } else {
+            track.upsert(context.span.0, start[i], Interpolation::Linear);
+            track.upsert(context.span.1, end[i], Interpolation::Linear);
+        }
+    }
+    true
 }
 
 fn resolve_flip(parameter: &Value, effects: &mut EffectStack, axis: usize) -> bool {

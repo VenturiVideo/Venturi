@@ -449,6 +449,50 @@ fn otio_import_asks_before_reusing_media_with_the_same_name() {
 }
 
 #[test]
+fn otio_import_renames_and_opens_only_the_top_level_timeline() {
+    let dir = test_dir("otio_compound");
+    let time = |value: f64| serde_json::json!({ "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": value });
+    let range = |start: f64, duration: f64| serde_json::json!({ "OTIO_SCHEMA": "TimeRange.1", "start_time": time(start), "duration": time(duration) });
+    let otio = serde_json::json!({
+        "OTIO_SCHEMA": "Timeline.1",
+        "name": "Timeline 1",
+        "tracks": { "OTIO_SCHEMA": "Stack.1", "children": [{
+            "OTIO_SCHEMA": "Track.1",
+            "kind": "Video",
+            "children": [{
+                "OTIO_SCHEMA": "Stack.1",
+                "name": "Fusion Clip 1",
+                "source_range": range(0.0, 48.0),
+                "metadata": { "Resolve_OTIO": { "Sequence ID": "{a}" } },
+                "children": [{
+                    "OTIO_SCHEMA": "Track.1",
+                    "kind": "Video",
+                    "children": [{ "OTIO_SCHEMA": "Gap.1", "source_range": range(0.0, 48.0) }],
+                }],
+            }],
+        }]},
+    });
+    let path = dir.join("edit.otio");
+    std::fs::write(&path, otio.to_string()).unwrap();
+
+    let mut session = Session::default();
+    session.import_otio(&path).unwrap();
+    let events = run_jobs(&mut session);
+    let [SessionEvent::OtioImported { result, .. }] = events.as_slice() else {
+        panic!("imported right away");
+    };
+    assert_eq!(result.timelines.len(), 1);
+    assert_eq!(session.project.timelines[result.timelines[0]].name, "edit");
+    let names: Vec<&str> = session
+        .project
+        .timelines
+        .values()
+        .map(|t| t.name.as_str())
+        .collect();
+    assert!(names.contains(&"Fusion Clip 1"), "{names:?}");
+}
+
+#[test]
 fn a_session_can_move_to_another_thread() {
     fn send<T: Send>() {}
     send::<Session>();

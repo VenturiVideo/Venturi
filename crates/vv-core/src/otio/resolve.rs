@@ -47,6 +47,15 @@ pub(super) fn clip_effects(clip: &Clip, kind: TrackKind, scale: &Scale) -> Vec<V
 /// The only effect of Resolve's that is not in its own namespace: the speed
 /// travels in the standard schema, first in the list like it writes it.
 fn time_warp(clip: &Clip) -> Option<Value> {
+    if clip.freeze.is_some() {
+        return Some(json!({
+            "OTIO_SCHEMA": "FreezeFrame.1",
+            "name": "",
+            "effect_name": "FreezeFrame",
+            "time_scalar": 0.0,
+            "metadata": {},
+        }));
+    }
     (!clip.speed().is_one()).then(|| {
         json!({
             "OTIO_SCHEMA": "LinearTimeWarp.1",

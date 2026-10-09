@@ -4,7 +4,8 @@
 
 Speed up / slow down a clip: its source range stays the same, its length on
 the timeline changes (`len = len_at_100% / speed`). Constant speed only:
-no ramps, no reverse, no freeze frame (OTIO `FreezeFrame` stays a warning).
+no ramps, no reverse (see REVERSE_SPEED.md). Freeze frames are a separate
+picture mapping (`Clip::freeze`, `Clip::picture_frame_at`).
 
 Decisions (agreed with the user):
 - **Audio**: pitch preserved by default (`pitch_correction`, rubberband

@@ -465,8 +465,22 @@ impl Session {
             matches,
         } = merge;
         let mut project = imported.project;
-        let single = project.timelines.len() == 1;
-        for timeline in project.timelines.values_mut() {
+        // Compound clips keep their own name, matching their pool item's.
+        let nested: HashSet<TimelineId> = project
+            .media_pool
+            .values()
+            .filter_map(|item| item.compound)
+            .collect();
+        let top_level: Vec<bool> = project
+            .timelines
+            .keys()
+            .map(|id| !nested.contains(&id))
+            .collect();
+        let single = top_level.iter().filter(|top| **top).count() == 1;
+        for (id, timeline) in project.timelines.iter_mut() {
+            if nested.contains(&id) {
+                continue;
+            }
             timeline.name = if single {
                 name.clone()
             } else {
@@ -492,7 +506,11 @@ impl Session {
                 },
             )
         });
-        let timelines = vv_core::pool::absorb(&mut self.project, &mut add, project, &reuse, folder);
+        let timelines = vv_core::pool::absorb(&mut self.project, &mut add, project, &reuse, folder)
+            .into_iter()
+            .zip(top_level)
+            .filter_map(|(id, top)| top.then_some(id))
+            .collect();
         let added_media = add.media_ids().collect();
         self.history.do_command(&mut self.project, Box::new(add));
         OtioMerged {

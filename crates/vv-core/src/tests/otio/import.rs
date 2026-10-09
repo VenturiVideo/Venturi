@@ -1084,3 +1084,215 @@ fn masks_of_an_adjustment_clip_round_trip_in_our_metadata() {
     assert!(matches!(clip.source, ClipSource::Adjustment));
     assert_eq!(clip.effects.masks, original.effects.masks);
 }
+
+fn resolve_clip(name: &str, start: f64, duration: f64, effects: Value) -> Value {
+    json!({
+        "OTIO_SCHEMA": "Clip.2",
+        "name": name,
+        "source_range": range(start, duration, 24.0),
+        "media_references": { "DEFAULT_MEDIA": {
+            "OTIO_SCHEMA": "ExternalReference.1",
+            "target_url": B_ROLL,
+            "available_range": range(0.0, 2400.0, 24.0),
+        }},
+        "effects": effects,
+    })
+}
+
+fn resolve_timeline(children: Value) -> Value {
+    json!({
+        "OTIO_SCHEMA": "Timeline.1",
+        "name": "From Resolve",
+        "tracks": { "OTIO_SCHEMA": "Stack.1", "children": [{
+            "OTIO_SCHEMA": "Track.1",
+            "kind": "Video",
+            "children": children,
+        }]},
+    })
+}
+
+fn import_resolve(otio: &Value) -> OtioImport {
+    let mut probe = probe_from(vec![(
+        "/media/b roll.mov",
+        meta(Rational::new(24, 1), 2400),
+    )]);
+    project_from_otio(otio, Path::new("/media"), &mut probe, None).unwrap()
+}
+
+/// Resolve splits a compound clip into `Stack`s of the same sequence: one
+/// nested timeline, each piece on its own stretch of it.
+#[test]
+fn resolve_compound_clips_become_one_nested_timeline() {
+    let stack = |start: f64, duration: f64| {
+        json!({
+            "OTIO_SCHEMA": "Stack.1",
+            "name": "Fusion Clip 1",
+            "source_range": range(start, duration, 24.0),
+            "metadata": { "Resolve_OTIO": {
+                "Sequence Fps": 24.0,
+                "Sequence ID": "{f515}",
+                "Sequence Type": "Fusion Clip",
+            }},
+            "children": [{
+                "OTIO_SCHEMA": "Track.1",
+                "kind": "Video",
+                "children": [resolve_clip("inner", 100.0, 300.0, json!([]))],
+            }],
+        })
+    };
+    let otio = resolve_timeline(json!([stack(0.0, 200.0), stack(200.0, 100.0)]));
+    let imported = import_resolve(&otio);
+    assert!(imported.warnings.is_empty(), "{:?}", imported.warnings);
+
+    let project = &imported.project;
+    let compounds: Vec<_> = project
+        .media_pool
+        .iter()
+        .filter(|(_, item)| item.compound.is_some())
+        .collect();
+    assert_eq!(compounds.len(), 1);
+    let (compound_id, item) = compounds[0];
+    let nested = &project.timelines[item.compound.unwrap()];
+    assert_eq!(nested.name, "Fusion Clip 1");
+    assert_eq!(nested.resolution, (1280, 720), "the outer timeline's");
+    assert_eq!(nested.tracks[0].clips[0].source_in(), 100);
+    assert_eq!(item.meta.duration_frames, 300);
+
+    let outer = project
+        .timelines
+        .values()
+        .find(|t| t.name == "From Resolve")
+        .unwrap();
+    let pieces = &outer.tracks[0].clips;
+    assert_eq!(pieces.len(), 2);
+    for piece in pieces {
+        assert!(matches!(piece.source, ClipSource::Media(id) if id == compound_id));
+    }
+    assert_eq!(
+        pieces
+            .iter()
+            .map(|c| (c.timeline_start, c.source_in()))
+            .collect::<Vec<_>>(),
+        [(0, 0), (200, 200)]
+    );
+}
+
+/// Resolve exports the two rectangles of a dynamic zoom on frames that
+/// have nothing to do with the clip: they go on its first and last frame.
+#[test]
+fn a_resolve_dynamic_zoom_becomes_transform_keyframes() {
+    let dynamic_zoom = json!({
+        "OTIO_SCHEMA": "Effect.1",
+        "name": "",
+        "effect_name": "Resolve Effect",
+        "metadata": { "Resolve_OTIO": {
+            "Effect Name": "Dynamic Zoom",
+            "Enabled": true,
+            "Parameters": [
+                {
+                    "Parameter ID": "dynamicZoomCenter",
+                    "Parameter Value": [0.0, 0.0],
+                    "Default Parameter Value": [0.0, 0.0],
+                    "Key Frames": {
+                        "-100": { "Value": [0.0, 0.0] },
+                        "900": { "Value": [0.1, -0.2] },
+                    },
+                },
+                {
+                    "Parameter ID": "dynamicZoomScale",
+                    "Parameter Value": 1.0,
+                    "Default Parameter Value": 1.0,
+                    "Key Frames": {
+                        "-100": { "Value": 1.0 },
+                        "900": { "Value": 0.8 },
+                    },
+                },
+            ],
+        }},
+    });
+    let otio = resolve_timeline(json!([resolve_clip(
+        "zoomed",
+        100.0,
+        48.0,
+        json!([dynamic_zoom])
+    )]));
+    let imported = import_resolve(&otio);
+    assert!(imported.warnings.is_empty(), "{:?}", imported.warnings);
+
+    let (_, tl) = imported.project.timelines.iter().next().unwrap();
+    let clip = &tl.tracks[0].clips[0];
+    let transform = &clip.effects.transform;
+    let first = transform.value_at(clip.source_in());
+    assert_eq!(first.zoom, [1.0, 1.0]);
+    assert_eq!(first.position, [0.0, 0.0]);
+    let last = transform.value_at(clip.source_out() - 1);
+    assert_eq!(last.zoom, [1.25, 1.25]);
+    let expected = [-0.1 * 1280.0 * 1.25, 0.2 * 720.0 * 1.25];
+    for (got, want) in last.position.iter().zip(expected) {
+        assert!((got - want).abs() < 1e-3, "{:?}", last.position);
+    }
+}
+
+/// A freeze frame shows the frame at the start of its `source_range`, and
+/// comes back the same through our metadata and through Resolve's.
+#[test]
+fn a_freeze_frame_imports_and_round_trips() {
+    let freeze = json!({
+        "OTIO_SCHEMA": "FreezeFrame.1",
+        "name": "",
+        "effect_name": "FreezeFrame",
+        "time_scalar": 0.0,
+    });
+    let otio = resolve_timeline(json!([resolve_clip(
+        "frozen",
+        773.0,
+        41.0,
+        json!([freeze])
+    )]));
+    let imported = import_resolve(&otio);
+    assert!(imported.warnings.is_empty(), "{:?}", imported.warnings);
+    let (timeline_id, tl) = imported.project.timelines.iter().next().unwrap();
+    let clip = tl.tracks[0].clips[0].clone();
+    assert_eq!(clip.freeze, Some(773));
+    assert_eq!(clip.speed(), Rational::one());
+    assert_eq!(clip.timeline_len, 41);
+    assert_eq!(clip.picture_frame_at(clip.timeline_end() - 1), 773);
+
+    let mut project = imported.project.clone();
+    let clip_mut = &mut project.timelines[timeline_id].tracks[0].clips[0];
+    clip_mut.source_offset = 10;
+    let original = clip_mut.clone();
+    let mut otio = timeline_to_otio(&project, timeline_id, None);
+    let ours = import_resolve(&otio);
+    let back = &ours.project.timelines.values().next().unwrap().tracks[0].clips[0];
+    assert_eq!((back.freeze, back.source_offset), (Some(773), 10));
+    assert_eq!(span(back), span(&original));
+
+    for track in otio["tracks"]["children"].as_array_mut().unwrap() {
+        for clip in track["children"].as_array_mut().unwrap() {
+            clip["metadata"]["venturi"] = json!(null);
+        }
+    }
+    let foreign = import_resolve(&otio);
+    let back = &foreign.project.timelines.values().next().unwrap().tracks[0].clips[0];
+    assert_eq!(back.freeze, Some(773));
+}
+
+#[test]
+fn a_reverse_speed_still_warns() {
+    let reverse = json!({
+        "OTIO_SCHEMA": "LinearTimeWarp.1",
+        "time_scalar": -1.0,
+    });
+    let otio = resolve_timeline(json!([resolve_clip("back", 100.0, 48.0, json!([reverse]))]));
+    let imported = import_resolve(&otio);
+    assert_eq!(
+        imported.warnings,
+        [OtioWarning::SpeedNotApplied {
+            clip: "back".into(),
+            percent: -100,
+        }]
+    );
+    let clip = &imported.project.timelines.values().next().unwrap().tracks[0].clips[0];
+    assert_eq!(clip.freeze, None);
+}

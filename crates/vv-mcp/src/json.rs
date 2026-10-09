@@ -217,6 +217,9 @@ pub(crate) fn clip_json(
     if clip.speed() != Rational::one() {
         value["speed"] = json!(clip.speed().as_f64());
     }
+    if let Some(frame) = clip.freeze {
+        value["freeze_frame"] = json!(frame);
+    }
     value
 }
 

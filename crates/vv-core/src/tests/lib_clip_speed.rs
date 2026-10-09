@@ -262,3 +262,74 @@ fn resize_changes_only_the_clip() {
     assert_eq!(span(&project, tl, 0, a), (0, 50));
     assert_eq!(span(&project, tl, 0, b), (150, 10));
 }
+
+#[test]
+fn a_freeze_frame_holds_the_playhead_picture_and_unfreezes_within_the_media() {
+    let (mut project, tl, media) = setup(&[TrackKind::Video]);
+    let a = add(&mut project, tl, 0, media, (150, 190), 10);
+    let mut history = History::default();
+    history.do_command(
+        &mut project,
+        Box::new(SetClipFreeze::new(tl, vec![(0, a)], Some(15))),
+    );
+    let clip = project.timelines[tl].clip(0, a).unwrap();
+    assert_eq!(clip.freeze, Some(155));
+    assert_eq!(clip.picture_frame_at(45), 155);
+    assert_eq!(clip.source_frame_at(45), 185, "keyframes keep running");
+    assert_eq!(
+        edit::trim_range(&project, clip, TrimEdge::End).1,
+        FrameIdx::MAX,
+        "no media bounds a still"
+    );
+
+    project.timelines[tl].tracks[0]
+        .clip_mut(a)
+        .unwrap()
+        .timeline_len = 100;
+    history.do_command(
+        &mut project,
+        Box::new(SetClipFreeze::new(tl, vec![(0, a)], None)),
+    );
+    let clip = project.timelines[tl].clip(0, a).unwrap();
+    assert_eq!(clip.freeze, None);
+    assert_eq!(
+        span(&project, tl, 0, a),
+        (10, 50),
+        "cut at the end of the media"
+    );
+
+    history.undo(&mut project);
+    assert_eq!(project.timelines[tl].clip(0, a).unwrap().freeze, Some(155));
+}
+
+#[test]
+fn a_speed_on_a_frozen_clip_unfreezes_it_within_the_media() {
+    let (mut project, tl, media) = setup(&[TrackKind::Video]);
+    let a = add(&mut project, tl, 0, media, (150, 190), 10);
+    let mut history = History::default();
+    history.do_command(
+        &mut project,
+        Box::new(SetClipFreeze::new(tl, vec![(0, a)], Some(15))),
+    );
+    project.timelines[tl].tracks[0]
+        .clip_mut(a)
+        .unwrap()
+        .timeline_len = 100;
+    history.do_command(
+        &mut project,
+        Box::new(SetClipSpeed::new(
+            tl,
+            vec![(0, a)],
+            Rational::from_percent(50.0),
+            false,
+            SpeedFit::Resize,
+        )),
+    );
+    let clip = project.timelines[tl].clip(0, a).unwrap();
+    assert_eq!(clip.freeze, None);
+    assert_eq!(
+        span(&project, tl, 0, a),
+        (10, 100),
+        "source 150..200 at half speed"
+    );
+}

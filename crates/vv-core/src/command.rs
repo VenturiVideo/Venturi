@@ -72,6 +72,7 @@ pub enum CommandLabel {
     SetInterpolation,
     PasteAttributes,
     ClipSpeed,
+    FreezeFrame,
     RemoveSilences,
     AddMarker,
     EditMarker,
@@ -1101,6 +1102,7 @@ impl Command for SetClipSpeed {
                 };
                 let (old_len, old_end) = (clip.timeline_len, clip.timeline_end());
                 clip.pitch_correction = self.pitch_correction;
+                clip.unfreeze(media.meta.duration_frames);
                 clip.set_speed(self.speed, Rational::conform_rate(tl.fps, media.meta.fps));
                 let wanted_len = match self.fit {
                     SpeedFit::KeepLength => Some(old_len),
@@ -1120,6 +1122,63 @@ impl Command for SetClipSpeed {
             }
             if self.fit == SpeedFit::Ripple && new_end != FrameIdx::MIN {
                 ripple_from(&mut tl.tracks, old_end, new_end - old_end);
+            }
+        }
+    }
+
+    fn undo(&self, project: &mut Project) {
+        project.timelines[self.timeline].tracks = self.before.clone();
+    }
+}
+
+/// Freezes `Media` clips on the picture they show at timeline frame `at`
+/// (their first frame when `at` falls outside), or unfreezes them with
+/// `None`, back within the media.
+#[derive(Debug)]
+pub struct SetClipFreeze {
+    timeline: TimelineId,
+    clips: Vec<(usize, ClipId)>,
+    at: Option<FrameIdx>,
+    before: Vec<Track>,
+}
+
+impl SetClipFreeze {
+    pub fn new(timeline: TimelineId, clips: Vec<(usize, ClipId)>, at: Option<FrameIdx>) -> Self {
+        Self {
+            timeline,
+            clips,
+            at,
+            before: Vec::new(),
+        }
+    }
+}
+
+impl Command for SetClipFreeze {
+    fn label(&self) -> CommandLabel {
+        CommandLabel::FreezeFrame
+    }
+
+    fn apply(&mut self, project: &mut Project) {
+        let media_pool = &project.media_pool;
+        let tl = &mut project.timelines[self.timeline];
+        self.before = tl.tracks.clone();
+        for &(track, id) in &self.clips {
+            let Some(clip) = tl.tracks.get_mut(track).and_then(|t| t.clip_mut(id)) else {
+                continue;
+            };
+            let ClipSource::Media(media_id) = clip.source else {
+                continue;
+            };
+            match self.at {
+                Some(at) => {
+                    let at = at.clamp(clip.timeline_start, clip.timeline_end() - 1);
+                    clip.freeze = Some(clip.picture_frame_at(at));
+                }
+                None => {
+                    if let Some(media) = media_pool.get(media_id) {
+                        clip.unfreeze(media.meta.duration_frames);
+                    }
+                }
             }
         }
     }
