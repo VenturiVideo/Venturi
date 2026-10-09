@@ -2,6 +2,8 @@
 
 use super::*;
 
+const DISCORD_INVITE: &str = "https://discord.gg/3v2xjXFnZv";
+
 impl VenturiApp {
     pub(crate) fn handle_shortcuts(&mut self, ui: &mut egui::Ui) {
         // Copy/paste are handled outside `ui.input`: `ctx.copy_text` takes
@@ -493,6 +495,11 @@ impl VenturiApp {
 
                 bar_menus.push(
                     ui.menu_button(t!("menu.help"), |ui| {
+                        if ui.button(t!("menu.discord")).clicked() {
+                            ui.ctx().open_url(egui::OpenUrl::new_tab(DISCORD_INVITE));
+                            ui.close();
+                        }
+                        ui.separator();
                         if ui.button(t!("menu.about")).clicked() {
                             self.about_open = true;
                             ui.close();

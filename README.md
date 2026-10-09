@@ -12,10 +12,12 @@ Built for editing, picture and sound, with timelines that travel to and from oth
 [![Release](https://img.shields.io/github/v/release/VenturiVideo/Venturi?label=release)](https://github.com/VenturiVideo/Venturi/releases/latest)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://rustup.rs)
+[![Discord](https://img.shields.io/badge/chat-Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/3v2xjXFnZv)
 
 [Website](https://venturivideo.github.io/Venturi/) •
 [Documentation](https://kb.morrolinux.ovh/books/venturi-architecture) •
 [Download](https://github.com/VenturiVideo/Venturi/releases/latest) •
+[Discord](https://discord.gg/3v2xjXFnZv) •
 [Features](#features) •
 [Build from source](docs/BUILDING.md) •
 [Architecture](ARCHITECTURE.md) •
@@ -95,7 +97,9 @@ stay fluid even on modest hardware.
 
 ## Contributing
 
-Issues and pull requests are welcome. Before opening a PR:
+Issues and pull requests are welcome. For questions, feedback and feature
+ideas, join the [Discord server](https://discord.gg/3v2xjXFnZv). Before
+opening a PR:
 
 ```sh
 cargo fmt

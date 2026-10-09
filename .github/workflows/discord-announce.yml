@@ -1,0 +1,33 @@
+name: Discord announce
+
+# Run by hand once the release notes are final: Release publishes them as a
+# bare compare link and the changelog is added afterwards with gh release edit.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to announce (e.g. v0.7.0)"
+        required: true
+
+jobs:
+  announce:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Post release to #announcements
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json name,url,body > release.json
+          # Embed descriptions are capped at 4096 characters.
+          jq '{
+            username: "Venturi Releases",
+            embeds: [{
+              title: "Venturi \(.name) is out",
+              url: .url,
+              color: 16745755,
+              description: (if (.body | length) > 4000 then .body[0:4000] + "\n\n… full notes on GitHub" else .body end)
+            }]
+          }' release.json > payload.json
+          curl -fsS -H "Content-Type: application/json" --data @payload.json "$WEBHOOK"

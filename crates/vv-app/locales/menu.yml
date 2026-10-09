@@ -196,6 +196,10 @@ menu.help:
   en: "Help"
   it: "Aiuto"
 
+menu.discord:
+  en: "Join the Discord server"
+  it: "Entra nel server Discord"
+
 menu.about:
   en: "About Venturi..."
   it: "Informazioni su Venturi..."
