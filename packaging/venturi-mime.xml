@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-venturi-project">
+    <comment>Venturi project</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.vvproj"/>
+    <icon name="venturi"/>
+  </mime-type>
+</mime-info>

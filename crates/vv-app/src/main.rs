@@ -4242,10 +4242,9 @@ fn main() -> eframe::Result<()> {
     }
     let mcp_forced = args.iter().any(|a| a == "--mcp");
     args.retain(|a| a != "--mcp");
-    let first = args.into_iter().next();
-    // Optional argument: path of a video to import immediately at startup
-    // (handy for debugging/smoke tests, as well as for command-line use).
-    let startup_path = first.map(PathBuf::from);
+    // Files to open at startup, as if dropped on the window: this is also how
+    // the file manager opens a `.vvproj` (`Exec=vv-app %f`).
+    let startup_paths: Vec<PathBuf> = args.into_iter().map(PathBuf::from).collect();
     let settings_path = settings::Settings::default_path();
     let settings = settings_path
         .as_deref()
@@ -4321,9 +4320,7 @@ fn main() -> eframe::Result<()> {
             {
                 app.wayland_dnd = wayland_dnd::WaylandDnd::start(cc);
             }
-            if let Some(path) = startup_path {
-                app.import_media(path);
-            }
+            app.open_paths(startup_paths);
             app.apply_mcp_setting(&cc.egui_ctx);
             Ok(Box::new(app))
         }),

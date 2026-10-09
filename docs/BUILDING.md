@@ -86,8 +86,9 @@ finds no adapter and the window does not open.
 `vv-app mcp` runs the MCP server for AI agents instead of the window, and
 `vv-app --mcp` opens the window with it on: see [MCP.md](MCP.md).
 
-To install the binary, the `.desktop` file and the icons into `~/.local`
-(or `/usr/local` as root):
+To install the binary, the `.desktop` file, the icons and the `.vvproj` MIME
+type (so the file manager opens projects with Venturi) into `~/.local` (or
+`/usr/local` as root):
 
 ```sh
 scripts/install-linux.sh              # --uninstall to remove, --prefix DIR to change

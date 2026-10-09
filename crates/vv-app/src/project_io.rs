@@ -348,9 +348,7 @@ impl VenturiApp {
         }
     }
 
-    /// Files dropped by the file manager onto the window, wherever they land:
-    /// a project is opened and an `.otio` imported as from the menus, the
-    /// rest goes into the pool.
+    /// Files dropped by the file manager onto the window, wherever they land.
     pub(crate) fn poll_dropped_files(&mut self, ctx: &egui::Context) {
         let paths: Vec<PathBuf> = ctx.input(|i| {
             i.raw
@@ -359,10 +357,16 @@ impl VenturiApp {
                 .map(|f| f.path().to_path_buf())
                 .collect()
         });
+        self.open_paths(paths);
+    }
+
+    /// Dropped or passed on the command line: a project is opened and an
+    /// `.otio` imported as from the menus, the rest goes into the pool.
+    pub(crate) fn open_paths(&mut self, paths: Vec<PathBuf>) {
         let has_extension =
             |p: &Path, ext: &str| p.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext));
         if let Some(project) = paths.iter().find(|p| has_extension(p, "vvproj")) {
-            // Anything else dropped with it would land in the project being replaced.
+            // Anything else opened with it would land in the project being replaced.
             self.request_project_switch(ProjectSwitch::OpenPath(project.clone()));
             return;
         }

@@ -1,5 +1,6 @@
 #!/bin/bash
-# Installs vv-app, the .desktop file and the icons into the given prefix.
+# Installs vv-app, the .desktop file, the icons and the .vvproj MIME type into
+# the given prefix.
 #
 # Usage: scripts/install-linux.sh [--uninstall] [--prefix DIR]
 # Default: ~/.local, or /usr/local when run as root.
@@ -24,6 +25,7 @@ fi
 BIN="$PREFIX/bin/vv-app"
 DESKTOP="$PREFIX/share/applications/venturi.desktop"
 ICONS="$PREFIX/share/icons/hicolor"
+MIME="$PREFIX/share/mime"
 
 refresh_caches() {
     # Without this the menus keep showing the old entry/icon.
@@ -31,10 +33,12 @@ refresh_caches() {
         gtk-update-icon-cache -q -t -f "$ICONS" 2>/dev/null || true
     command -v update-desktop-database >/dev/null && \
         update-desktop-database -q "$PREFIX/share/applications" 2>/dev/null || true
+    command -v update-mime-database >/dev/null && [ -d "$MIME/packages" ] && \
+        update-mime-database "$MIME" 2>/dev/null || true
 }
 
 if [ "$UNINSTALL" -eq 1 ]; then
-    rm -f "$BIN" "$DESKTOP"
+    rm -f "$BIN" "$DESKTOP" "$MIME/packages/venturi.xml"
     find "$ICONS" -name 'venturi.png' -o -name 'venturi.svg' 2>/dev/null \
         | while read -r f; do rm -f "$f"; done
     refresh_caches
@@ -49,6 +53,7 @@ fi
 
 install -Dm755 "$TARGET_DIR/release/vv-app" "$BIN"
 install -Dm644 packaging/appimage/venturi.desktop "$DESKTOP"
+install -Dm644 packaging/venturi-mime.xml "$MIME/packages/venturi.xml"
 
 # The icon file name must match the Icon= key of the .desktop.
 for dir in media/icons/linux/hicolor/*/apps; do

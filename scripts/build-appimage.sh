@@ -49,6 +49,9 @@ cp -a "$FFMPEG_PREFIX"/lib/*.so.* "$APPDIR/usr/lib/"
 cp packaging/appimage/venturi.desktop "$APPDIR/"
 mkdir -p "$APPDIR/usr/share/applications"
 cp packaging/appimage/venturi.desktop "$APPDIR/usr/share/applications/"
+# Read by the AppImage integrators (Gear Lever, appimaged…) to register .vvproj.
+mkdir -p "$APPDIR/usr/share/mime/packages"
+cp packaging/venturi-mime.xml "$APPDIR/usr/share/mime/packages/venturi.xml"
 
 # The icon file names must match the Icon= key of the .desktop.
 cp media/icons/svg/vv-icon.svg "$APPDIR/venturi.svg"

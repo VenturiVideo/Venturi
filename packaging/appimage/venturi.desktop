@@ -2,7 +2,8 @@
 Type=Application
 Name=Venturi
 Comment=Video editor
-Exec=vv-app
+Exec=vv-app %f
 Icon=venturi
 Terminal=false
 Categories=AudioVideo;Video;AudioVideoEditing;
+MimeType=application/x-venturi-project;
