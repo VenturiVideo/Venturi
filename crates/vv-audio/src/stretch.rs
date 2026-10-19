@@ -6,7 +6,7 @@
 use ffmpeg::channel_layout::ChannelLayout;
 use ffmpeg::format::sample::{Sample as SampleFormat, Type as SampleType};
 use ffmpeg_next as ffmpeg;
-use std::sync::Once;
+use std::sync::{Once, OnceLock};
 
 static INIT: Once = Once::new();
 
@@ -42,6 +42,30 @@ pub struct Stretcher {
 }
 
 const FORMAT: SampleFormat = SampleFormat::F32(SampleType::Packed);
+
+/// Whether this FFmpeg has the `rubberband` filter (Homebrew's build does not).
+pub fn rubberband_available() -> bool {
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        ensure_init();
+        ffmpeg::filter::find("rubberband").is_some()
+    })
+}
+
+/// For the tests that need `rubberband`: true when they must be skipped
+/// because it is missing. Never true under CI (`CI` set), so a missing
+/// filter fails there.
+#[doc(hidden)]
+pub fn skip_without_rubberband() -> bool {
+    static NOTE: Once = Once::new();
+    if rubberband_available() || std::env::var_os("CI").is_some() {
+        return false;
+    }
+    NOTE.call_once(|| {
+        eprintln!("skipped: FFmpeg has no rubberband filter (see docs/BUILDING.md)");
+    });
+    true
+}
 
 impl Stretcher {
     pub fn new(sample_rate: u32, channels: u16, tempo: f64) -> Result<Self, String> {
