@@ -716,6 +716,9 @@ fn a_level_measured_on_several_threads_reads_as_on_one() {
 /// included.
 #[test]
 fn a_pitch_corrected_clip_rendered_in_chunks_equals_its_whole_stretch() {
+    if vv_audio::stretch::skip_without_rubberband() {
+        return;
+    }
     let mut project = Project::default();
     let file = media(&mut project, chirp("stretch.wav", 48_000, 20), 48_000, 1);
     let mut nested_track = audio_track(vec![clip(1, file, 0, 300, 0)]);
