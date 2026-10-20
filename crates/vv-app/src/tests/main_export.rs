@@ -12,8 +12,7 @@ use vv_session::export::{ExportProgress, ExportSettings, export_timeline};
 /// verify the export in this environment, without a display.
 #[test]
 fn export_timeline_produces_a_playable_file_matching_the_timeline() {
-    let dir = std::env::temp_dir().join("vv-app-export-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-app-export-test");
     let source_path = dir.join("source.mp4");
     vv_media::test_support::ffmpeg(
         &[
@@ -112,8 +111,7 @@ fn export_timeline_produces_a_playable_file_matching_the_timeline() {
 /// requested position.
 #[test]
 fn export_timeline_covers_a_stretched_image_clip_past_its_only_real_frame() {
-    let dir = std::env::temp_dir().join("vv-app-export-image-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-app-export-image-test");
     let source_path = dir.join("still.png");
     vv_media::test_support::ffmpeg(
         &[
@@ -185,8 +183,7 @@ fn export_timeline_covers_a_stretched_image_clip_past_its_only_real_frame() {
 /// reaches the very end instead of finishing before the video.
 #[test]
 fn export_conforms_a_clip_whose_fps_differs_from_the_timeline() {
-    let dir = std::env::temp_dir().join("vv-app-export-conform-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-app-export-conform-test");
 
     let mute_25 = dir.join("mute25.mp4");
     vv_media::test_support::ffmpeg(
@@ -328,8 +325,7 @@ fn export_conforms_a_clip_whose_fps_differs_from_the_timeline() {
 
 #[test]
 fn export_timeline_scales_the_output_and_can_drop_the_audio() {
-    let dir = std::env::temp_dir().join("vv-app-export-scale-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-app-export-scale-test");
     let source_path = dir.join("source.mp4");
     vv_media::test_support::ffmpeg(
         &[
@@ -385,8 +381,7 @@ fn export_timeline_scales_the_output_and_can_drop_the_audio() {
 
 #[test]
 fn export_timeline_writes_only_the_in_out_range() {
-    let dir = std::env::temp_dir().join("vv-app-export-range-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-app-export-range-test");
     let source_path = dir.join("source.mp4");
     vv_media::test_support::ffmpeg(
         &[
@@ -438,8 +433,7 @@ fn export_timeline_writes_only_the_in_out_range() {
 
 #[test]
 fn run_export_goes_through_the_session_and_keeps_the_outcome_readable() {
-    let dir = std::env::temp_dir().join("vv-app-run-export");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-app-run-export");
     let output_path = dir.join("out.mp4");
     let _ = std::fs::remove_file(&output_path);
 
@@ -488,8 +482,7 @@ fn run_export_goes_through_the_session_and_keeps_the_outcome_readable() {
 /// hwaccels decode H.264 bit-exactly, so the export does not change.
 #[test]
 fn export_decoding_on_the_gpu_writes_the_same_frames_as_on_the_cpu() {
-    let dir = std::env::temp_dir().join("vv-app-export-hw-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-app-export-hw-test");
     let source_path = dir.join("source.mp4");
     vv_media::test_support::ffmpeg(
         &[

@@ -2,11 +2,8 @@ use super::*;
 use vv_core::clipboard::ClipboardOrigin;
 use vv_core::{MediaId, MediaMeta, Project};
 
-fn temp_root(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("vv-app-library-test-{name}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn temp_root(name: &str) -> crate::test_support::TempDir {
+    crate::test_support::TempDir::new(&format!("vv-app-library-test-{name}"))
 }
 
 fn project_with_file(path: &Path, hash: u64) -> (Project, MediaId) {
@@ -67,7 +64,7 @@ fn an_asset_copies_its_file_and_survives_a_reopen() {
     );
     assert_eq!(std::fs::read(copied).unwrap(), b"not really a video");
     std::fs::remove_file(&original).unwrap();
-    let library = Library::open(root);
+    let library = Library::open(root.to_path_buf());
     assert_eq!(library.assets.len(), 1);
     assert_eq!(library.assets[0].name, "Intro");
     assert_eq!(&library.assets[0].item().unwrap().path, copied);
@@ -79,14 +76,14 @@ fn removing_an_asset_keeps_the_files_other_assets_use() {
     let (project, id) = project_with_file(&root.join("clip.mp4"), 0xcd);
     store_asset(&root, asset("a", "A", payload(&project, id))).unwrap();
     store_asset(&root, asset("b", "B", payload(&project, id))).unwrap();
-    let mut library = Library::open(root.clone());
+    let mut library = Library::open(root.to_path_buf());
     let copied = library.assets[0].item().unwrap().path.clone();
 
     library.remove_asset("a").unwrap();
     assert!(copied.exists(), "still used by B");
     library.remove_asset("b").unwrap();
     assert!(!copied.exists());
-    assert!(Library::open(root).assets.is_empty());
+    assert!(Library::open(root.to_path_buf()).assets.is_empty());
 }
 
 fn preset(name: &str, shortcut: Option<Shortcut>) -> AttributePreset {
@@ -103,7 +100,7 @@ fn preset(name: &str, shortcut: Option<Shortcut>) -> AttributePreset {
 #[test]
 fn a_shortcut_belongs_to_one_preset_only() {
     let root = temp_root("shortcut");
-    let mut library = Library::open(root.clone());
+    let mut library = Library::open(root.to_path_buf());
     let key = Shortcut {
         shift: true,
         ..Shortcut::plain(egui::Key::Num1)
@@ -111,7 +108,7 @@ fn a_shortcut_belongs_to_one_preset_only() {
     library.add_preset(preset("First", Some(key))).unwrap();
     library.add_preset(preset("Second", Some(key))).unwrap();
 
-    let library = Library::open(root);
+    let library = Library::open(root.to_path_buf());
     let with_shortcut: Vec<_> = library
         .presets
         .iter()
@@ -125,7 +122,7 @@ fn a_shortcut_belongs_to_one_preset_only() {
 #[test]
 fn entries_of_a_newer_version_are_skipped() {
     let root = temp_root("version");
-    let mut library = Library::open(root.clone());
+    let mut library = Library::open(root.to_path_buf());
     let id = library.add_preset(preset("Old", None)).unwrap();
     let path = root.join("presets").join(format!("{id}.json"));
     let text = std::fs::read_to_string(&path)
@@ -133,7 +130,7 @@ fn entries_of_a_newer_version_are_skipped() {
         .replace("\"version\": 1", "\"version\": 99");
     std::fs::write(&path, text).unwrap();
 
-    assert!(Library::open(root).presets.is_empty());
+    assert!(Library::open(root.to_path_buf()).presets.is_empty());
 }
 
 #[test]
@@ -141,7 +138,7 @@ fn removing_a_folder_moves_its_content_up_and_survives_a_reopen() {
     let root = temp_root("folders");
     let (project, id) = project_with_file(&root.join("clip.mp4"), 0xef);
     store_asset(&root, asset("a", "A", payload(&project, id))).unwrap();
-    let mut library = Library::open(root.clone());
+    let mut library = Library::open(root.to_path_buf());
     let outer = library.add_folder("Outer".into(), None).unwrap();
     let inner = library
         .add_folder("Inner".into(), Some(outer.clone()))
@@ -155,7 +152,7 @@ fn removing_a_folder_moves_its_content_up_and_survives_a_reopen() {
 
     library.remove_folder(&inner).unwrap();
 
-    let library = Library::open(root);
+    let library = Library::open(root.to_path_buf());
     assert_eq!(library.assets[0].folder, Some(outer.clone()));
     assert_eq!(library.folder(&deepest).unwrap().parent, Some(outer));
     assert!(library.folder(&inner).is_none());
@@ -169,7 +166,7 @@ fn an_asset_with_a_missing_file_is_refused() {
     std::fs::remove_file(&original).unwrap();
 
     assert!(store_asset(&root, asset("a", "A", payload(&project, id))).is_err());
-    assert!(Library::open(root).assets.is_empty());
+    assert!(Library::open(root.to_path_buf()).assets.is_empty());
 }
 
 #[test]
@@ -177,7 +174,7 @@ fn relinking_finds_the_missing_files_by_name_and_copies_them_in() {
     let root = temp_root("relink");
     let (project, id) = project_with_file(&root.join("music.mp3"), 0x34);
     store_asset(&root, asset("a", "A", payload(&project, id))).unwrap();
-    let mut library = Library::open(root.clone());
+    let mut library = Library::open(root.to_path_buf());
     let copied = library.assets[0].item().unwrap().path.clone();
     std::fs::remove_file(&copied).unwrap();
     assert!(library.assets[0].is_offline());
@@ -187,7 +184,7 @@ fn relinking_finds_the_missing_files_by_name_and_copies_them_in() {
 
     assert_eq!(library.relink_asset("a", &root.join("elsewhere")), Ok(0));
 
-    let library = Library::open(root);
+    let library = Library::open(root.to_path_buf());
     assert!(!library.assets[0].is_offline());
     assert_eq!(library.assets[0].item().unwrap().path, copied);
 }
