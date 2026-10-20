@@ -122,6 +122,10 @@ const JOB_BLOCKS: u64 = 8;
 /// block of every clip.
 const BLOCK_REBUILD_INTERVAL: Duration = Duration::from_millis(250);
 
+/// A decode error marks a stream `missing`; retried after this, in case it
+/// was transient (file briefly unavailable, disk busy).
+const MISSING_RETRY: Duration = Duration::from_secs(2);
+
 /// Over budget, a playhead move this long chooses again what to keep.
 const REBALANCE_FRAMES: u64 = 2 * vv_audio::mixer::PROJECT_SAMPLE_RATE as u64;
 
@@ -137,6 +141,8 @@ struct StreamCache {
     ends_before: Option<u64>,
     /// No such stream, or it does not decode.
     missing: bool,
+    /// When `missing` was last set: retried after `MISSING_RETRY`.
+    missing_at: Option<Instant>,
     /// Read since the pass began.
     asked: bool,
     /// Blocks read since the pass began, with when they play.
@@ -321,15 +327,16 @@ impl MixBufferCache {
                     if worker_closing.load(Ordering::Relaxed) {
                         return;
                     }
-                    // Unity gain rather than a failed measure.
-                    let level = measured.unwrap_or_else(|e| {
-                        eprintln!("[mix_buffers] level: {e}");
-                        0.0
-                    });
-                    if level_tx
-                        .send((analysis.key, analysis.slot, Some(level)))
-                        .is_err()
-                    {
+                    // A failed measure is not cached: asked again, it is
+                    // retried rather than stuck at a wrong gain.
+                    let level = match measured {
+                        Ok(level) => Some(level),
+                        Err(e) => {
+                            eprintln!("[mix_buffers] level: {e}");
+                            None
+                        }
+                    };
+                    if level_tx.send((analysis.key, analysis.slot, level)).is_err() {
                         return;
                     }
                 }
@@ -489,7 +496,14 @@ impl MixBufferCache {
             .or_default();
         entry.asked = true;
         if entry.missing {
-            return ClipAudio::Missing;
+            let retry = entry
+                .missing_at
+                .is_some_and(|at| at.elapsed() >= MISSING_RETRY);
+            if !retry {
+                return ClipAudio::Missing;
+            }
+            entry.missing = false;
+            entry.missing_at = None;
         }
         let first_block = needed.start / BLOCK_FRAMES;
         let limit = entry.end.or(entry.ends_before).unwrap_or(u64::MAX);
@@ -672,6 +686,9 @@ impl MixBufferCache {
                             (Some(a), Some(b)) => Some(a.min(b)),
                             (a, b) => a.or(b),
                         };
+                        if missing && !stream.missing {
+                            stream.missing_at = Some(Instant::now());
+                        }
                         stream.missing |= missing;
                     }
                     changed = true;
