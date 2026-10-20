@@ -301,8 +301,13 @@ fn seeked(path: &std::path::Path, from: u64, len: u64) -> Vec<f32> {
 /// Stream 0 decoded from the start, each sample where `at` puts it: NaN
 /// where nothing plays (a gap in the timestamps).
 fn placed_full_decode(path: &std::path::Path) -> Vec<f32> {
+    placed_full_decode_of(path, 0)
+}
+
+/// Like `placed_full_decode`, for any `stream`.
+fn placed_full_decode_of(path: &std::path::Path, stream: usize) -> Vec<f32> {
     let mut full = Vec::new();
-    decode_audio_streams_from(path, &[0], 48_000, 0, |_, _, at, chunk| {
+    decode_audio_streams_from(path, &[stream], 48_000, 0, |_, _, at, chunk| {
         let start = at as usize * 2;
         if full.len() < start + chunk.len() {
             full.resize(start + chunk.len(), f32::NAN);
@@ -466,6 +471,63 @@ fn a_gap_in_the_timestamps_is_kept_by_a_decode_from_the_start_and_by_a_seek() {
                 48_000 * 6 + 600,
                 48_000 * 13 + 7,
             ],
+        );
+    }
+}
+
+/// Stream 1 starts past `MAX_ORIGIN_PACKETS` worth of stream 0: it gets no
+/// anchor, so a seek requesting both falls back to a full decode instead —
+/// resetting stream 0 too, even though it did get an early anchor. Only a
+/// true no-seek fallback matches a decode from the start exactly; a seek,
+/// accurate or not, would not for a lossy codec.
+#[test]
+fn a_stream_without_an_early_anchor_falls_back_resetting_every_stream() {
+    let dir = std::env::temp_dir().join(format!("vv-media-audio-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("late_stream.mkv");
+    crate::test_support::ffmpeg(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "aevalsrc=0.5*sin(2*PI*(100+300*t)*t):duration=51:sample_rate=48000",
+            "-itsoffset",
+            "50",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=1000:duration=1:sample_rate=48000",
+            "-map",
+            "0:a",
+            "-map",
+            "1:a",
+            "-c:a",
+            "aac",
+            "-ac",
+            "2",
+        ],
+        &path,
+    );
+
+    let mut got: [Vec<f32>; 2] = [Vec::new(), Vec::new()];
+    decode_audio_streams_from(&path, &[0, 1], 48_000, 48_000 * 10, |slot, _, at, chunk| {
+        let out = &mut got[slot];
+        let start = at as usize * 2;
+        if out.len() < start + chunk.len() {
+            out.resize(start + chunk.len(), f32::NAN);
+        }
+        out[start..start + chunk.len()].copy_from_slice(chunk);
+        ControlFlow::Continue(())
+    })
+    .unwrap();
+
+    for (slot, got) in got.iter().enumerate() {
+        let full = placed_full_decode_of(&path, slot);
+        let len = got.len().min(full.len());
+        assert_eq!(
+            got[..len],
+            full[..len],
+            "stream {slot}: the fallback must match a decode from the start exactly"
         );
     }
 }

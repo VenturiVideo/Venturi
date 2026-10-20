@@ -357,8 +357,14 @@ fn decode_streams(
     if decoders.iter().all(Option::is_none) {
         return Ok(formats);
     }
-    if let Some(secs) = seek_to {
-        seek(&mut ictx, &mut decoders, out_rate, secs)?;
+    if let Some(secs) = seek_to
+        && !seek(&mut ictx, &mut decoders, out_rate, secs)?
+    {
+        // No anchor for some stream: a seek to the start still seeks (to
+        // the demuxer's notion of 0, which can land past a leading packet
+        // with a negative timestamp, e.g. AAC priming) rather than really
+        // not seeking. Reopening is what a decode without `seek_to` does.
+        ictx = ffmpeg::format::input(&path)?;
     }
 
     let mut samples = Vec::new();
@@ -401,14 +407,15 @@ fn decode_streams(
 
 /// Seeks to `secs` after the first frame, with fresh decoders that place
 /// their frames by timestamp, anchored on the first frames from the start.
-/// Falls back to a decode from the start (no seek) when some stream gives
-/// no anchor: priming and pre-skip would otherwise be ignored.
+/// `false` when some stream gives no anchor: priming and pre-skip would
+/// otherwise be ignored, so every decoder is reset but `ictx` is left
+/// unseeked, for the caller to decode from the start instead.
 fn seek(
     ictx: &mut ffmpeg::format::context::Input,
     decoders: &mut [Option<(usize, StreamDecoder)>],
     out_rate: Option<u32>,
     secs: f64,
-) -> Result<(), crate::MediaError> {
+) -> Result<bool, crate::MediaError> {
     // (timestamp, samples) of the first frames of every stream.
     let mut firsts: Vec<Vec<(Option<i64>, u64)>> = decoders.iter().map(|_| Vec::new()).collect();
     let mut decoded = ffmpeg::frame::Audio::empty();
@@ -468,7 +475,7 @@ fn seek(
             "audio seek: no anchor frames in some stream within the first \
              {MAX_ORIGIN_PACKETS} packets, decoding from the start instead"
         );
-        return ictx.seek(0, ..0).map_err(Into::into);
+        return Ok(false);
     }
     let target = ((first_secs.max(0.0) + secs) * f64::from(ffmpeg::ffi::AV_TIME_BASE)) as i64;
     // Some demuxers refuse a target past the end: from the start, the
@@ -476,7 +483,7 @@ fn seek(
     if ictx.seek(target, ..target).is_err() {
         ictx.seek(0, ..0)?;
     }
-    Ok(())
+    Ok(true)
 }
 
 /// From the first frames of a stream: the second one sits where the first
