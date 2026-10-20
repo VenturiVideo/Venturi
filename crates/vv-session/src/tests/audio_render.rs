@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::TempDir;
 use vv_audio::mixer::ClipInput;
 use vv_audio::mixer::{mix_range, timeline_frame_to_sample};
 use vv_core::{
@@ -9,17 +10,15 @@ use vv_core::{
 const FPS: u64 = 25;
 const FRAME_SAMPLES: u64 = PROJECT_SAMPLE_RATE as u64 / FPS;
 
-fn source(name: &str, args: &[&str]) -> PathBuf {
-    let dir = std::env::temp_dir().join("vv-audio-render-test");
-    std::fs::create_dir_all(&dir).unwrap();
+fn source(dir: &TempDir, name: &str, args: &[&str]) -> PathBuf {
     let path = dir.join(name);
     vv_media::test_support::ffmpeg(args, &path);
     path
 }
 
-fn chirp(name: &str, rate: u32, secs: u32) -> PathBuf {
+fn chirp(dir: &TempDir, name: &str, rate: u32, secs: u32) -> PathBuf {
     let lavfi = format!("aevalsrc=0.8*sin(300*t*t):sample_rate={rate}:duration={secs}");
-    source(name, &["-f", "lavfi", "-i", &lavfi])
+    source(dir, name, &["-f", "lavfi", "-i", &lavfi])
 }
 
 fn media(project: &mut Project, path: PathBuf, sample_rate: u32, audio_streams: u16) -> MediaId {
@@ -136,9 +135,20 @@ fn boosting_eq() -> Equalizer {
 /// resampled one at varispeed and a pitch-corrected clip.
 #[test]
 fn a_render_in_chunks_equals_one_mix_of_the_whole_timeline() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let seekable = media(&mut project, chirp("seekable.wav", 48_000, 20), 48_000, 1);
-    let resampled = media(&mut project, chirp("resampled.wav", 44_100, 20), 44_100, 1);
+    let seekable = media(
+        &mut project,
+        chirp(&dir, "seekable.wav", 48_000, 20),
+        48_000,
+        1,
+    );
+    let resampled = media(
+        &mut project,
+        chirp(&dir, "resampled.wav", 44_100, 20),
+        44_100,
+        1,
+    );
     let mut first = audio_track(vec![
         clip(1, seekable, 10, 300, 0),
         clip(2, seekable, 50, 120, 320),
@@ -175,8 +185,9 @@ fn a_render_in_chunks_equals_one_mix_of_the_whole_timeline() {
 
 #[test]
 fn a_range_reads_only_the_windows_near_it() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let file = media(&mut project, chirp("near.wav", 48_000, 20), 48_000, 1);
+    let file = media(&mut project, chirp(&dir, "near.wav", 48_000, 20), 48_000, 1);
     let tl = timeline(vec![audio_track(vec![clip(1, file, 0, 500, 0)])]);
     let mut wanted = Wanted {
         windows: HashSet::new(),
@@ -201,8 +212,9 @@ fn a_range_reads_only_the_windows_near_it() {
 /// The point of the render: what it holds does not grow with the timeline.
 #[test]
 fn the_render_holds_only_the_audio_near_where_it_is() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let file = media(&mut project, chirp("long.wav", 48_000, 60), 48_000, 1);
+    let file = media(&mut project, chirp(&dir, "long.wav", 48_000, 60), 48_000, 1);
     let tl = timeline(vec![audio_track(vec![clip(1, file, 0, 1500, 0)])]);
     let mut cache = LevelCache::default();
     let mut audio = StreamingAudio::new(&mut cache);
@@ -229,7 +241,9 @@ fn the_render_holds_only_the_audio_near_where_it_is() {
 
 #[test]
 fn the_streams_of_a_file_read_at_the_same_place_share_one_decode() {
+    let dir = TempDir::new("vv-audio-render-test");
     let path = source(
+        &dir,
         "two_streams.mkv",
         &[
             "-f",
@@ -273,8 +287,14 @@ fn the_streams_of_a_file_read_at_the_same_place_share_one_decode() {
 
 #[test]
 fn a_stream_the_file_does_not_have_is_silent() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let file = media(&mut project, chirp("one_stream.wav", 48_000, 2), 48_000, 1);
+    let file = media(
+        &mut project,
+        chirp(&dir, "one_stream.wav", 48_000, 2),
+        48_000,
+        1,
+    );
     let mut missing = clip(1, file, 0, 50, 0);
     missing.audio_stream_index = 3;
     let tl = timeline(vec![audio_track(vec![missing])]);
@@ -284,8 +304,9 @@ fn a_stream_the_file_does_not_have_is_silent() {
 
 #[test]
 fn a_break_from_the_sink_stops_the_render() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let file = media(&mut project, chirp("stop.wav", 48_000, 20), 48_000, 1);
+    let file = media(&mut project, chirp(&dir, "stop.wav", 48_000, 20), 48_000, 1);
     let tl = timeline(vec![audio_track(vec![clip(1, file, 0, 500, 0)])]);
     let mut chunks = 0;
     render_offline(
@@ -304,8 +325,9 @@ fn a_break_from_the_sink_stops_the_render() {
 
 #[test]
 fn a_range_starting_inside_the_timeline_is_that_part_of_the_mix() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let file = media(&mut project, chirp("part.wav", 48_000, 20), 48_000, 1);
+    let file = media(&mut project, chirp(&dir, "part.wav", 48_000, 20), 48_000, 1);
     let mut track = audio_track(vec![clip(1, file, 0, 500, 0)]);
     track.mix.effects = vec![effect(AudioEffectKind::Equalizer(boosting_eq()))];
     let tl = timeline(vec![track]);
@@ -321,8 +343,14 @@ fn a_range_starting_inside_the_timeline_is_that_part_of_the_mix() {
 /// across them like the outer ones.
 #[test]
 fn a_compound_rendered_in_chunks_equals_one_mix() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let file = media(&mut project, chirp("nested.wav", 48_000, 20), 48_000, 1);
+    let file = media(
+        &mut project,
+        chirp(&dir, "nested.wav", 48_000, 20),
+        48_000,
+        1,
+    );
     let mut nested_track = audio_track(vec![clip(1, file, 0, 400, 0)]);
     nested_track.mix.effects = vec![effect(AudioEffectKind::MultibandCompressor(
         MultibandCompressor::DEFAULT,
@@ -397,11 +425,11 @@ fn normalize(mode: NormalizeMode) -> AudioEffect {
 }
 
 /// Two tracks cut in several places, measured on the master.
-fn edited_timeline(project: &mut Project, name: &str) -> Timeline {
-    let file = media(project, chirp(name, 48_000, 20), 48_000, 1);
+fn edited_timeline(project: &mut Project, dir: &TempDir, name: &str) -> Timeline {
+    let file = media(project, chirp(dir, name, 48_000, 20), 48_000, 1);
     let quiet = media(
         project,
-        chirp(&format!("quiet-{name}"), 44_100, 20),
+        chirp(dir, &format!("quiet-{name}"), 44_100, 20),
         44_100,
         1,
     );
@@ -422,8 +450,9 @@ fn db(a: f32, b: f32) -> f32 {
 
 #[test]
 fn a_level_measured_by_segment_reads_as_the_whole_measure() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let mut tl = edited_timeline(&mut project, "segments.wav");
+    let mut tl = edited_timeline(&mut project, &dir, "segments.wav");
     for mode in NormalizeMode::ALL {
         tl.master.effects = vec![normalize(mode)];
         let levels = both_measures(&project, &tl, &mut LevelCache::default());
@@ -445,8 +474,9 @@ fn a_level_measured_by_segment_reads_as_the_whole_measure() {
 
 #[test]
 fn a_level_after_a_compressor_reads_as_the_whole_measure() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let mut tl = edited_timeline(&mut project, "compressed.wav");
+    let mut tl = edited_timeline(&mut project, &dir, "compressed.wav");
     tl.tracks[0].mix.effects = vec![effect(AudioEffectKind::MultibandCompressor(
         MultibandCompressor::DEFAULT,
     ))];
@@ -465,8 +495,9 @@ fn a_level_after_a_compressor_reads_as_the_whole_measure() {
 /// only what it touches.
 #[test]
 fn an_edit_measures_again_only_the_segments_it_touches() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let mut tl = edited_timeline(&mut project, "edits.wav");
+    let mut tl = edited_timeline(&mut project, &dir, "edits.wav");
     tl.tracks.truncate(1);
     tl.master.effects = vec![normalize(NormalizeMode::Loudness)];
     let mut cache = LevelCache::default();
@@ -513,8 +544,14 @@ fn measured_parts_survive_the_disk() {
 /// measured apart.
 #[test]
 fn a_normalizing_timeline_renders_in_chunks() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let file = media(&mut project, chirp("normalized.wav", 48_000, 60), 48_000, 1);
+    let file = media(
+        &mut project,
+        chirp(&dir, "normalized.wav", 48_000, 60),
+        48_000,
+        1,
+    );
     let mut tl = timeline(vec![audio_track(vec![clip(1, file, 0, 1500, 0)])]);
     tl.master.effects = vec![normalize(NormalizeMode::Loudness)];
     let mut cache = LevelCache::default();
@@ -532,14 +569,14 @@ fn a_normalizing_timeline_renders_in_chunks() {
 /// Reopening a project: the levels measured the last time come from disk.
 #[test]
 fn a_new_cache_reads_the_measures_from_disk() {
-    let dir = std::env::temp_dir().join("vv-audio-render-test-levels");
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = TempDir::new("vv-audio-render-test");
+    let cache = TempDir::new("vv-audio-render-test-levels");
     let on_disk = || LevelCache {
-        dir: Some(dir.clone()),
+        dir: Some(cache.path().to_path_buf()),
         ..LevelCache::default()
     };
     let mut project = Project::default();
-    let mut tl = edited_timeline(&mut project, "reopened.wav");
+    let mut tl = edited_timeline(&mut project, &dir, "reopened.wav");
     tl.master.effects = vec![normalize(NormalizeMode::Loudness)];
     let mut first = on_disk();
     let measured = both_measures(&project, &tl, &mut first);
@@ -554,13 +591,13 @@ fn a_new_cache_reads_the_measures_from_disk() {
 /// again when its measure comes from disk.
 #[test]
 fn a_file_changed_on_disk_is_measured_again() {
-    let dir = std::env::temp_dir().join("vv-audio-render-test-changed");
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = TempDir::new("vv-audio-render-test");
+    let cache = TempDir::new("vv-audio-render-test-changed");
     let on_disk = || LevelCache {
-        dir: Some(dir.clone()),
+        dir: Some(cache.path().to_path_buf()),
         ..LevelCache::default()
     };
-    let path = chirp("changed.wav", 48_000, 10);
+    let path = chirp(&dir, "changed.wav", 48_000, 10);
     let mut project = Project::default();
     let file = media(&mut project, path.clone(), 48_000, 1);
     let mut tl = timeline(vec![audio_track(vec![clip(1, file, 0, 200, 0)])]);
@@ -581,7 +618,8 @@ fn a_file_changed_on_disk_is_measured_again() {
 
 #[test]
 fn an_in_memory_measure_is_rechecked_when_its_source_changes() {
-    let path = chirp("changed-in-memory.wav", 48_000, 10);
+    let dir = TempDir::new("vv-audio-render-test");
+    let path = chirp(&dir, "changed-in-memory.wav", 48_000, 10);
     let mut project = Project::default();
     let file = media(&mut project, path.clone(), 48_000, 1);
     let mut tl = timeline(vec![audio_track(vec![clip(1, file, 0, 200, 0)])]);
@@ -626,8 +664,9 @@ fn neighbouring_segments_render_as_one_run_split_between_the_threads() {
 
 #[test]
 fn a_level_measured_on_several_threads_reads_as_on_one() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let mut tl = edited_timeline(&mut project, "threads.wav");
+    let mut tl = edited_timeline(&mut project, &dir, "threads.wav");
     tl.master.effects = vec![normalize(NormalizeMode::Loudness)];
     let measure = |threads| {
         let mut cache = LevelCache {
@@ -645,8 +684,14 @@ fn a_level_measured_on_several_threads_reads_as_on_one() {
 /// included.
 #[test]
 fn a_pitch_corrected_clip_rendered_in_chunks_equals_its_whole_stretch() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let file = media(&mut project, chirp("stretch.wav", 48_000, 20), 48_000, 1);
+    let file = media(
+        &mut project,
+        chirp(&dir, "stretch.wav", 48_000, 20),
+        48_000,
+        1,
+    );
     let mut nested_track = audio_track(vec![clip(1, file, 0, 300, 0)]);
     nested_track.mix.effects = vec![effect(AudioEffectKind::MultibandCompressor(
         MultibandCompressor::DEFAULT,
@@ -682,8 +727,14 @@ fn a_pitch_corrected_clip_rendered_in_chunks_equals_its_whole_stretch() {
 
 #[test]
 fn a_compound_measuring_a_segment_its_parent_claimed_does_not_wait_on_itself() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let file = media(&mut project, chirp("self_wait.wav", 48_000, 70), 48_000, 1);
+    let file = media(
+        &mut project,
+        chirp(&dir, "self_wait.wav", 48_000, 70),
+        48_000,
+        1,
+    );
     let chain = || {
         vec![
             effect(AudioEffectKind::MultibandCompressor(
@@ -725,8 +776,14 @@ fn a_compound_measuring_a_segment_its_parent_claimed_does_not_wait_on_itself() {
 
 #[test]
 fn a_cancelled_render_stops_at_the_next_chunk() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let file = media(&mut project, chirp("cancelled.wav", 48_000, 20), 48_000, 1);
+    let file = media(
+        &mut project,
+        chirp(&dir, "cancelled.wav", 48_000, 20),
+        48_000,
+        1,
+    );
     let tl = timeline(vec![audio_track(vec![clip(1, file, 0, 500, 0)])]);
     let cancel = Arc::new(AtomicBool::new(false));
     let mut cache = LevelCache {
