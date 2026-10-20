@@ -47,6 +47,9 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
+      - name: Check (performance feature)
+        run: cargo check --locked --all-targets --features performance
+
       # Single-threaded via .cargo/config.toml; the GPU tests run on
       # lavapipe (software Vulkan, part of mesa-vulkan-drivers).
       # The skipped tests measure real-time audio pacing: ALSA's null PCM
