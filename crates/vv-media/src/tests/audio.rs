@@ -469,3 +469,27 @@ fn a_gap_in_the_timestamps_is_kept_by_a_decode_from_the_start_and_by_a_seek() {
         );
     }
 }
+
+/// Timestamps 0.1% slow against the samples (20 ms over the file), no gap:
+/// a seek and a decode from the start both follow them. The scale is applied
+/// in a remux: encoding with `asetpts` makes ffmpeg write clean timestamps.
+#[test]
+fn a_drift_in_the_timestamps_is_followed_by_a_decode_from_the_start_and_by_a_seek() {
+    for (name, rate, codec) in [
+        ("drift.mkv", 48_000, "pcm_s16le"),
+        ("drift.mp4", 48_000, "aac"),
+        ("drift44.mp4", 44_100, "aac"),
+        ("drift.mka", 48_000, "libopus"),
+    ] {
+        let clean = test_file(
+            &format!("clean-{name}"),
+            &chirp_at(rate),
+            &["-c:a", codec],
+            false,
+        );
+        let path = clean.with_file_name(name);
+        let clean = clean.to_str().unwrap();
+        crate::test_support::ffmpeg(&["-itsscale", "1.001", "-i", clean, "-c", "copy"], &path);
+        assert_seek_matches_full_decode(&path, 0.0);
+    }
+}

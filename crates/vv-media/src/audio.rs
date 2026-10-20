@@ -45,12 +45,6 @@ const MAX_ORIGIN_PACKETS: usize = 2000;
 /// Frames decoded from the start of each stream before a seek.
 const ORIGIN_FRAMES: usize = 8;
 
-/// Timestamps further than this from the samples counted are a jump in the
-/// stream (a gap, an overlap): placed by timestamp, as the video is, so a
-/// decode from the start and one from a seek agree. Above the rounding of
-/// millisecond timestamps.
-const DISCONTINUITY_SECS: f64 = 0.005;
-
 /// Where a decode from the start puts a frame with timestamp `ts`.
 #[derive(Clone, Copy)]
 struct Anchor {
@@ -161,6 +155,19 @@ impl StreamDecoder {
         }
     }
 
+    /// Input frames a timestamp may be off the samples counted before it is
+    /// a jump, drift included: a seek places every frame by timestamp, so
+    /// the two must agree. Above the rounding of timestamps coarser than a
+    /// sample, unless they are snapped to whole frames.
+    fn tolerance(&self, anchor: Anchor) -> f64 {
+        let tick = self.time_base * self.in_rate as f64;
+        if tick > 1.0 + 1e-9 && anchor.frame_samples.is_none() {
+            tick
+        } else {
+            0.5
+        }
+    }
+
     fn place(&mut self, decoded: &ffmpeg::frame::Audio) -> Place {
         let ts = decoded.timestamp().or(decoded.pts());
         let samples = decoded.samples() as u64;
@@ -175,8 +182,7 @@ impl StreamDecoder {
                 return Place::Counted;
             };
             let input = anchor.position as f64 + self.input_at(anchor, ts);
-            let tolerance = DISCONTINUITY_SECS * self.in_rate as f64;
-            return if (input - self.fed as f64).abs() > tolerance {
+            return if (input - self.fed as f64).abs() > self.tolerance(anchor) {
                 Place::At(input.round().max(0.0) as u64)
             } else {
                 Place::Counted
