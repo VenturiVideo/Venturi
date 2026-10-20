@@ -61,8 +61,13 @@ pub fn skip_without_rubberband() -> bool {
     if rubberband_available() || std::env::var_os("CI").is_some() {
         return false;
     }
+    // Straight to stderr: the test harness hides `eprintln!` of passing tests.
     NOTE.call_once(|| {
-        eprintln!("skipped: FFmpeg has no rubberband filter (see docs/BUILDING.md)");
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr(),
+            "skipped: FFmpeg has no rubberband filter (see docs/BUILDING.md)"
+        );
     });
     true
 }
