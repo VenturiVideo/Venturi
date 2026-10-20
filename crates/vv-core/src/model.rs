@@ -2710,8 +2710,13 @@ impl Track {
     /// `frame`, with the two clips involved.
     pub fn crossing_at(&self, frame: FrameIdx) -> Option<(&Clip, &Clip, &CrossTransition)> {
         self.crossings.iter().find_map(|c| {
-            let left = self.clip(c.left_clip)?;
-            let right = self.clip(c.right_clip)?;
+            let pos = self.clips.iter().position(|clip| clip.id == c.left_clip)?;
+            let left = &self.clips[pos];
+            let right = self
+                .clips
+                .get(pos + 1)
+                .filter(|r| r.id == c.right_clip)
+                .or_else(|| self.clip(c.right_clip))?;
             // An adjustment half would adjust a stack already holding the other half.
             if left.timeline_end() != right.timeline_start
                 || left.is_adjustment()
@@ -3068,11 +3073,10 @@ impl Timeline {
 
 /// The clip of `track` covering `frame`, unless it is disabled.
 fn visible_clip_at(track: &Track, frame: FrameIdx) -> Option<&Clip> {
-    track
-        .clips
-        .iter()
-        .find(|c| c.contains(frame))
-        .filter(|c| !c.disabled)
+    let idx = track.clips.partition_point(|c| c.timeline_start <= frame);
+    idx.checked_sub(1)
+        .and_then(|i| track.clips.get(i))
+        .filter(|c| c.contains(frame) && !c.disabled)
 }
 
 /// Precision of the compositor's intermediate images. Per project, not an

@@ -7,6 +7,7 @@ use cosmic_text::{
     Align, Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Style, SwashCache,
     UnderlineStyle, Weight,
 };
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use vv_core::{HAnchor, Rgba, TextAlign, TitleParams, VAnchor};
 
@@ -20,6 +21,7 @@ pub struct TextMask {
 /// The masks of a title from bottom to top, with the color of each one
 /// (opacity already in the alpha).
 pub struct TitleRender {
+    pub id: u64,
     pub layers: Vec<(TextMask, Rgba)>,
 }
 
@@ -245,6 +247,8 @@ fn rasterize(
     timeline_size: (u32, u32),
     output_size: (u32, u32),
 ) -> TitleRender {
+    static NEXT_TITLE_ID: AtomicU64 = AtomicU64::new(1);
+    let id = NEXT_TITLE_ID.fetch_add(1, Ordering::Relaxed);
     let (width, height) = (output_size.0.max(1), output_size.1.max(1));
     let mut data = vec![0u8; (width * height) as usize];
     let scale = width as f32 / timeline_size.0.max(1) as f32;
@@ -333,7 +337,7 @@ fn rasterize(
     }
 
     layers.push((text, params.color));
-    TitleRender { layers }
+    TitleRender { id, layers }
 }
 
 /// Fill and (if `outline > 0`) inner border of a rounded rectangle, with
@@ -356,11 +360,14 @@ fn rounded_rect_masks(
         ..((center.1 + half.1 + 1.0).ceil().clamp(0.0, height as f32) as u32);
     let coverage = |d: f32| (0.5 - d).clamp(0.0, 1.0);
     for y in y_range {
+        let py = (y as f32 + 0.5 - center.1).abs() - (half.1 - radius);
         for x in x_range.clone() {
             let px = (x as f32 + 0.5 - center.0).abs() - (half.0 - radius);
-            let py = (y as f32 + 0.5 - center.1).abs() - (half.1 - radius);
-            let outside = (px.max(0.0).powi(2) + py.max(0.0).powi(2)).sqrt();
-            let d = outside + px.max(py).min(0.0) - radius;
+            let d = if px > 0.0 && py > 0.0 {
+                (px * px + py * py).sqrt() - radius
+            } else {
+                px.max(py) - radius
+            };
             let i = (y * width + x) as usize;
             let inside = coverage(d);
             fill[i] = (inside * 255.0).round() as u8;
