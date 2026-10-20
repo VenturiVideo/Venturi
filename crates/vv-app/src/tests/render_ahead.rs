@@ -3738,7 +3738,7 @@ fn an_edit_that_keeps_the_media_keeps_its_decoder_and_frames() {
     let (caches, mut open) = opened_media(media, &path);
     let mut open_behind = HashMap::new();
 
-    forget_changed_media(&old, &new, &caches, &mut open, &mut open_behind);
+    forget_changed_media(&old, &new, &caches, &mut [&mut open, &mut open_behind]);
     assert!(open.contains_key(&media));
     assert!(caches.contains(media, 0));
 }
@@ -3755,7 +3755,7 @@ fn a_media_naming_another_file_loses_its_decoder_and_frames() {
     for new in [relinked, removed] {
         let (caches, mut open) = opened_media(media, &path);
         let mut open_behind = HashMap::new();
-        forget_changed_media(&old, &new, &caches, &mut open, &mut open_behind);
+        forget_changed_media(&old, &new, &caches, &mut [&mut open, &mut open_behind]);
         assert!(!open.contains_key(&media));
         assert!(!caches.contains(media, 0));
         assert_eq!(caches.bytes_used(), 0);

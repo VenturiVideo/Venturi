@@ -256,6 +256,8 @@ struct VideoState {
     /// Staging frame of the encoders that take GPU frames (Vulkan): they
     /// accept NV12, not three-plane I420.
     nv12: Option<ffmpeg::frame::Video>,
+    /// Reusable I420 frame for software/non-Vulkan encoders.
+    yuv420p: Option<ffmpeg::frame::Video>,
 }
 
 struct AudioState {
@@ -398,6 +400,9 @@ impl Encoder {
         // `write_header`: the *effective* one of the output stream must be
         // read back from there, not assumed equal to the encoder's.
         let video_ost_time_base = octx.stream(video_stream_index).unwrap().time_base();
+        let yuv420p = nv12
+            .is_none()
+            .then(|| ffmpeg::frame::Video::new(Pixel::YUV420P, width, height));
         let video = VideoState {
             encoder: video_encoder,
             stream_index: video_stream_index,
@@ -405,6 +410,7 @@ impl Encoder {
             ost_time_base: video_ost_time_base,
             next_pts: 0,
             nv12,
+            yuv420p,
         };
 
         let audio = audio_state.map(|mut state| {
@@ -425,26 +431,28 @@ impl Encoder {
         let chroma_width = width.div_ceil(2);
         let (luma, chroma) = i420.split_at(width * height);
         let (u, v) = chroma.split_at(chroma.len() / 2);
-        let mut frame = match &mut video.nv12 {
-            Some(nv12) => {
-                fill_plane(nv12, 0, luma, width);
-                interleave_chroma(nv12, u, v, chroma_width);
-                upload(&video.encoder, nv12)?
-            }
-            None => {
-                let mut yuv =
-                    ffmpeg::frame::Video::new(Pixel::YUV420P, width as u32, height as u32);
-                fill_plane(&mut yuv, 0, luma, width);
-                fill_plane(&mut yuv, 1, u, chroma_width);
-                fill_plane(&mut yuv, 2, v, chroma_width);
-                yuv
-            }
-        };
-        frame.set_pts(Some(video.next_pts));
-        frame.set_kind(ffmpeg::picture::Type::None);
+        let pts = video.next_pts;
         video.next_pts += 1;
-
-        video.encoder.send_frame(&frame)?;
+        if let Some(nv12) = &mut video.nv12 {
+            fill_plane(nv12, 0, luma, width);
+            interleave_chroma(nv12, u, v, chroma_width);
+            let mut frame = upload(&video.encoder, nv12)?;
+            frame.set_pts(Some(pts));
+            frame.set_kind(ffmpeg::picture::Type::None);
+            video.encoder.send_frame(&frame)?;
+        } else {
+            let yuv = video.yuv420p.as_mut().unwrap();
+            let ret = unsafe { ffmpeg::ffi::av_frame_make_writable(yuv.as_mut_ptr()) };
+            if ret < 0 {
+                return Err(ffmpeg::Error::from(ret).into());
+            }
+            fill_plane(yuv, 0, luma, width);
+            fill_plane(yuv, 1, u, chroma_width);
+            fill_plane(yuv, 2, v, chroma_width);
+            yuv.set_pts(Some(pts));
+            yuv.set_kind(ffmpeg::picture::Type::None);
+            video.encoder.send_frame(yuv)?;
+        }
         drain_packets(
             &mut self.octx,
             &mut video.encoder,
@@ -724,6 +732,10 @@ pub(crate) fn fill_plane(
 ) {
     let stride = frame.stride(plane);
     let data = frame.data_mut(plane);
+    if stride == row_width {
+        data[..src.len()].copy_from_slice(src);
+        return;
+    }
     for (y, row) in src.chunks_exact(row_width.max(1)).enumerate() {
         data[y * stride..y * stride + row.len()].copy_from_slice(row);
     }
