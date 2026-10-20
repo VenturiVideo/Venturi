@@ -727,12 +727,22 @@ impl MixBufferCache {
                         self.last_level.insert(slot, level);
                     }
                 }
-                // Asked again, it is measured again.
+                // Asked again, it is measured again: removing an entry
+                // still asked for must trigger the rebuild that re-queues it.
                 None => {
-                    self.levels.remove(&key);
+                    changed |= self.levels.remove(&key).is_some();
                 }
             }
         }
+        // An idle stream never asks `lookup` again on its own: once its
+        // backoff elapses, report it changed so a rebuild asks for it and
+        // gives it a chance to retry.
+        changed |= self.streams.values().any(|stream| {
+            stream.missing
+                && stream
+                    .missing_at
+                    .is_some_and(|at| at.elapsed() >= MISSING_RETRY)
+        });
         changed
     }
 
@@ -767,6 +777,18 @@ impl MixBufferCache {
                 });
             }
         }
+    }
+
+    /// When a missing stream is next due to retry, the earliest if several:
+    /// idle (nothing else asking for a rebuild), it is otherwise never
+    /// asked again once past this. The caller schedules a repaint for it.
+    pub fn next_missing_retry(&self) -> Option<Instant> {
+        self.streams
+            .values()
+            .filter(|stream| stream.missing)
+            .filter_map(|stream| stream.missing_at)
+            .map(|at| at + MISSING_RETRY)
+            .min()
     }
 
     #[cfg(test)]
