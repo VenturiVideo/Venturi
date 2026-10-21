@@ -121,6 +121,27 @@ fn rendered(project: &Project, tl: &Timeline, range: Range<u64>) -> Vec<f32> {
     out
 }
 
+/// Renders with `installed` as the plugin list, not the process-global one.
+fn rendered_with_installed(
+    project: &Project,
+    tl: &Timeline,
+    frames: u64,
+    installed: &Arc<[vv_plugin::PluginInfo]>,
+) -> Vec<f32> {
+    let installed = installed.clone();
+    let mut levels = LevelCache {
+        installed: Arc::new(move || installed.clone()),
+        ..LevelCache::default()
+    };
+    let mut out = Vec::new();
+    render_offline(project, tl, 0..frames, &mut levels, |chunk| {
+        out.extend_from_slice(chunk);
+        ControlFlow::Continue(())
+    })
+    .unwrap();
+    out
+}
+
 fn effect(kind: AudioEffectKind) -> AudioEffect {
     AudioEffect::new(kind)
 }
@@ -358,6 +379,10 @@ struct BothMeasures<'c> {
     cache: &'c mut LevelCache,
     /// By segments, whole.
     levels: Vec<(f32, f32)>,
+    /// The live pool makes every plugin.
+    live_plugins: bool,
+    /// ... as an `Echo` rather than a pass-through.
+    echo: bool,
 }
 
 impl AudioSource for BothMeasures<'_> {
@@ -365,18 +390,64 @@ impl AudioSource for BothMeasures<'_> {
         decoded_whole(path, stream).map_or(ClipAudio::Missing, ClipAudio::Ready)
     }
 
+    fn plugin(&mut self, _: vv_audio::PluginRequest<'_>) -> Option<vv_audio::PluginHandle> {
+        let echo = self.echo;
+        self.live_plugins.then(|| match echo {
+            true => Arc::new(Echo::new(Default::default())) as _,
+            false => Arc::new(Passthrough) as _,
+        })
+    }
+
+    fn plugin_build(&mut self, _: &vv_core::Vst3Effect) -> Option<u64> {
+        self.live_plugins.then_some(1)
+    }
+
     fn level(&mut self, analysis: LevelAnalysis) -> LevelReading {
         let by_segment = measure_level(&analysis, self.cache).unwrap();
-        let whole = analysis.measure_with(&mut decoded_whole);
+        let whole = analysis.measure_with(&mut Whole {
+            live_plugins: self.live_plugins,
+            echo: self.echo,
+        });
         self.levels.push((by_segment, whole));
         LevelReading::Ready(whole)
     }
 }
 
+/// The decoded files, and the plugins of `BothMeasures`.
+struct Whole {
+    live_plugins: bool,
+    echo: bool,
+}
+
+impl AudioSource for Whole {
+    fn file(&mut self, path: &Path, stream: usize) -> ClipAudio {
+        decoded_whole(path, stream).map_or(ClipAudio::Missing, ClipAudio::Ready)
+    }
+
+    fn plugin(&mut self, _: vv_audio::PluginRequest<'_>) -> Option<vv_audio::PluginHandle> {
+        let echo = self.echo;
+        self.live_plugins.then(|| match echo {
+            true => Arc::new(Echo::new(Default::default())) as _,
+            false => Arc::new(Passthrough) as _,
+        })
+    }
+}
+
 fn both_measures(project: &Project, tl: &Timeline, cache: &mut LevelCache) -> Vec<(f32, f32)> {
+    both_measures_through(project, tl, cache, false)
+}
+
+fn both_measures_through(
+    project: &Project,
+    tl: &Timeline,
+    cache: &mut LevelCache,
+    live_plugins: bool,
+) -> Vec<(f32, f32)> {
     let mut source = BothMeasures {
         cache,
         levels: Vec::new(),
+        live_plugins,
+        echo: false,
     };
     MixSnapshot::from_timeline(
         project,
@@ -579,6 +650,27 @@ fn a_file_changed_on_disk_is_measured_again() {
     assert_ne!(after, before);
 }
 
+#[test]
+fn an_in_memory_measure_is_rechecked_when_its_source_changes() {
+    let path = chirp("changed-in-memory.wav", 48_000, 10);
+    let mut project = Project::default();
+    let file = media(&mut project, path.clone(), 48_000, 1);
+    let mut tl = timeline(vec![audio_track(vec![clip(1, file, 0, 200, 0)])]);
+    tl.master.effects = vec![normalize(NormalizeMode::Loudness)];
+
+    let mut cache = LevelCache::default();
+    let before = both_measures(&project, &tl, &mut cache);
+    let rendered_before = cache.rendered;
+    assert!(rendered_before > 0);
+
+    let quieter = "aevalsrc=0.1*sin(300*t*t):sample_rate=48000:duration=10";
+    vv_media::test_support::ffmpeg(&["-f", "lavfi", "-i", quieter], &path);
+    let after = both_measures(&project, &tl, &mut cache);
+
+    assert!(cache.rendered > rendered_before);
+    assert_ne!(after, before);
+}
+
 fn segment(frames: Range<u64>) -> LevelSegment {
     LevelSegment {
         frames,
@@ -743,4 +835,958 @@ fn a_decode_thread_gone_without_an_end_fails_the_render() {
         reader.read(0, 0..100),
         Err(ExportError::Failed(_))
     ));
+}
+
+use vv_plugin::testing::{
+    FIXTURE_CLASS_ID as FIXTURE_CLASS, Passthrough, counting_pool, fixture_dir, fixture_effect,
+    fixture_effect_of, fixture_info,
+};
+
+fn plugin_effect(class_id: &str, state: &[u8]) -> AudioEffect {
+    AudioEffect::new(AudioEffectKind::Vst3(fixture_effect_of(class_id, state)))
+}
+
+fn chirp_project(secs: u32) -> (Project, Track) {
+    let mut project = Project::default();
+    let id = media(&mut project, chirp("plugin.wav", 48_000, secs), 48_000, 1);
+    let len = secs as u64 * FPS;
+    (project, audio_track(vec![clip(1, id, 0, len, 0)]))
+}
+
+fn rendered_samples(project: &Project, tl: &Timeline, frames: u64) -> Vec<f32> {
+    rendered(project, tl, 0..frames)
+}
+
+#[test]
+fn render_with_uninstalled_plugin_equals_without() {
+    let (project, plain) = chirp_project(2);
+    let mut with = plain.clone();
+    with.mix
+        .effects
+        .push(plugin_effect("00000000000000000000000000000000", &[1, 2]));
+    let frames = 2 * PROJECT_SAMPLE_RATE as u64;
+    let installed: Arc<[vv_plugin::PluginInfo]> = Arc::from([]);
+    let without = rendered_with_installed(&project, &timeline(vec![plain]), frames, &installed);
+    let with = rendered_with_installed(&project, &timeline(vec![with]), frames, &installed);
+    assert_eq!(with, without);
+}
+
+#[test]
+fn render_creates_plugins_once_per_render() {
+    let (project, mut track) = chirp_project(20);
+    track.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
+    let (plugins, made) = counting_pool(|| Some(Arc::new(Passthrough)));
+    let frames = 2 * CHUNK_FRAMES + 1000;
+    let mut levels = LevelCache::default();
+    levels.plugins = vec![plugins];
+    render(
+        &project,
+        Mix::Timeline(&timeline(vec![track])),
+        0..frames,
+        &mut levels,
+        |_| ControlFlow::Continue(()),
+    )
+    .unwrap();
+    assert_eq!(made.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn export_applies_fixture_gain() {
+    let infos = vv_plugin::scan(&[fixture_dir()]);
+    assert!(infos.iter().any(|i| i.class_id == FIXTURE_CLASS));
+    vv_plugin::set_installed(infos);
+
+    let (project, plain) = chirp_project(2);
+    let mut hosted = plain.clone();
+    // 0.25 as f32 little-endian: the fixture's gain is twice its state.
+    hosted
+        .mix
+        .effects
+        .push(plugin_effect(FIXTURE_CLASS, &0.25f32.to_le_bytes()));
+    let mut reference = plain;
+    reference.mix.gain_db = -6.0206;
+    let frames = 2 * PROJECT_SAMPLE_RATE as u64;
+    let hosted = rendered_samples(&project, &timeline(vec![hosted]), frames);
+    let reference = rendered_samples(&project, &timeline(vec![reference]), frames);
+    assert_eq!(hosted.len(), reference.len());
+    assert!(hosted.iter().any(|s| s.abs() > 0.1));
+    for (i, (a, b)) in hosted.iter().zip(&reference).enumerate() {
+        assert!((a - b).abs() < 1e-5, "sample {i}: {a} vs {b}");
+    }
+}
+
+const ECHO_FRAMES: usize = 7 * PROJECT_SAMPLE_RATE as usize;
+
+/// One 0.5 tap `ECHO_FRAMES` after the input, so its tail outlives a chunk.
+struct Echo(
+    std::sync::Mutex<(Vec<f32>, usize)>,
+    Arc<std::sync::atomic::AtomicUsize>,
+);
+
+impl Echo {
+    fn new(calls: Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        let len = ECHO_FRAMES * PROJECT_CHANNELS as usize;
+        Self(std::sync::Mutex::new((vec![0.0; len], 0)), calls)
+    }
+}
+
+impl vv_audio::PluginProcessor for Echo {
+    fn process(&self, samples: &mut [f32], _: usize) -> bool {
+        self.1.fetch_add(1, Ordering::SeqCst);
+        let (line, at) = &mut *self.0.lock().unwrap();
+        for s in samples {
+            let delayed = line[*at];
+            line[*at] = *s;
+            *s += 0.5 * delayed;
+            *at = (*at + 1) % line.len();
+        }
+        true
+    }
+    fn reset(&self) {
+        let (line, at) = &mut *self.0.lock().unwrap();
+        line.fill(0.0);
+        *at = 0;
+    }
+    fn latency(&self) -> u32 {
+        0
+    }
+}
+
+impl vv_plugin::HostedPlugin for Echo {
+    fn set_state(&self, _: &vv_core::Vst3Effect) {}
+    fn state_hash(&self) -> u64 {
+        0
+    }
+    fn mark_state(&self, _: u64) {}
+}
+
+#[test]
+fn a_tail_rings_through_a_gap_spanning_chunks_and_no_ghost_follows() {
+    let mut project = Project::default();
+    let id = media(&mut project, chirp("echo.wav", 48_000, 5), 48_000, 1);
+    let mut dry = audio_track(vec![clip(1, id, 0, 25, 0), clip(2, id, 0, 25, 750)]);
+    let plain = timeline(vec![dry.clone()]);
+    dry.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
+    let echoed = timeline(vec![dry]);
+    let range = samples(0..875);
+    assert!(range.end - range.start > 6 * CHUNK_FRAMES);
+
+    let (plugins, _) = counting_pool(|| Some(Arc::new(Echo::new(Default::default()))));
+    let mut chunked = Vec::new();
+    let mut levels = LevelCache::default();
+    levels.plugins = vec![plugins];
+    render(
+        &project,
+        Mix::Timeline(&echoed),
+        range.clone(),
+        &mut levels,
+        |chunk| {
+            chunked.extend_from_slice(chunk);
+            ControlFlow::Continue(())
+        },
+    )
+    .unwrap();
+
+    let dry = rendered(&project, &plain, range);
+    let delay = ECHO_FRAMES * PROJECT_CHANNELS as usize;
+    assert_eq!(chunked.len(), dry.len());
+    let mut echoes = 0;
+    for (i, got) in chunked.iter().enumerate() {
+        let tap = i.checked_sub(delay).map_or(0.0, |j| dry[j]);
+        let want = dry[i] + 0.5 * tap;
+        assert!((got - want).abs() < 1e-6, "sample {i}: {got} vs {want}");
+        echoes += (tap != 0.0) as usize;
+    }
+    assert!(echoes > 0);
+}
+
+/// Two short clips 9 s apart, the 7 s tap of the first one falling in the gap,
+/// and a clip of another track ending after the tap of the second.
+fn echoed_gap(project: &mut Project, name: &str, on_track: bool) -> Timeline {
+    let file = media(project, chirp(name, 48_000, 5), 48_000, 1);
+    let mut track = audio_track(vec![clip(1, file, 0, 25, 0), clip(2, file, 25, 25, 250)]);
+    let mut tl = timeline(Vec::new());
+    if on_track {
+        track.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
+    } else {
+        tl.master.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
+    }
+    tl.tracks.push(track);
+    // Ends after the last tap of the first track.
+    tl.tracks
+        .push(audio_track(vec![clip(3, file, 75, 25, 500)]));
+    tl.master.effects.push(normalize(NormalizeMode::Loudness));
+    tl
+}
+
+fn echo_measures(project: &Project, tl: &Timeline, cache: &mut LevelCache) -> Vec<(f32, f32)> {
+    let mut source = BothMeasures {
+        cache,
+        levels: Vec::new(),
+        live_plugins: true,
+        echo: true,
+    };
+    MixSnapshot::from_timeline(
+        project,
+        tl,
+        PROJECT_SAMPLE_RATE,
+        PROJECT_CHANNELS,
+        &mut source,
+    );
+    source.levels
+}
+
+fn echo_cache() -> LevelCache {
+    let mut cache = fixed_list_cache();
+    cache.plugins = vec![echo_plugins(Default::default())];
+    cache
+}
+
+/// The tail of a plugin rings through the gap in the mix: the measure sees
+/// it, segmented or not.
+#[test]
+fn a_level_after_a_plugin_reads_its_tail_in_the_gaps() {
+    for on_track in [false, true] {
+        let mut project = Project::default();
+        let tl = echoed_gap(&mut project, &format!("tail{on_track}.wav"), on_track);
+        let levels = echo_measures(&project, &tl, &mut echo_cache());
+        let [(by_segment, whole)] = levels[..] else {
+            panic!("{levels:?}");
+        };
+        assert!(
+            db(by_segment, whole).abs() < 0.01,
+            "on track {on_track}: {by_segment} vs {whole}"
+        );
+    }
+}
+
+/// Export renders to the timeline end: video past the last audio clip lets the
+/// tap of the plugin ring into the measure.
+#[test]
+fn a_plugin_strip_is_measured_to_the_end_of_the_video() {
+    let mut project = Project::default();
+    let file = media(&mut project, chirp("video-end.wav", 48_000, 5), 48_000, 1);
+    let mut strip = audio_track(vec![clip(1, file, 0, 25, 0)]);
+    strip.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
+    let mut audio_only = timeline(vec![strip]);
+    audio_only
+        .master
+        .effects
+        .push(normalize(NormalizeMode::Loudness));
+    let mut with_video = audio_only.clone();
+    let mut video = Track::new(TrackKind::Video);
+    // The Echo tap falls 7 s after the input, past the 1 s audio clip.
+    video.clips.push(clip(2, file, 0, 300, 0));
+    with_video.tracks.push(video);
+
+    let [(short, _)] = echo_measures(&project, &audio_only, &mut echo_cache())[..] else {
+        panic!("one measure");
+    };
+    let [(long, whole)] = echo_measures(&project, &with_video, &mut echo_cache())[..] else {
+        panic!("one measure");
+    };
+    assert!(db(short, long).abs() > 0.5, "{short} vs {long}");
+    assert!(db(long, whole).abs() < 0.01, "{long} vs {whole}");
+}
+
+/// A delay longer than the preroll, an edit two clips before: nothing cached
+/// from before the edit is reused, and a cold cache reads the same.
+#[test]
+fn an_edit_before_a_plugin_tail_measures_the_whole_strip_again() {
+    let mut project = Project::default();
+    let mut tl = echoed_gap(&mut project, "edited-tail.wav", true);
+    let mut cache = echo_cache();
+    let before = echo_measures(&project, &tl, &mut cache);
+    let rendered = cache.rendered;
+    assert_eq!(echo_measures(&project, &tl, &mut cache), before);
+    assert_eq!(cache.rendered, rendered, "measured already");
+
+    tl.tracks[0].clips[0].effects.gain_db = vv_core::Keyframed::constant(-6.0);
+    let warm = echo_measures(&project, &tl, &mut cache);
+    assert!(cache.rendered > rendered);
+    assert_ne!(warm, before);
+    assert_eq!(warm, echo_measures(&project, &tl, &mut echo_cache()));
+}
+
+fn echo_plugins(calls: Arc<std::sync::atomic::AtomicUsize>) -> vv_plugin::Instances {
+    counting_pool(move || Some(Arc::new(Echo::new(calls.clone())))).0
+}
+
+#[test]
+fn a_muted_track_with_a_plugin_renders_silence() {
+    let mut project = Project::default();
+    let id = media(&mut project, chirp("muted.wav", 48_000, 2), 48_000, 1);
+    let mut track = audio_track(vec![clip(1, id, 0, 25, 0)]);
+    track.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
+    track.muted = true;
+    let tl = timeline(vec![track]);
+    let mut out = Vec::new();
+    let mut levels = LevelCache::default();
+    levels.plugins = vec![echo_plugins(Default::default())];
+    render(
+        &project,
+        Mix::Timeline(&tl),
+        samples(0..300),
+        &mut levels,
+        |chunk| {
+            out.extend_from_slice(chunk);
+            ControlFlow::Continue(())
+        },
+    )
+    .unwrap();
+    assert!(!out.is_empty() && out.iter().all(|s| *s == 0.0));
+}
+
+#[test]
+fn a_clipless_track_with_a_plugin_is_not_processed() {
+    let mut project = Project::default();
+    let id = media(&mut project, chirp("clipless.wav", 48_000, 2), 48_000, 1);
+    let mut empty = audio_track(Vec::new());
+    empty.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
+    let tl = timeline(vec![audio_track(vec![clip(1, id, 0, 25, 0)]), empty]);
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut levels = LevelCache::default();
+    levels.plugins = vec![echo_plugins(calls.clone())];
+    render(
+        &project,
+        Mix::Timeline(&tl),
+        samples(0..300),
+        &mut levels,
+        |_| ControlFlow::Continue(()),
+    )
+    .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+fn fake_known() -> Vec<vv_plugin::PluginInfo> {
+    vec![fixture_info()]
+}
+
+fn fixed_list_cache() -> LevelCache {
+    // The installed list is global and other tests set it.
+    let list: Arc<[vv_plugin::PluginInfo]> = Arc::from(fake_known());
+    let mut levels = LevelCache::default();
+    levels.installed = Arc::new(move || list.clone());
+    levels
+}
+
+fn render_to_vec(
+    project: &Project,
+    tl: &Timeline,
+    range: Range<u64>,
+    levels: &mut LevelCache,
+) -> Vec<f32> {
+    let mut out = Vec::new();
+    render(project, Mix::Timeline(tl), range, levels, |chunk| {
+        out.extend_from_slice(chunk);
+        ControlFlow::Continue(())
+    })
+    .unwrap();
+    out
+}
+
+#[test]
+fn consecutive_renders_through_a_cache_reuse_its_plugins() {
+    let mut project = Project::default();
+    let id = media(&mut project, chirp("reuse.wav", 48_000, 2), 48_000, 1);
+    let mut track = audio_track(vec![clip(1, id, 0, 25, 0)]);
+    track.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
+    let tl = timeline(vec![track]);
+    let range = samples(0..180);
+    let mut levels = fixed_list_cache();
+    let (plugins, made) = counting_pool(|| Some(Arc::new(Echo::new(Default::default()))));
+    levels.plugins = vec![plugins];
+    let first = render_to_vec(&project, &tl, range.clone(), &mut levels);
+    assert!(first.iter().any(|s| *s != 0.0));
+    for _ in 0..3 {
+        // The echo's line is not empty at the end of a render: only a reset
+        // makes the next render equal the first.
+        let again = render_to_vec(&project, &tl, range.clone(), &mut levels);
+        assert_eq!(again, first);
+    }
+    assert_eq!(made.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn renders_of_different_strips_keep_each_others_instances() {
+    let mut project = Project::default();
+    let id = media(&mut project, chirp("strips.wav", 48_000, 2), 48_000, 1);
+    let strip = |clip_id| {
+        let mut track = audio_track(vec![clip(clip_id, id, 0, 25, 0)]);
+        let mut plugin = plugin_effect(FIXTURE_CLASS, &[]);
+        if let AudioEffectKind::Vst3(vst3) = &mut plugin.kind {
+            vst3.id = vv_core::EffectId(clip_id);
+        }
+        track.mix.effects.push(plugin);
+        timeline(vec![track])
+    };
+    let (a, b) = (strip(1), strip(2));
+    let mut levels = fixed_list_cache();
+    let (plugins, made) = counting_pool(|| Some(Arc::new(Passthrough)));
+    levels.plugins = vec![plugins];
+    for _ in 0..3 {
+        render_to_vec(&project, &a, samples(0..50), &mut levels);
+        render_to_vec(&project, &b, samples(0..50), &mut levels);
+    }
+    assert_eq!(made.load(Ordering::SeqCst), 2);
+}
+
+type Count = Arc<std::sync::atomic::AtomicUsize>;
+type NewPool = Arc<dyn Fn(Arc<[vv_plugin::PluginInfo]>) -> Instances + Send + Sync>;
+
+/// Pools whose pass-through instances are counted together.
+fn counting_pools() -> (NewPool, Count, Count) {
+    let (made, pools) = (Count::default(), Count::default());
+    let (counter, pool_counter) = (made.clone(), pools.clone());
+    let new_pool: NewPool = Arc::new(move |known| {
+        pool_counter.fetch_add(1, Ordering::SeqCst);
+        let counter = counter.clone();
+        Instances::with_maker(
+            known,
+            Box::new(move |_, _, _| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Some(Arc::new(Passthrough))
+            }),
+        )
+    });
+    (new_pool, made, pools)
+}
+
+/// A pool holding `n` instances, counted in `made`.
+fn pool_of(n: u64, made: &Count) -> Instances {
+    let (new_pool, ..) = counting_pools();
+    let mut pool = new_pool(Arc::from(fake_known()));
+    let effect = fixture_effect(&[]);
+    pool.begin_pass();
+    for key in 0..n {
+        pool.get(vv_audio::PluginRequest {
+            key,
+            effect: &effect,
+            sample_rate: 48_000,
+            process: true,
+        })
+        .unwrap();
+    }
+    made.fetch_add(n as usize, Ordering::SeqCst);
+    pool
+}
+
+#[test]
+fn each_measure_thread_gets_a_pool_back_and_the_budget_holds() {
+    let made = Count::default();
+    let mut cache = LevelCache {
+        threads: 4,
+        ..LevelCache::default()
+    };
+    let list: Arc<[vv_plugin::PluginInfo]> = Arc::from(fake_known());
+    let mut threads: Vec<LevelCache> = (0..4).map(|_| cache.for_thread()).collect();
+    for thread in &mut threads {
+        thread.plugins.push(pool_of(3, &made));
+        thread.known = Some(list.clone());
+    }
+    for thread in threads {
+        cache.absorb(thread);
+    }
+    assert_eq!(cache.plugins.len(), 4);
+    let mut again: Vec<LevelCache> = (0..4).map(|_| cache.for_thread()).collect();
+    assert!(again.iter().all(|thread| thread.plugins.len() == 1));
+    assert!(cache.plugins.is_empty());
+    assert_eq!(made.load(Ordering::SeqCst), 12);
+
+    // A thread that saw another list: its pool is dropped.
+    let other: Arc<[vv_plugin::PluginInfo]> = Arc::from(fake_known());
+    again[2].known = Some(other);
+    for thread in again {
+        cache.absorb(thread);
+    }
+    assert_eq!(cache.plugins.len(), 3);
+}
+
+#[test]
+fn the_pools_kept_between_renders_stay_within_the_budget() {
+    let made = Count::default();
+    let mut cache = LevelCache {
+        threads: 8,
+        ..LevelCache::default()
+    };
+    for _ in 0..6 {
+        cache.keep_pool(pool_of(10, &made));
+        let kept: usize = cache.plugins.iter().map(Instances::len).sum();
+        assert!(kept <= KEPT_INSTANCES, "{kept}");
+    }
+    assert_eq!(cache.plugins.len(), 3);
+    let mut one = LevelCache {
+        threads: 1,
+        ..LevelCache::default()
+    };
+    for _ in 0..4 {
+        one.keep_pool(pool_of(1, &made));
+    }
+    assert_eq!(one.plugins.len(), 2);
+}
+
+#[test]
+fn a_nested_render_and_its_outer_one_keep_their_pools() {
+    let (project, mut tl, mut levels, _) = pool_race(true, "both_pools.wav");
+    let list: Arc<[vv_plugin::PluginInfo]> = Arc::from(fake_known());
+    levels.installed = Arc::new(move || list.clone());
+    let (new_pool, made, pools) = counting_pools();
+    levels.plugins.clear();
+    levels.new_pool = new_pool;
+    let mut render = |state: u8, levels: &mut LevelCache| {
+        let AudioEffectKind::Vst3(plugin) = &mut tl.tracks[0].mix.effects[0].kind else {
+            unreachable!()
+        };
+        plugin.component_state = vv_core::PluginState::new(vec![state]);
+        render_to_vec(&project, &tl, samples(0..50), levels);
+    };
+    render(1, &mut levels);
+    assert_eq!(pools.load(Ordering::SeqCst), 2, "the measure did not nest");
+    let first = made.load(Ordering::SeqCst);
+    // A new state is measured again, in a render nested in the outer one.
+    for state in 2..5 {
+        render(state, &mut levels);
+    }
+    assert_eq!(pools.load(Ordering::SeqCst), 2);
+    assert_eq!(made.load(Ordering::SeqCst), first);
+}
+
+#[test]
+fn a_failing_plugin_is_attempted_once_across_renders() {
+    let mut project = Project::default();
+    let id = media(&mut project, chirp("fail.wav", 48_000, 2), 48_000, 1);
+    let mut track = audio_track(vec![clip(1, id, 0, 25, 0)]);
+    track.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
+    let tl = timeline(vec![track]);
+    let mut levels = fixed_list_cache();
+    let (plugins, tried) = counting_pool(|| None);
+    levels.plugins = vec![plugins];
+    for _ in 0..3 {
+        render_to_vec(&project, &tl, samples(0..50), &mut levels);
+    }
+    assert_eq!(tried.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_rescan_drops_the_pools_kept_between_renders() {
+    let mut project = Project::default();
+    let id = media(&mut project, chirp("rescan.wav", 48_000, 2), 48_000, 1);
+    let mut track = audio_track(vec![clip(1, id, 0, 25, 0)]);
+    track.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
+    let tl = timeline(vec![track]);
+    let list: Arc<std::sync::Mutex<Arc<[vv_plugin::PluginInfo]>>> =
+        Arc::new(std::sync::Mutex::new(Arc::from(fake_known())));
+    let source = list.clone();
+    let mut levels = LevelCache::default();
+    levels.installed = Arc::new(move || source.lock().unwrap().clone());
+    let made: Made = Arc::default();
+    let kept = made.clone();
+    let (plugins, _) = counting_pool(move || {
+        let instance = Arc::new(Passthrough);
+        kept.lock().unwrap().push(instance.clone());
+        Some(instance)
+    });
+    levels.plugins = vec![plugins];
+    render_to_vec(&project, &tl, samples(0..50), &mut levels);
+    render_to_vec(&project, &tl, samples(0..50), &mut levels);
+    assert_eq!(made.lock().unwrap().len(), 1);
+    assert_eq!(Arc::strong_count(&made.lock().unwrap()[0]), 2);
+    let rescanned: Arc<[vv_plugin::PluginInfo]> = Arc::from(fake_known());
+    *list.lock().unwrap() = rescanned;
+    render_to_vec(&project, &tl, samples(0..50), &mut levels);
+    assert_eq!(Arc::strong_count(&made.lock().unwrap()[0]), 1);
+}
+
+type Made = Arc<std::sync::Mutex<Vec<Arc<Passthrough>>>>;
+
+/// A track with a plugin and a normalization, in `plugin_first` order, and a
+/// cache whose pool is `P1` with its one instance.
+fn pool_race(plugin_first: bool, name: &str) -> (Project, Timeline, LevelCache, Made) {
+    let mut project = Project::default();
+    let id = media(&mut project, chirp(name, 48_000, 2), 48_000, 1);
+    let mut track = audio_track(vec![clip(1, id, 0, 25, 0)]);
+    let plugin = plugin_effect(FIXTURE_CLASS, &[]);
+    let normalized = normalize(NormalizeMode::SamplePeak);
+    track.mix.effects = if plugin_first {
+        vec![plugin, normalized]
+    } else {
+        vec![normalized, plugin]
+    };
+    let tl = timeline(vec![track]);
+    let (first, second): (Arc<[_]>, Arc<[_]>) = (Arc::from(fake_known()), Arc::from(fake_known()));
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    let mut levels = LevelCache {
+        threads: 1,
+        ..LevelCache::default()
+    };
+    levels.installed = Arc::new(move || {
+        if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            first.clone()
+        } else {
+            second.clone()
+        }
+    });
+    let made: Made = Arc::default();
+    let kept = made.clone();
+    let (pool, _) = counting_pool(move || {
+        let instance = Arc::new(Passthrough);
+        kept.lock().unwrap().push(instance.clone());
+        Some(instance)
+    });
+    levels.plugins = vec![pool];
+    (project, tl, levels, made)
+}
+
+#[test]
+fn a_pool_from_a_list_a_nested_render_replaced_is_dropped() {
+    let (project, tl, mut levels, made) = pool_race(false, "stale_pool.wav");
+    render_to_vec(&project, &tl, samples(0..50), &mut levels);
+    let made = made.lock().unwrap();
+    assert_eq!(made.len(), 1);
+    assert_eq!(Arc::strong_count(&made[0]), 1, "the stale pool was kept");
+    assert!(levels.plugins.is_empty());
+}
+
+#[test]
+fn a_nested_render_does_not_discard_the_outer_pool() {
+    let (project, tl, mut levels, made) = pool_race(true, "outer_pool.wav");
+    let list: Arc<[vv_plugin::PluginInfo]> = Arc::from(fake_known());
+    levels.installed = Arc::new(move || list.clone());
+    render_to_vec(&project, &tl, samples(0..50), &mut levels);
+    let made = made.lock().unwrap();
+    assert_eq!(made.len(), 1);
+    assert_eq!(Arc::strong_count(&made[0]), 2, "the outer pool was dropped");
+}
+
+fn level_files(dir: &Path) -> usize {
+    std::fs::read_dir(dir).map_or(0, |entries| entries.count())
+}
+
+/// A cache on disk in a fresh temp dir, with `plugins` as its pool.
+fn disk_cache(name: &str, plugins: Instances) -> (LevelCache, PathBuf) {
+    let dir = std::env::temp_dir().join(format!("vv-levels-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut levels = fixed_list_cache();
+    levels.dir = Some(dir.clone());
+    levels.plugins = vec![plugins];
+    (levels, dir)
+}
+
+fn normalized_after_plugin(project: &mut Project, nested: bool, name: &str) -> Timeline {
+    let file = media(project, chirp(name, 48_000, 4), 48_000, 1);
+    let mut track = audio_track(vec![clip(1, file, 0, 100, 0)]);
+    track.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
+    if !nested {
+        let mut tl = timeline(vec![track]);
+        tl.master.effects = vec![normalize(NormalizeMode::SamplePeak)];
+        return tl;
+    }
+    let inner = project.timelines.insert(timeline(vec![track]));
+    let compound = project.media_pool.insert(MediaItem {
+        compound: Some(inner),
+        ..project.media_pool[file].clone()
+    });
+    let mut tl = timeline(vec![audio_track(vec![clip(2, compound, 0, 100, 0)])]);
+    tl.master.effects = vec![normalize(NormalizeMode::SamplePeak)];
+    tl
+}
+
+#[test]
+fn a_level_measured_while_a_plugin_failed_is_not_kept_for_a_working_render() {
+    for nested in [false, true] {
+        let mut project = Project::default();
+        let tl = normalized_after_plugin(&mut project, nested, &format!("degraded{nested}.wav"));
+        let (failing, _) = counting_pool(|| None);
+        let (mut levels, dir) = disk_cache(&format!("fail{nested}"), failing);
+
+        both_measures_through(&project, &tl, &mut levels, true);
+        assert!(levels.degraded, "nested {nested}");
+        assert_eq!(level_files(&dir), 0, "nested {nested}");
+        let rendered = levels.rendered;
+        assert!(rendered > 0);
+
+        let (working, _) = counting_pool(|| Some(Arc::new(Passthrough)));
+        levels.plugins = vec![working];
+        levels.degraded = false;
+        both_measures_through(&project, &tl, &mut levels, true);
+        assert!(
+            levels.rendered > rendered,
+            "nested {nested}: measured again"
+        );
+        assert!(!levels.degraded, "nested {nested}");
+        assert!(level_files(&dir) > 0, "nested {nested}");
+
+        let rendered = levels.rendered;
+        both_measures_through(&project, &tl, &mut levels, true);
+        assert_eq!(levels.rendered, rendered, "nested {nested}: found");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn a_bypassed_plugin_does_not_degrade_a_measure() {
+    let mut project = Project::default();
+    let mut tl = normalized_after_plugin(&mut project, false, "bypassed.wav");
+    tl.tracks[0].mix.effects[0].enabled = false;
+    let (failing, _) = counting_pool(|| None);
+    let (mut levels, dir) = disk_cache("bypassed", failing);
+    both_measures_through(&project, &tl, &mut levels, true);
+    assert!(!levels.degraded);
+    assert!(level_files(&dir) > 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Halves the audio.
+struct Halve;
+
+impl vv_audio::PluginProcessor for Halve {
+    fn process(&self, samples: &mut [f32], _: usize) -> bool {
+        samples.iter_mut().for_each(|s| *s *= 0.5);
+        true
+    }
+    fn reset(&self) {}
+    fn latency(&self) -> u32 {
+        0
+    }
+}
+
+impl vv_plugin::HostedPlugin for Halve {
+    fn set_state(&self, _: &vv_core::Vst3Effect) {}
+    fn state_hash(&self) -> u64 {
+        0
+    }
+    fn mark_state(&self, _: u64) {}
+}
+
+#[test]
+fn a_measure_plays_a_plugin_the_live_pool_did_not_make_as_its_key_says() {
+    let mut project = Project::default();
+    let tl = normalized_after_plugin(&mut project, false, "reverse.wav");
+    // `BothMeasures` keys the segments with no plugin made.
+    let (failing, _) = counting_pool(|| None);
+    let (mut dry, dry_dir) = disk_cache("reverse-dry", failing);
+    let (halving, _) = counting_pool(|| Some(Arc::new(Halve)));
+    let (mut wet, wet_dir) = disk_cache("reverse-wet", halving);
+    let expected = both_measures(&project, &tl, &mut dry)[0].0;
+    let measured = both_measures(&project, &tl, &mut wet)[0].0;
+    assert!(expected > 0.1);
+    assert_eq!(measured, expected);
+    assert!(!wet.degraded);
+    let _ = std::fs::remove_dir_all(dry_dir);
+    let _ = std::fs::remove_dir_all(wet_dir);
+}
+
+#[test]
+fn a_plugin_that_is_not_installed_does_not_degrade_a_measure() {
+    let mut project = Project::default();
+    let mut tl = normalized_after_plugin(&mut project, false, "uninstalled.wav");
+    tl.tracks[0].mix.effects[0] = plugin_effect("00000000000000000000000000000000", &[]);
+    let (pool, _) = counting_pool(|| None);
+    let (mut levels, dir) = disk_cache("uninstalled", pool);
+    both_measures(&project, &tl, &mut levels);
+    assert!(!levels.degraded);
+    assert!(level_files(&dir) > 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_measure_inside_a_compound_plays_unmade_plugins_as_its_key_says() {
+    let mut project = Project::default();
+    let file = media(
+        &mut project,
+        chirp("reverse-nested.wav", 48_000, 4),
+        48_000,
+        1,
+    );
+    let mut track = audio_track(vec![clip(1, file, 0, 100, 0)]);
+    track.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
+    let mut inner = timeline(vec![track]);
+    inner.master.effects = vec![normalize(NormalizeMode::SamplePeak)];
+    let inner = project.timelines.insert(inner);
+    let compound = project.media_pool.insert(MediaItem {
+        compound: Some(inner),
+        ..project.media_pool[file].clone()
+    });
+    let tl = timeline(vec![audio_track(vec![clip(2, compound, 0, 100, 0)])]);
+    let (failing, _) = counting_pool(|| None);
+    let (mut dry, dry_dir) = disk_cache("nested-dry", failing);
+    let (halving, _) = counting_pool(|| Some(Arc::new(Halve)));
+    let (mut wet, wet_dir) = disk_cache("nested-wet", halving);
+    let expected = both_measures(&project, &tl, &mut dry)[0].0;
+    let measured = both_measures(&project, &tl, &mut wet)[0].0;
+    assert!(expected > 0.1);
+    assert_eq!(measured, expected);
+    let _ = std::fs::remove_dir_all(dry_dir);
+    let _ = std::fs::remove_dir_all(wet_dir);
+}
+
+/// An echo inside a compound clip remembers beyond the preroll as well.
+#[test]
+fn a_level_after_a_compound_with_a_plugin_reads_its_tail_in_the_gaps() {
+    let mut project = Project::default();
+    let inner = echoed_gap(&mut project, "compound-tail.wav", true);
+    let mut inner = inner;
+    inner.master.effects.clear();
+    let file = inner.tracks[0].clips[0].source.clone();
+    let ClipSource::Media(file) = file else {
+        panic!("a media clip");
+    };
+    let inner_id = project.timelines.insert(inner);
+    let compound = project.media_pool.insert(MediaItem {
+        compound: Some(inner_id),
+        ..project.media_pool[file].clone()
+    });
+    // Starts inside the compound, over 2 s after the source of its tap.
+    let mut tl = timeline(vec![
+        audio_track(vec![clip(9, compound, 0, 450, 0)]),
+        audio_track(vec![clip(10, file, 0, 25, 425)]),
+    ]);
+    tl.master.effects = vec![normalize(NormalizeMode::Loudness)];
+    let mut cache = echo_cache();
+    cache.plugins = vec![echo_plugins(Default::default())];
+    let levels = echo_measures(&project, &tl, &mut cache);
+    let [(by_segment, whole)] = levels[..] else {
+        panic!("{levels:?}");
+    };
+    assert!(
+        db(by_segment, whole).abs() < 0.01,
+        "{by_segment} vs {whole}"
+    );
+}
+
+/// Stops the cache it renders for the first time it processes.
+struct Stopper(Arc<AtomicBool>);
+
+impl vv_audio::PluginProcessor for Stopper {
+    fn process(&self, _: &mut [f32], _: usize) -> bool {
+        self.0.store(true, Ordering::SeqCst);
+        true
+    }
+    fn reset(&self) {}
+    fn latency(&self) -> u32 {
+        0
+    }
+}
+
+impl vv_plugin::HostedPlugin for Stopper {
+    fn set_state(&self, _: &vv_core::Vst3Effect) {}
+    fn state_hash(&self) -> u64 {
+        0
+    }
+    fn mark_state(&self, _: u64) {}
+}
+
+/// Measures the first level asked for through the cache, keeping the result.
+struct Outer<'c> {
+    cache: &'c mut LevelCache,
+    result: Option<Result<f32, ExportError>>,
+}
+
+impl AudioSource for Outer<'_> {
+    fn file(&mut self, path: &Path, stream: usize) -> ClipAudio {
+        decoded_whole(path, stream).map_or(ClipAudio::Missing, ClipAudio::Ready)
+    }
+
+    fn plugin(&mut self, _: vv_audio::PluginRequest<'_>) -> Option<vv_audio::PluginHandle> {
+        Some(Arc::new(Passthrough))
+    }
+
+    fn level(&mut self, analysis: LevelAnalysis) -> LevelReading {
+        if self.result.is_none() {
+            self.result = Some(measure_level(&analysis, self.cache));
+        }
+        LevelReading::Ready(1.0)
+    }
+}
+
+/// A measure stopped inside another one is neither stored nor taken for a level.
+#[test]
+fn a_nested_measure_that_is_stopped_stores_nothing() {
+    let mut project = Project::default();
+    let file = media(&mut project, chirp("stopped.wav", 48_000, 4), 48_000, 1);
+    let mut inner = timeline(vec![audio_track(vec![clip(1, file, 0, 100, 0)])]);
+    inner.tracks[0]
+        .mix
+        .effects
+        .push(plugin_effect(FIXTURE_CLASS, &[]));
+    inner.master.effects = vec![normalize(NormalizeMode::SamplePeak)];
+    let inner = project.timelines.insert(inner);
+    let compound = project.media_pool.insert(MediaItem {
+        compound: Some(inner),
+        ..project.media_pool[file].clone()
+    });
+    let mut tl = timeline(vec![audio_track(vec![clip(2, compound, 0, 100, 0)])]);
+    tl.master.effects = vec![normalize(NormalizeMode::SamplePeak)];
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = stop.clone();
+    let (plugins, _) = counting_pool(move || Some(Arc::new(Stopper(flag.clone()))));
+    let (mut cache, dir) = disk_cache("stopped", plugins);
+    cache.cancel = Some(stop);
+    let mut source = Outer {
+        cache: &mut cache,
+        result: None,
+    };
+    MixSnapshot::from_timeline(
+        &project,
+        &tl,
+        PROJECT_SAMPLE_RATE,
+        PROJECT_CHANNELS,
+        &mut source,
+    );
+    let result = source.result.expect("a level was asked for");
+    assert!(matches!(result, Err(ExportError::Cancelled)), "{result:?}");
+    assert_eq!(cache.rendered, 0);
+    assert_eq!(level_files(&dir), 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Records where the segments of each level end.
+struct SegmentEnds<'c> {
+    cache: &'c mut LevelCache,
+    ends: Vec<u64>,
+}
+
+impl AudioSource for SegmentEnds<'_> {
+    fn file(&mut self, path: &Path, stream: usize) -> ClipAudio {
+        decoded_whole(path, stream).map_or(ClipAudio::Missing, ClipAudio::Ready)
+    }
+
+    fn plugin(&mut self, _: vv_audio::PluginRequest<'_>) -> Option<vv_audio::PluginHandle> {
+        Some(Arc::new(Echo::new(Default::default())))
+    }
+
+    fn level(&mut self, analysis: LevelAnalysis) -> LevelReading {
+        measure_level(&analysis, self.cache).unwrap();
+        self.ends
+            .extend(analysis.segments.last().map(|s| s.frames.end));
+        LevelReading::Ready(1.0)
+    }
+}
+
+/// A track measured after its plugin rings until the mix ends, not until
+/// its own last clip does.
+#[test]
+fn a_track_level_after_a_plugin_runs_to_the_end_of_the_mix() {
+    let mut project = Project::default();
+    let mut tl = echoed_gap(&mut project, "track-tail.wav", true);
+    tl.master.effects.clear();
+    tl.tracks[0]
+        .mix
+        .effects
+        .push(normalize(NormalizeMode::Loudness));
+    let mut source = SegmentEnds {
+        cache: &mut echo_cache(),
+        ends: Vec::new(),
+    };
+    MixSnapshot::from_timeline(
+        &project,
+        &tl,
+        PROJECT_SAMPLE_RATE,
+        PROJECT_CHANNELS,
+        &mut source,
+    );
+    let end = timeline_frame_to_sample(525, 25.0, PROJECT_SAMPLE_RATE);
+    assert!(!source.ends.is_empty());
+    assert!(source.ends.iter().all(|&e| e == end), "{:?}", source.ends);
 }

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use vv_core::{Clip, ClipId, FrameIdx, Project, Timeline, TimelineId, TrackKind};
+use vv_core::{Clip, ClipId, FrameIdx, Project, Timeline, TimelineId};
 
 use vv_audio::mixer::{PROJECT_SAMPLE_RATE, timeline_frame_to_sample};
 
@@ -296,6 +296,24 @@ impl FrameProvider for StreamingFrameProvider {
     }
 }
 
+/// An export of `timeline` started during a first plugin scan would play
+/// its enabled plugins as pass-through: the installed list is incomplete.
+/// Video-only exports and timelines without plugins never wait.
+pub fn scan_blocks_export(
+    scanning: bool,
+    project: &Project,
+    timeline: TimelineId,
+    audio: bool,
+) -> bool {
+    scanning
+        && audio
+        && project
+            .timelines
+            .get(timeline)
+            .is_some_and(Timeline::has_audio_clips)
+        && project.timeline_uses_enabled_plugins(timeline)
+}
+
 /// Exports the frames in `range` to `output_path`. Blocking.
 pub fn export_timeline(
     project: &Project,
@@ -328,11 +346,10 @@ pub fn export_timeline(
         return Ok(());
     }
 
-    let audio_settings = settings.audio.as_ref().filter(|_| {
-        timeline
-            .tracks_of_kind(TrackKind::Audio)
-            .any(|(_, t)| !t.clips.is_empty())
-    });
+    let audio_settings = settings
+        .audio
+        .as_ref()
+        .filter(|_| timeline.has_audio_clips());
     let has_audio_track = audio_settings.is_some();
 
     let (out_w, out_h) = settings.output_size(timeline.resolution);

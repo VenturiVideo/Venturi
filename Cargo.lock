@@ -611,6 +611,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
+name = "com-scrape-types"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ce183b975b8fc736a20919c4002717255fbd867df575c792aeefa9a56a73ad0"
+
+[[package]]
 name = "combine"
 version = "4.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4649,6 +4655,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "vst3"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e31e3fe7a6f028ded8c5a9984cf283319e6dc63572c9b71da1d4ee9d71d3b6bf"
+dependencies = [
+ "com-scrape-types",
+]
+
+[[package]]
 name = "vv-app"
 version = "0.8.1"
 dependencies = [
@@ -4670,6 +4685,7 @@ dependencies = [
  "vv-core",
  "vv-mcp",
  "vv-media",
+ "vv-plugin",
  "vv-render",
  "vv-session",
  "wayland-backend",
@@ -4689,6 +4705,7 @@ dependencies = [
 name = "vv-core"
 version = "0.8.1"
 dependencies = [
+ "base64 0.22.1",
  "ron",
  "serde",
  "serde_json",
@@ -4700,6 +4717,7 @@ name = "vv-mcp"
 version = "0.8.1"
 dependencies = [
  "base64 0.22.1",
+ "libc",
  "png",
  "rmcp",
  "schemars",
@@ -4708,6 +4726,7 @@ dependencies = [
  "tokio",
  "vv-core",
  "vv-media",
+ "vv-plugin",
  "vv-render",
  "vv-session",
 ]
@@ -4719,6 +4738,31 @@ dependencies = [
  "ffmpeg-next",
  "thiserror 2.0.20",
  "vv-core",
+]
+
+[[package]]
+name = "vv-plugin"
+version = "0.8.1"
+dependencies = [
+ "libc",
+ "libloading",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+ "serde",
+ "serde_json",
+ "vst3",
+ "vv-audio",
+ "vv-core",
+ "x11rb",
+]
+
+[[package]]
+name = "vv-plugin-fixture"
+version = "0.8.1"
+dependencies = [
+ "vst3",
 ]
 
 [[package]]
@@ -4741,6 +4785,7 @@ dependencies = [
  "vv-audio",
  "vv-core",
  "vv-media",
+ "vv-plugin",
  "vv-render",
  "vv-vad",
 ]

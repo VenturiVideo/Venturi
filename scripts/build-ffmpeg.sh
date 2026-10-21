@@ -66,6 +66,11 @@ git clone --depth 1 --branch "$RUBBERBAND_TAG" \
     https://github.com/breakfastquay/rubberband.git "$SRC/rubberband"
 (
     cd "$SRC/rubberband"
+    if [ "$OS" = Darwin ]; then
+        # v4.0.0 uses size_t without <cstddef>; recent libc++ no longer
+        # pulls it in transitively.
+        export CXXFLAGS="${CXXFLAGS:-} -include cstddef"
+    fi
     meson setup build --prefix="$PREFIX" --libdir=lib --buildtype=release \
         -Ddefault_library=shared -Dresampler=builtin \
         -Djni=disabled -Dladspa=disabled -Dvamp=disabled \

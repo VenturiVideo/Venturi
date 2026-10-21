@@ -470,6 +470,43 @@ impl VenturiApp {
         }
     }
 
+    /// Takes the session for work outside the frame (`App::logic`), without
+    /// the catch-up `mcp_checkout` does. `None` when the agent replaced the
+    /// project and the next frame must reconcile first; otherwise whether
+    /// the session had to be taken from the slot (give it back with
+    /// `mcp_return_session`).
+    pub(crate) fn mcp_borrow_session(&mut self) -> Option<bool> {
+        let Some(mcp) = &self.mcp else {
+            return Some(false);
+        };
+        let shared = mcp.shared.clone();
+        let mut slot = shared.slot.lock().unwrap();
+        // Between frames `self.session` is only a placeholder.
+        if slot.in_ui {
+            return (self.session.epoch() == self.seen_epoch).then_some(false);
+        }
+        if slot.session.epoch() != self.seen_epoch {
+            return None;
+        }
+        std::mem::swap(&mut self.session, &mut slot.session);
+        slot.in_ui = true;
+        Some(true)
+    }
+
+    pub(crate) fn mcp_return_session(&mut self) {
+        let Some(mcp) = &self.mcp else {
+            return;
+        };
+        let shared = mcp.shared.clone();
+        let mut slot = shared.slot.lock().unwrap();
+        if slot.in_ui {
+            std::mem::swap(&mut self.session, &mut slot.session);
+            slot.in_ui = false;
+        }
+        drop(slot);
+        shared.returned.notify_all();
+    }
+
     /// At the end of a frame: publishes what the host needs to know and puts
     /// the session back.
     pub(crate) fn mcp_checkin(&mut self, ctx: &egui::Context) {

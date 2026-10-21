@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use vv_audio::mixer::{
     Channel, ClipInput, MixClip, MixMeters, MixSnapshot, Mixer, MixerState, PROJECT_SAMPLE_RATE,
-    StretchedWindow, mix_range, sample_to_timeline_frame, timeline_frame_to_sample,
+    StretchedWindow, mix_range_without_plugins, sample_to_timeline_frame, timeline_frame_to_sample,
 };
 use vv_core::{FrameIdx, Keyframed, Project, TimelineId};
 
@@ -47,7 +47,18 @@ struct StretchRequest {
 
 struct StretchResult {
     id: u64,
+    /// Handed back so the last owner of the plugin instances drops it on
+    /// the thread that polls the results, not on the stretch thread.
+    _mix: Arc<MixSnapshot>,
     samples: Result<Vec<f32>, String>,
+}
+
+fn hand_back(tx: &mpsc::Sender<StretchResult>, result: StretchResult) {
+    if let Err(mpsc::SendError(result)) = tx.send(result) {
+        // Dropping here would tear the plugins down off the UI thread while
+        // the process exits; the leak is harmless.
+        std::mem::forget(result);
+    }
 }
 
 pub struct TimelineAudio {
@@ -259,7 +270,7 @@ impl TimelineAudio {
         let start = timeline_frame_to_sample(frame, fps, rate);
         let end = timeline_frame_to_sample(frame + len_frames, fps, rate);
         let mut out = vec![0.0; (end - start) as usize * self.channels() as usize];
-        mix_range(&self.mix, start, &mut out);
+        vv_audio::mixer::mix_range(&self.mix, start, &mut out);
         out
     }
 
@@ -443,7 +454,8 @@ impl TimelineAudio {
         std::thread::spawn(move || {
             let ch = mix.channels as usize;
             let mut samples = vec![0.0; frames as usize * ch];
-            mix_range(&mix, start, &mut samples);
+            // The callback is playing the plugin instances: this thread leaves them alone.
+            mix_range_without_plugins(&mix, start, &mut samples);
             let expected = (frames / tempo) as usize * ch;
             let samples =
                 vv_audio::stretch_samples(&samples, mix.sample_rate, mix.channels, tempo as f64)
@@ -451,10 +463,14 @@ impl TimelineAudio {
                         stretched.resize(expected, 0.0);
                         stretched
                     });
-            let _ = tx.send(StretchResult {
-                id: request.id,
-                samples,
-            });
+            hand_back(
+                &tx,
+                StretchResult {
+                    id: request.id,
+                    _mix: mix,
+                    samples,
+                },
+            );
         });
     }
 
@@ -585,6 +601,54 @@ impl TimelineAudio {
         self.mixer
             .as_ref()
             .map_or((0.0, 0.0), Mixer::peak_linear_stereo)
+    }
+
+    pub fn plugin_latency_ms(&self, key: u64) -> Option<f32> {
+        let samples = self.buffers.plugin_latency(key)?;
+        Some(samples as f32 * 1000.0 / self.mix.sample_rate as f32)
+    }
+
+    /// See `MixBufferCache::plugin_known`.
+    pub fn plugin_known(&self, effect: &vv_core::Vst3Effect) -> Option<bool> {
+        self.buffers.plugin_known(effect)
+    }
+
+    pub fn plugin_failed(&self, key: u64) -> bool {
+        self.buffers.plugin_failed(key)
+    }
+
+    /// For an editor window; see `MixBufferCache::plugin_instance`.
+    pub fn plugin_instance(
+        &mut self,
+        live: Option<u64>,
+        aside: u64,
+        effect: &vv_core::Vst3Effect,
+    ) -> Option<std::sync::Arc<dyn vv_plugin::HostedPlugin>> {
+        let rate = self.mix.sample_rate;
+        self.buffers.plugin_instance(live, aside, effect, rate)
+    }
+
+    pub fn service_plugin_restarts(&self) {
+        self.buffers.service_plugin_restarts();
+    }
+
+    pub fn hold_plugins(&mut self, held: Vec<(u64, std::sync::Arc<dyn vv_plugin::HostedPlugin>)>) {
+        self.buffers.hold_plugins(held);
+    }
+
+    /// After a rescan that changed the list: the pool keeps the instances
+    /// of plugins still installed and returns the dropped ones.
+    pub fn plugins_rescanned(&mut self) -> Vec<std::sync::Arc<dyn vv_plugin::HostedPlugin>> {
+        let dropped = self.buffers.refresh_plugins(vv_plugin::installed());
+        self.invalidate();
+        dropped
+    }
+
+    /// After a rescan that found the same plugins: the pool stays, failed
+    /// ones are retried.
+    pub fn plugins_rescan_unchanged(&mut self) {
+        self.buffers.clear_plugin_failures();
+        self.invalidate();
     }
 
     /// Per-track and master peaks of what is playing.

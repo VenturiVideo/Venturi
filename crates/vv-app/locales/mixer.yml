@@ -282,3 +282,31 @@ mixer.eq_preset_rumble:
 mixer.eq_preset_telephone:
   en: "Telephone"
   it: "Telefono"
+
+mixer.vst3:
+  en: "VST3 plugins"
+  it: "Plugin VST3"
+
+mixer.vst3_rescan:
+  en: "Rescan plugins"
+  it: "Cerca di nuovo i plugin"
+
+mixer.vst3_scanning:
+  en: "Scanning plugins…"
+  it: "Ricerca dei plugin…"
+
+mixer.vst3_missing:
+  en: "Plugin not installed"
+  it: "Plugin non installato"
+
+mixer.vst3_failed:
+  en: "Plugin failed to load (see the console)"
+  it: "Caricamento del plugin non riuscito (vedi la console)"
+
+mixer.vst3_latency:
+  en: "Adds %{ms} ms of latency, not compensated"
+  it: "Aggiunge %{ms} ms di latenza, non compensata"
+
+mixer.vst3_none:
+  en: "No VST3 plugins found"
+  it: "Nessun plugin VST3 trovato"

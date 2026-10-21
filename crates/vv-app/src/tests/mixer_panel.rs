@@ -68,3 +68,145 @@ fn the_other_effects_shift_around_a_moved_one() {
     let after: Vec<usize> = (0..4).map(|i| index_after_move(i, 3, 0)).collect();
     assert_eq!(after, [1, 2, 3, 0]);
 }
+
+fn info(class: &str, vendor: &str, name: &str) -> vv_plugin::PluginInfo {
+    vv_plugin::PluginInfo {
+        class_id: class.into(),
+        name: name.into(),
+        vendor: vendor.into(),
+        ..vv_plugin::testing::fixture_info()
+    }
+}
+
+#[test]
+fn vst3_menu_groups_by_vendor() {
+    let list = [
+        info("3", "Zed", "Alpha"),
+        info("2", "Acme", "Zeta"),
+        info("1", "Acme", "Beta"),
+    ];
+    let menu = vst3_menu(&list);
+    let names: Vec<(&str, Vec<&str>)> = menu
+        .iter()
+        .map(|(v, p)| (v.as_str(), p.iter().map(|i| i.name.as_str()).collect()))
+        .collect();
+    assert_eq!(
+        names,
+        [("Acme", vec!["Beta", "Zeta"]), ("Zed", vec!["Alpha"])]
+    );
+}
+
+#[test]
+fn add_plugin_effect_has_fresh_id() {
+    let plugin = info("ab", "Acme", "Comp");
+    let (a, b) = (add_plugin_effect(&plugin), add_plugin_effect(&plugin));
+    let (AudioEffectKind::Vst3(a), AudioEffectKind::Vst3(b)) = (a, b) else {
+        panic!("not a plugin");
+    };
+    assert_ne!(a.id, b.id);
+    assert_eq!((a.class_id.as_str(), a.name.as_str()), ("AB", "Comp"));
+    assert_eq!(a.component_state, vv_core::PluginState::default());
+}
+
+#[test]
+fn a_vst3_row_is_badged_when_missing_or_failed_to_load() {
+    assert_eq!(vst3_badge(false, false), None);
+    assert_eq!(vst3_badge(true, false), Some(Vst3Badge::Missing));
+    assert_eq!(vst3_badge(false, true), Some(Vst3Badge::Failed));
+    assert_eq!(vst3_badge(true, true), Some(Vst3Badge::Missing));
+}
+
+fn plugin(id: u64) -> AudioEffect {
+    AudioEffect::new(AudioEffectKind::Vst3(Vst3Effect {
+        id: vv_core::EffectId(id),
+        name: "Fake".into(),
+        ..vv_plugin::testing::fixture_effect_of(&"00".repeat(16), &[])
+    }))
+}
+
+/// Draws the effects of every strip of `timeline` and returns the keys the
+/// host was asked about.
+fn keys_asked(timeline: &Timeline, known: bool) -> Vec<u64> {
+    let asked = std::cell::RefCell::new(Vec::new());
+    let latency = |key| {
+        asked.borrow_mut().push(key);
+        None
+    };
+    let failed = |_| false;
+    let known = |_: &Vst3Effect| known;
+    let view = Vst3View {
+        installed: &[],
+        scanning: false,
+        known: &known,
+        latency_ms: &latency,
+        failed: &failed,
+    };
+    let keys = vv_audio::plugin_keys_in(0, timeline);
+    let ctx = egui::Context::default();
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+        let channels = (0..timeline.tracks.len())
+            .map(MixerChannel::Track)
+            .chain([MixerChannel::Master]);
+        for channel in channels {
+            let strip = channel_strip(timeline, channel).unwrap();
+            effects(
+                ui,
+                &keys,
+                channel,
+                &strip.effects,
+                0,
+                &view,
+                &mut StripEdit::default(),
+            );
+        }
+    });
+    output.textures_delta.clear();
+    asked.into_inner()
+}
+
+fn plugin_timeline() -> Timeline {
+    let strip = |effects| {
+        let mut track = vv_core::Track::new(TrackKind::Audio);
+        track.mix.effects = effects;
+        track
+    };
+    let mut timeline = Timeline {
+        name: "T".into(),
+        fps: vv_core::Rational::new(25, 1),
+        resolution: (64, 36),
+        tracks: vec![strip(vec![plugin(7), plugin(7)]), strip(vec![plugin(7)])],
+        markers: Vec::new(),
+        master: Default::default(),
+    };
+    timeline.master.effects = vec![plugin(9), plugin(7)];
+    timeline
+}
+
+#[test]
+fn the_rows_ask_the_host_with_the_keys_of_plugin_key_in() {
+    let timeline = plugin_timeline();
+    let expected: Vec<u64> = [
+        (MixerChannel::Track(0), 0),
+        (MixerChannel::Track(0), 1),
+        (MixerChannel::Track(1), 0),
+        (MixerChannel::Master, 0),
+        (MixerChannel::Master, 1),
+    ]
+    .into_iter()
+    .map(|(channel, index)| plugin_key_of(&timeline, channel, index))
+    .collect();
+    assert_eq!(keys_asked(&timeline, true), expected);
+    assert_eq!(
+        expected
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        5
+    );
+}
+
+#[test]
+fn the_not_installed_badge_follows_the_pools_known() {
+    let timeline = plugin_timeline();
+    assert!(keys_asked(&timeline, false).is_empty());
+}

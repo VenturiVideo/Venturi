@@ -668,28 +668,70 @@ fn overlapping_fades_multiply_instead_of_dipping_below_either_ramp_alone() {
 }
 
 #[test]
-fn fade_in_silences_the_start_of_a_block_and_full_gain_clip_is_unaffected() {
+fn a_fade_ramps_every_sample_even_inside_a_gain_block() {
     let (project, a, _) = project();
-    // 3 blocks of GAIN_BLOCK_FRAMES: the fade covers exactly the first one.
-    let blocks = 3;
-    let len_frames = (GAIN_BLOCK_FRAMES * blocks) as usize;
-    let mut clip = clip_at(a, 0, 0, (len_frames / 10) as FrameIdx);
-    clip.fade_in = (GAIN_BLOCK_FRAMES / 10) as FrameIdx;
+    let len = (GAIN_BLOCK_FRAMES * 3) as usize;
+    let mut clip = clip_at(a, 0, 0, (len / 10) as FrameIdx);
+    // 100 samples at each edge, an eighth of a gain block.
+    clip.fade_in = 10;
+    clip.fade_out = 10;
     let tl = timeline(vec![audio_track(vec![clip])]);
     let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut |_: &Path, _: usize| {
-        Some(mono(Arc::new(vec![0.5; len_frames])))
+        Some(mono(Arc::new(vec![0.5; len])))
     });
-    let mut out = vec![9.0; len_frames];
+    let mut out = vec![9.0; len];
     mix_range(&snap, 0, &mut out);
-    let block = GAIN_BLOCK_FRAMES as usize;
+    assert_eq!(out[0], 0.0, "the fade starts from silence");
+    assert!((out[50] - 0.25).abs() < 1e-3, "halfway: {}", out[50]);
+    assert!((out[99] - 0.495).abs() < 1e-3, "at its end: {}", out[99]);
     assert!(
-        out[..block].iter().all(|&s| s == 0.0),
-        "first block silenced by the fade-in"
+        out[..100].windows(2).all(|pair| pair[1] >= pair[0]),
+        "the ramp up is monotonic: {:?}",
+        &out[..100]
     );
     assert!(
-        out[block..].iter().all(|&s| s == 0.5),
-        "past the fade-in the gain is unchanged"
+        out[100..len - 100].iter().all(|&s| s == 0.5),
+        "between the fades the gain is unchanged"
     );
+    assert!(
+        out[len - 100..].windows(2).all(|pair| pair[1] <= pair[0]),
+        "the ramp down is monotonic: {:?}",
+        &out[len - 100..]
+    );
+    assert!(
+        (out[len - 1] - 0.005).abs() < 1e-3,
+        "last sample: {}",
+        out[len - 1]
+    );
+}
+
+/// A fade is a timeline property: a varispeed clip ramps over the same
+/// timeline frames, reading its source faster underneath.
+#[test]
+fn a_varispeed_clip_fades_over_its_timeline_frames() {
+    let (project, a, _) = project();
+    let mut clip = sped_up_clip(a, Rational::new(2, 1), 240);
+    clip.fade_in = 10;
+    let tl = timeline(vec![audio_track(vec![clip])]);
+    let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut |_: &Path, _: usize| {
+        Some(mono(Arc::new(vec![0.5; 10_000])))
+    });
+    let mut out = vec![9.0; 2400];
+    mix_range(&snap, 0, &mut out);
+    assert_eq!(out[0], 0.0, "the fade starts from silence");
+    assert!((out[50] - 0.25).abs() < 1e-3, "halfway: {}", out[50]);
+    assert!((out[99] - 0.495).abs() < 1e-3, "at its end: {}", out[99]);
+    assert!(
+        out[100..].iter().all(|&s| s == 0.5),
+        "past the fade-in the gain is unchanged: {:?}",
+        &out[95..105]
+    );
+
+    let mut state = MixState::new(&snap);
+    let mut split = vec![9.0; 2400];
+    mix_range_from(&snap, &mut state, 0, &mut split[..1234]);
+    mix_range_from(&snap, &mut state, 1234, &mut split[1234..]);
+    assert_eq!(split, out, "a split mix equals a whole one");
 }
 
 /// `b` from source frame 10 at `speed`, `len` timeline frames from 0,
@@ -738,6 +780,7 @@ fn a_slower_clip_interpolates_between_samples() {
 struct FakeStretch {
     ready: bool,
     asked: Vec<(std::ops::Range<u64>, f64)>,
+    keys: Vec<u64>,
     nested: bool,
 }
 
@@ -748,6 +791,7 @@ impl AudioSource for FakeStretch {
 
     fn stretched(&mut self, request: StretchRequest) -> ClipAudio {
         self.asked.push((request.frames.clone(), request.tempo));
+        self.keys.push(request.key);
         self.nested |= matches!(request.input, StretchInput::Nested { .. });
         if self.ready {
             ClipAudio::Ready(mono(Arc::new(vec![0.9; 100])))
@@ -774,6 +818,82 @@ fn a_pitch_corrected_compound_clip_stretches_its_nested_timeline() {
     let mut out = vec![0.0; 20];
     mix_range(&snap, 0, &mut out);
     assert_eq!(out[0], 0.9);
+}
+
+/// Stretch keys of two pitch-corrected copies of `media`, one placement apart.
+fn copy_stretch_keys(project: &Project, media: vv_core::MediaId) -> Vec<u64> {
+    let copies = [0, 10].map(|start| {
+        let mut clip = sped_up_clip(media, Rational::new(2, 1), 2);
+        clip.pitch_correction = true;
+        clip.timeline_start = start;
+        clip
+    });
+    let tl = timeline(vec![audio_track(copies.into())]);
+    let mut source = FakeStretch::default();
+    MixSnapshot::from_timeline(project, &tl, RATE, 1, &mut source);
+    assert_eq!(source.keys.len(), 2);
+    source.keys
+}
+
+#[test]
+fn copies_of_a_pitch_corrected_file_clip_share_the_stretch() {
+    let (project, a, _) = project();
+    let keys = copy_stretch_keys(&project, a);
+    assert_eq!(keys[0], keys[1]);
+}
+
+#[test]
+fn copies_of_a_pitch_corrected_compound_without_plugins_share_the_stretch() {
+    let (project, compound) = project_with_long_compound();
+    let keys = copy_stretch_keys(&project, compound);
+    assert_eq!(keys[0], keys[1]);
+}
+
+#[test]
+fn copies_of_a_pitch_corrected_compound_with_a_plugin_share_the_stretch() {
+    let (mut project, compound) = project_with_long_compound();
+    let nested = project.media_pool[compound].compound.unwrap();
+    project.timelines[nested].tracks[0].mix.effects = vec![vst3(1, b"")];
+    let keys = copy_stretch_keys(&project, compound);
+    assert_eq!(keys[0], keys[1]);
+}
+
+#[test]
+fn copies_of_a_compound_holding_a_plugin_compound_share_the_stretch() {
+    let (mut project, inner) = project_with_long_compound();
+    let inner_timeline = project.media_pool[inner].compound.unwrap();
+    project.timelines[inner_timeline].tracks[0].mix.effects = vec![vst3(1, b"")];
+    let outer_timeline = project
+        .timelines
+        .insert(timeline(vec![audio_track(vec![clip_at(inner, 0, 0, 60)])]));
+    let outer = project.media_pool.insert(MediaItem {
+        path: PathBuf::from("Compound Clip 2"),
+        meta: project.media_pool[inner].meta.clone(),
+        content_hash: 11,
+        compound: Some(outer_timeline),
+        folder: None,
+    });
+    let keys = copy_stretch_keys(&project, outer);
+    assert_eq!(keys[0], keys[1]);
+}
+
+#[test]
+fn copies_of_a_plugin_compound_with_different_trims_stretch_apart() {
+    let (mut project, compound) = project_with_long_compound();
+    let nested = project.media_pool[compound].compound.unwrap();
+    project.timelines[nested].tracks[0].mix.effects = vec![vst3(1, b"")];
+    let copies = [2, 3].map(|offset| {
+        let mut clip = sped_up_clip(compound, Rational::new(2, 1), 2);
+        clip.pitch_correction = true;
+        clip.source_offset = clip.rate().scale_round(offset * 10);
+        clip.timeline_start = offset * 10;
+        clip
+    });
+    let tl = timeline(vec![audio_track(copies.into())]);
+    let mut source = FakeStretch::default();
+    MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    assert_eq!(source.keys.len(), 2);
+    assert_ne!(source.keys[0], source.keys[1]);
 }
 
 /// Its audio ends at 600: past it the stretch would be silence.
@@ -1360,7 +1480,6 @@ fn with_mixdowns(project: &Project, snap: &MixSnapshot, compound: MediaId) -> Mi
 #[test]
 fn a_compound_mixed_live_plays_as_its_mixdown() {
     let (project, compound) = project_with_long_compound();
-    // A fade in would silence it: at `RATE` a gain block outlasts the clip.
     let mut gain = clip_at(compound, 2, 0, 30);
     gain.fade_out = 5;
     let mut keyframes = Keyframed::constant(-3.0f32);
@@ -1536,4 +1655,1036 @@ fn a_snapshot_is_ready_where_its_clips_have_their_audio() {
     assert!(!snap.is_ready(150..250), "b.wav");
     assert!(!snap.is_ready(400..450), "b.wav inside the compound clip");
     assert!(snap.is_ready(1000..2000), "nothing plays there");
+}
+
+struct FakePlugin {
+    gain: f32,
+    processed: std::sync::atomic::AtomicUsize,
+    resets: std::sync::atomic::AtomicUsize,
+}
+
+impl FakePlugin {
+    fn new(gain: f32) -> Arc<Self> {
+        Arc::new(Self {
+            gain,
+            processed: Default::default(),
+            resets: Default::default(),
+        })
+    }
+}
+
+impl crate::effect::PluginProcessor for FakePlugin {
+    fn process(&self, samples: &mut [f32], _channels: usize) -> bool {
+        self.processed.fetch_add(1, Ordering::Relaxed);
+        samples.iter_mut().for_each(|s| *s *= self.gain);
+        true
+    }
+
+    fn reset(&self) {
+        self.resets.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn latency(&self) -> u32 {
+        0
+    }
+}
+
+/// `CountingSource` that hands out `plugin` and records the keys asked.
+#[derive(Default)]
+struct PluginSource {
+    inner: CountingSource,
+    plugin: Option<Arc<FakePlugin>>,
+    keys: Vec<u64>,
+    processed: Vec<bool>,
+}
+
+impl AudioSource for PluginSource {
+    fn file(&mut self, path: &Path, stream: usize) -> ClipAudio {
+        self.inner.file(path, stream)
+    }
+
+    fn plugin(&mut self, request: crate::effect::PluginRequest<'_>) -> Option<PluginHandle> {
+        self.keys.push(request.key);
+        self.processed.push(request.process);
+        self.plugin.clone().map(|p| p as PluginHandle)
+    }
+}
+
+fn vst3(id: u64, state: &[u8]) -> vv_core::AudioEffect {
+    vv_core::AudioEffect::new(vv_core::AudioEffectKind::Vst3(vv_core::Vst3Effect {
+        id: vv_core::EffectId(id),
+        class_id: "00".repeat(16),
+        name: "Fake".into(),
+        vendor: String::new(),
+        version: "1".into(),
+        component_state: vv_core::PluginState::new(state.to_vec()),
+        controller_state: Default::default(),
+    }))
+}
+
+fn plugin_timeline(effects: Vec<vv_core::AudioEffect>) -> (Project, Timeline) {
+    let (project, a, _) = project();
+    let mut track = audio_track(vec![clip_at(a, 0, 0, 5)]);
+    track.mix.effects = effects;
+    (project, timeline(vec![track]))
+}
+
+fn mixed(snap: &MixSnapshot, frames: usize) -> Vec<f32> {
+    let mut out = vec![9.0; frames];
+    mix_range(snap, 0, &mut out);
+    out
+}
+
+#[test]
+fn plugin_insert_applies_in_chain_order() {
+    let (project, tl) = plugin_timeline(vec![vst3(1, b"")]);
+    let plugin = FakePlugin::new(0.5);
+    let mut source = PluginSource {
+        plugin: Some(plugin.clone()),
+        ..Default::default()
+    };
+    let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    let out = mixed(&snap, 40);
+    assert!(out.iter().all(|&s| s == 0.25));
+    assert!(plugin.processed.load(Ordering::Relaxed) > 0);
+}
+
+fn without_plugins(snap: &MixSnapshot, frames: usize) -> Vec<f32> {
+    let mut out = vec![9.0; frames];
+    mix_range_without_plugins(snap, 0, &mut out);
+    out
+}
+
+#[test]
+fn mixing_without_plugins_leaves_the_instance_alone() {
+    let (project, tl) = plugin_timeline(vec![vst3(1, b"")]);
+    let plugin = FakePlugin::new(0.5);
+    let mut source = PluginSource {
+        plugin: Some(plugin.clone()),
+        ..Default::default()
+    };
+    let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    assert!(without_plugins(&snap, 40).iter().all(|&s| s == 0.5));
+    assert_eq!(plugin.processed.load(Ordering::Relaxed), 0);
+    assert_eq!(plugin.resets.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn mixing_without_plugins_skips_nested_plugins_too() {
+    let (mut project, compound) = project_with_compound();
+    let nested = project.media_pool[compound].compound.unwrap();
+    project.timelines[nested].tracks[0].mix.effects = vec![vst3(1, b"")];
+    let tl = timeline(vec![audio_track(vec![clip_at(compound, 0, 0, 5)])]);
+    let plugin = FakePlugin::new(0.5);
+    let mut source = PluginSource {
+        plugin: Some(plugin.clone()),
+        ..Default::default()
+    };
+    let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    assert_eq!(source.keys.len(), 1);
+    without_plugins(&snap, 40);
+    assert_eq!(plugin.processed.load(Ordering::Relaxed), 0);
+    assert_eq!(plugin.resets.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn mixing_without_plugins_drops_the_gains_measured_through_them() {
+    let (project, tl) = plugin_timeline(vec![vst3(1, b"")]);
+    let mut source = PluginSource {
+        plugin: Some(FakePlugin::new(0.5)),
+        ..Default::default()
+    };
+    let mut snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    snap.tracks[0].inserts.push(Insert::Gain(4.0));
+    snap.tracks[0]
+        .inserts
+        .push(Insert::ClipGains(vec![(0, 4.0)]));
+    assert!(mixed(&snap, 40).iter().all(|&s| s == 0.5 * 0.5 * 4.0 * 4.0));
+    assert!(without_plugins(&snap, 40).iter().all(|&s| s == 0.5));
+}
+
+#[test]
+fn mixing_without_plugins_keeps_a_gain_before_the_plugin() {
+    let (project, tl) = plugin_timeline(vec![vst3(1, b"")]);
+    let mut source = PluginSource {
+        plugin: Some(FakePlugin::new(0.5)),
+        ..Default::default()
+    };
+    let mut snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    snap.tracks[0].inserts.insert(0, Insert::Gain(4.0));
+    assert!(without_plugins(&snap, 40).iter().all(|&s| s == 2.0));
+}
+
+#[test]
+fn mixing_without_plugins_keeps_the_gain_of_a_track_without_plugins() {
+    let (project, a, _) = project();
+    let mut plugin_track = audio_track(vec![clip_at(a, 0, 0, 5)]);
+    plugin_track.mix.effects = vec![vst3(1, b"")];
+    let tl = timeline(vec![plugin_track, audio_track(vec![clip_at(a, 0, 0, 5)])]);
+    let mut source = PluginSource {
+        plugin: Some(FakePlugin::new(0.5)),
+        ..Default::default()
+    };
+    let mut snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    snap.tracks[0].inserts.push(Insert::Gain(4.0));
+    snap.tracks[1].inserts.push(Insert::Gain(4.0));
+    assert!(without_plugins(&snap, 40).iter().all(|&s| s == 0.5 + 2.0));
+}
+
+#[test]
+fn mixing_without_plugins_drops_the_master_gain_when_a_track_has_one() {
+    let (project, tl) = plugin_timeline(vec![vst3(1, b"")]);
+    let mut source = PluginSource {
+        plugin: Some(FakePlugin::new(0.5)),
+        ..Default::default()
+    };
+    let mut snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    snap.master.inserts.push(Insert::Gain(4.0));
+    assert!(without_plugins(&snap, 40).iter().all(|&s| s == 0.5));
+}
+
+#[test]
+fn mixing_without_plugins_keeps_the_gains_when_there_are_none() {
+    let (project, tl) = plugin_timeline(vec![]);
+    let mut snap =
+        MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut CountingSource::default());
+    snap.tracks[0].inserts.push(Insert::Gain(4.0));
+    assert!(without_plugins(&snap, 40).iter().all(|&s| s == 2.0));
+}
+
+#[test]
+fn mixing_without_plugins_drops_the_gains_after_a_nested_plugin() {
+    let (mut project, compound) = project_with_compound();
+    let nested = project.media_pool[compound].compound.unwrap();
+    project.timelines[nested].tracks[0].mix.effects = vec![vst3(1, b"")];
+    let tl = timeline(vec![audio_track(vec![clip_at(compound, 0, 0, 5)])]);
+    let mut source = PluginSource {
+        plugin: Some(FakePlugin::new(0.5)),
+        ..Default::default()
+    };
+    let mut snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    snap.tracks[0].inserts.push(Insert::Gain(4.0));
+    assert!(without_plugins(&snap, 40).iter().all(|&s| s == 0.5));
+}
+
+#[test]
+fn missing_plugin_passes_through() {
+    let (project, tl) = plugin_timeline(vec![vst3(1, b"")]);
+    let mut source = PluginSource::default();
+    let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    assert!(mixed(&snap, 40).iter().all(|&s| s == 0.5));
+}
+
+#[test]
+fn disabled_plugin_is_off() {
+    let mut effect = vst3(1, b"");
+    effect.enabled = false;
+    let (project, tl) = plugin_timeline(vec![effect]);
+    let mut source = PluginSource {
+        plugin: Some(FakePlugin::new(0.5)),
+        ..Default::default()
+    };
+    let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    assert_eq!(source.processed, [false], "kept alive, not processed");
+    assert!(matches!(snap.tracks[0].inserts[0], Insert::Off));
+    assert!(mixed(&snap, 40).iter().all(|&s| s == 0.5));
+}
+
+#[test]
+fn rebuild_requests_same_key() {
+    let (project, tl) = plugin_timeline(vec![vst3(1, b"")]);
+    let mut keys = Vec::new();
+    for _ in 0..2 {
+        let mut source = PluginSource::default();
+        MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+        keys.push(source.keys);
+    }
+    assert_eq!(keys[0].len(), 1);
+    assert_eq!(keys[0], keys[1]);
+}
+
+#[test]
+fn nested_placements_get_distinct_keys() {
+    let (mut project, compound) = project_with_compound();
+    let nested = project.media_pool[compound].compound.unwrap();
+    project.timelines[nested].tracks[0].mix.effects = vec![vst3(1, b"")];
+    let tl = timeline(vec![audio_track(vec![
+        clip_at(compound, 0, 0, 5),
+        clip_at(compound, 10, 0, 5),
+    ])]);
+    let mut source = PluginSource::default();
+    MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    assert_eq!(source.keys.len(), 2);
+    assert_ne!(source.keys[0], source.keys[1]);
+}
+
+#[test]
+fn duplicate_ids_get_distinct_keys() {
+    let (project, tl) = plugin_timeline(vec![vst3(1, b""), vst3(1, b"")]);
+    let mut source = PluginSource::default();
+    MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    assert_eq!(source.keys.len(), 2);
+    assert_ne!(source.keys[0], source.keys[1]);
+}
+
+#[test]
+fn plugin_state_changes_chain_key() {
+    let key = |state: &[u8]| {
+        let (project, tl) = plugin_timeline(vec![vst3(1, state)]);
+        let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut buffers);
+        chain_key(
+            NormalizeMode::SamplePeak,
+            (RATE, 1),
+            &snap.tracks[0].inserts,
+        )
+    };
+    assert_ne!(key(b"x"), key(b"y"));
+    assert_eq!(key(b"x"), key(b"x"));
+}
+
+#[test]
+fn reset_reaches_plugin() {
+    let (project, tl) = plugin_timeline(vec![vst3(1, b"")]);
+    let plugin = FakePlugin::new(0.5);
+    let mut source = PluginSource {
+        plugin: Some(plugin.clone()),
+        ..Default::default()
+    };
+    let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    let mut state = MixState::new(&snap);
+    let mut out = vec![0.0; 10];
+    mix_range_from(&snap, &mut state, 0, &mut out);
+    let before = plugin.resets.load(Ordering::Relaxed);
+    mix_range_from(&snap, &mut state, 10, &mut out);
+    assert_eq!(plugin.resets.load(Ordering::Relaxed), before, "continuous");
+    mix_range_from(&snap, &mut state, 500, &mut out);
+    assert_eq!(plugin.resets.load(Ordering::Relaxed), before + 1);
+}
+
+#[test]
+fn pitch_corrected_compounds_get_their_own_plugin_keys() {
+    let (mut project, compound) = project_with_long_compound();
+    let nested = project.media_pool[compound].compound.unwrap();
+    project.timelines[nested].tracks[0].mix.effects = vec![vst3(1, b"")];
+    let corrected = |start| {
+        let mut clip = sped_up_clip(compound, Rational::new(2, 1), 2);
+        clip.timeline_start = start;
+        clip.pitch_correction = true;
+        clip
+    };
+    let tl = timeline(vec![audio_track(vec![
+        corrected(0),
+        corrected(10),
+        clip_at(compound, 20, 0, 5),
+    ])]);
+    let mut source = PluginSource::default();
+    MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    let mut keys = source.keys.clone();
+    keys.sort_unstable();
+    keys.dedup();
+    assert_eq!(keys.len(), 3, "{:?}", source.keys);
+}
+
+#[test]
+fn a_strips_plugin_key_does_not_depend_on_the_other_strips() {
+    let (project, a, _) = project();
+    let strip = |effects| {
+        let mut track = audio_track(vec![clip_at(a, 0, 0, 5)]);
+        track.mix.effects = effects;
+        track
+    };
+    let tl = timeline(vec![strip(vec![vst3(1, b"")]), strip(vec![vst3(1, b"")])]);
+    let mut live = PluginSource::default();
+    MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut live);
+    assert_eq!(live.keys.len(), 2);
+    assert_ne!(live.keys[0], live.keys[1]);
+
+    let mut measuring = PluginSource::default();
+    let measured = Measured {
+        channel: MixerChannel::Track(1),
+        insert: 1,
+        clip: None,
+    };
+    MixSnapshot::measured(&project, &tl, measured, RATE, 1, &mut measuring, None, 0);
+    assert_eq!(measuring.keys, [live.keys[1]]);
+}
+
+#[test]
+fn plugin_insert_equality_sees_whether_it_processes() {
+    let insert = |handle| PluginInsert {
+        key: 1,
+        content: 2,
+        handle,
+    };
+    let with: PluginHandle = FakePlugin::new(1.0);
+    let other: PluginHandle = FakePlugin::new(2.0);
+    assert_eq!(insert(Some(with.clone())), insert(Some(other)));
+    assert_ne!(insert(Some(with)), insert(None));
+    assert_ne!(
+        insert(None),
+        PluginInsert {
+            key: 2,
+            ..insert(None)
+        }
+    );
+}
+
+/// `PluginSource` that records the keys of the levels and stretches asked.
+#[derive(Default)]
+struct KeyedSource {
+    plugins: PluginSource,
+    build: Option<u64>,
+    levels: Vec<u64>,
+    ends: Vec<u64>,
+    stretches: Vec<u64>,
+}
+
+impl AudioSource for KeyedSource {
+    fn file(&mut self, path: &Path, stream: usize) -> ClipAudio {
+        buffers(path, stream).map_or(ClipAudio::Missing, ClipAudio::Ready)
+    }
+
+    fn plugin(&mut self, request: crate::effect::PluginRequest<'_>) -> Option<PluginHandle> {
+        self.plugins.plugin(request)
+    }
+
+    fn plugin_build(&mut self, _: &vv_core::Vst3Effect) -> Option<u64> {
+        self.build
+    }
+
+    fn stretched(&mut self, request: StretchRequest) -> ClipAudio {
+        self.stretches.push(request.key);
+        ClipAudio::Pending
+    }
+
+    fn level(&mut self, analysis: LevelAnalysis) -> LevelReading {
+        self.levels.push(analysis.key());
+        self.ends
+            .extend(analysis.segments.iter().map(|s| s.frames.end));
+        LevelReading::Ready(0.5)
+    }
+}
+
+fn level_keys(effects: Vec<vv_core::AudioEffect>, plugin: Option<Arc<FakePlugin>>) -> Vec<u64> {
+    let (project, tl) = plugin_timeline(effects);
+    let mut source = KeyedSource {
+        plugins: PluginSource {
+            plugin,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    source.levels
+}
+
+fn level_ends_with_video(video_frames: FrameIdx) -> (Vec<u64>, Vec<u64>) {
+    let (project, a, _) = project();
+    let mut strip = audio_track(vec![clip_at(a, 0, 0, 5)]);
+    strip.mix.effects = vec![vst3(1, b""), normalize(0.0)];
+    let mut video = audio_track(vec![clip_at(a, 0, 0, video_frames)]);
+    video.kind = TrackKind::Video;
+    let mut source = KeyedSource {
+        plugins: PluginSource {
+            plugin: Some(FakePlugin::new(1.0)),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    MixSnapshot::from_timeline(
+        &project,
+        &timeline(vec![strip, video]),
+        RATE,
+        1,
+        &mut source,
+    );
+    (source.ends, source.levels)
+}
+
+// Export renders to the timeline end, so the measure after a plugin must too.
+#[test]
+fn a_plugin_measure_runs_to_the_timeline_end_when_video_outlasts_the_audio() {
+    let (ends, keys) = level_ends_with_video(20);
+    assert_eq!(ends, [200]);
+    let (_, shorter) = level_ends_with_video(30);
+    assert_ne!(keys, shorter, "the end is part of the key");
+    let (ends, _) = level_ends_with_video(3);
+    assert_eq!(ends, [50], "the audio is the longest");
+}
+
+#[test]
+fn a_level_measured_without_the_plugin_is_not_the_level_with_it() {
+    let chain = || vec![vst3(1, b""), normalize(0.0)];
+    let dry = level_keys(chain(), None);
+    let wet = level_keys(chain(), Some(FakePlugin::new(4.0)));
+    assert_eq!((dry.len(), wet.len()), (1, 1));
+    assert_ne!(dry, wet);
+    assert_eq!(wet, level_keys(chain(), Some(FakePlugin::new(4.0))));
+}
+
+#[test]
+fn the_master_level_key_sees_whether_a_track_plugin_processes() {
+    let keys = |plugin| {
+        let (project, mut tl) = plugin_timeline(vec![vst3(1, b"")]);
+        tl.master.effects = vec![normalize(0.0)];
+        let mut source = KeyedSource {
+            plugins: PluginSource {
+                plugin,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+        source.levels
+    };
+    assert_ne!(keys(None), keys(Some(FakePlugin::new(4.0))));
+}
+
+#[test]
+fn a_stretch_of_a_compound_sees_whether_its_plugins_are_available() {
+    let (mut project, compound) = project_with_long_compound();
+    let nested = project.media_pool[compound].compound.unwrap();
+    project.timelines[nested].tracks[0].mix.effects = vec![vst3(1, b"")];
+    let mut clip = sped_up_clip(compound, Rational::new(2, 1), 2);
+    clip.pitch_correction = true;
+    let tl = timeline(vec![audio_track(vec![clip])]);
+    let keys = |build| {
+        let mut source = KeyedSource {
+            build,
+            ..Default::default()
+        };
+        MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+        source.stretches
+    };
+    assert_ne!(keys(None), keys(Some(1)));
+    assert_eq!(keys(Some(1)), keys(Some(1)));
+    assert_ne!(keys(Some(1)), keys(Some(2)));
+    assert_eq!(keys(None), keys(None));
+}
+
+#[test]
+fn an_installed_plugin_update_changes_the_level_key() {
+    let keys = |build| {
+        let (project, tl) = plugin_timeline(vec![vst3(1, b""), normalize(0.0)]);
+        let mut source = KeyedSource {
+            plugins: PluginSource {
+                plugin: Some(FakePlugin::new(4.0)),
+                ..Default::default()
+            },
+            build,
+            ..Default::default()
+        };
+        MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+        source.levels
+    };
+    assert_ne!(keys(Some(1)), keys(Some(2)));
+    assert_eq!(keys(Some(1)), keys(Some(1)));
+    assert_eq!(keys(None), keys(None));
+}
+
+#[test]
+fn a_chain_with_a_plugin_has_state() {
+    let plugin = Insert::Plugin(PluginInsert {
+        key: 1,
+        content: 2,
+        handle: None,
+    });
+    assert!(has_state(&[Insert::Gain(1.0), plugin]));
+    assert!(!has_state(&[Insert::Gain(1.0)]));
+}
+
+#[test]
+fn plugin_key_matches_the_mixers_keys() {
+    let (project, a, _) = project();
+    let strip = |effects| {
+        let mut track = audio_track(vec![clip_at(a, 0, 0, 5)]);
+        track.mix.effects = effects;
+        track
+    };
+    let mut tl = timeline(vec![
+        strip(vec![vst3(7, b""), vst3(7, b"")]),
+        strip(vec![vst3(7, b"")]),
+    ]);
+    tl.master.effects = vec![vst3(9, b""), vst3(7, b"")];
+    let mut source = PluginSource::default();
+    MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    let panel = |channel, index| crate::mixer::plugin_key_in(0, &tl, channel, index).unwrap();
+    let track = MixerChannel::Track;
+    let keys = [
+        panel(track(0), 0),
+        panel(track(0), 1),
+        panel(track(1), 0),
+        panel(MixerChannel::Master, 0),
+        panel(MixerChannel::Master, 1),
+    ];
+    for key in keys {
+        assert!(source.keys.contains(&key));
+    }
+    let mut distinct = keys.to_vec();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(distinct.len(), keys.len());
+}
+
+#[test]
+fn removing_a_track_keeps_the_plugin_keys_of_the_others() {
+    let (project, a, _) = project();
+    let strip = |effects| {
+        let mut track = audio_track(vec![clip_at(a, 0, 0, 5)]);
+        track.mix.effects = effects;
+        track
+    };
+    let mut tl = timeline(vec![strip(vec![]), strip(vec![vst3(1, b"")])]);
+    let mut before = PluginSource::default();
+    MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut before);
+    tl.tracks.remove(0);
+    let mut after = PluginSource::default();
+    MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut after);
+    assert_eq!(before.keys, after.keys);
+    assert_eq!(before.keys.len(), 1);
+}
+
+#[test]
+fn a_measure_keys_a_duplicated_plugin_like_the_live_pass() {
+    let (project, a, _) = project();
+    let strip = || {
+        let mut track = audio_track(vec![clip_at(a, 0, 0, 5)]);
+        track.mix.effects = vec![vst3(1, b"")];
+        track
+    };
+    let tl = timeline(vec![strip(), strip()]);
+    let mut live = PluginSource::default();
+    MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut live);
+    assert_ne!(live.keys[0], live.keys[1]);
+    for track in 0..2 {
+        let measured = Measured {
+            channel: MixerChannel::Track(track),
+            insert: 1,
+            clip: None,
+        };
+        let mut measuring = PluginSource::default();
+        MixSnapshot::measured(&project, &tl, measured, RATE, 1, &mut measuring, None, 0);
+        assert_eq!(measuring.keys, [live.keys[track]]);
+    }
+}
+
+#[test]
+fn a_disabled_duplicate_keeps_the_panel_and_mixer_keys_in_agreement() {
+    let (project, a, _) = project();
+    let mut track = audio_track(vec![clip_at(a, 0, 0, 5)]);
+    let mut first = vst3(7, b"");
+    first.enabled = false;
+    track.mix.effects = vec![first, vst3(7, b"")];
+    let tl = timeline(vec![track]);
+    let mut source = PluginSource::default();
+    MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    let key = crate::mixer::plugin_key_in(0, &tl, MixerChannel::Track(0), 1).unwrap();
+    assert_eq!(source.keys.len(), 2);
+    assert_eq!(source.processed, [false, true]);
+    assert_eq!(source.keys[1], key);
+}
+
+#[test]
+fn plugin_key_in_is_none_out_of_range() {
+    let (_, a, _) = project();
+    let tl = timeline(vec![audio_track(vec![clip_at(a, 0, 0, 5)])]);
+    assert!(crate::mixer::plugin_key_in(0, &tl, MixerChannel::Track(5), 0).is_none());
+    assert!(crate::mixer::plugin_key_in(0, &tl, MixerChannel::Track(0), 0).is_none());
+}
+
+/// Like a hosted instance: only channels 0 and 1 are read and written.
+struct StereoOnlyPlugin(f32);
+
+impl crate::effect::PluginProcessor for StereoOnlyPlugin {
+    fn process(&self, samples: &mut [f32], channels: usize) -> bool {
+        for frame in samples.chunks_exact_mut(channels) {
+            frame[0] *= self.0;
+            frame[1] *= self.0;
+        }
+        true
+    }
+
+    fn reset(&self) {}
+
+    fn latency(&self) -> u32 {
+        0
+    }
+}
+
+fn plugin_mix_on_six_channels(effects: Vec<vv_core::AudioEffect>) -> Vec<f32> {
+    let (project, tl) = plugin_timeline(effects);
+    struct Source;
+    impl AudioSource for Source {
+        fn file(&mut self, path: &Path, _: usize) -> ClipAudio {
+            let left_right = [0.8f32, 0.4].repeat(500);
+            if path.to_str() == Some("a.wav") {
+                ClipAudio::Ready(SampleBlocks::contiguous(Arc::new(left_right), 0, 2))
+            } else {
+                ClipAudio::Missing
+            }
+        }
+
+        fn plugin(&mut self, _: crate::effect::PluginRequest<'_>) -> Option<PluginHandle> {
+            Some(Arc::new(StereoOnlyPlugin(0.5)))
+        }
+    }
+    let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 6, &mut Source);
+    let mut out = vec![9.0; 12];
+    mix_range(&snap, 0, &mut out);
+    out
+}
+
+#[test]
+fn a_plugin_insert_processes_every_channel_of_a_wide_device() {
+    let out = plugin_mix_on_six_channels(vec![vst3(1, b"")]);
+    for (got, want) in out.iter().zip([0.4, 0.2, 0.4, 0.2, 0.4, 0.2].repeat(2)) {
+        assert!((got - want).abs() < 1e-6, "{out:?}");
+    }
+}
+
+#[test]
+fn a_mono_after_a_plugin_does_not_mix_dry_channels_in() {
+    let mono = vv_core::AudioEffect::new(vv_core::AudioEffectKind::Mono);
+    let out = plugin_mix_on_six_channels(vec![vst3(1, b""), mono]);
+    assert!(out.iter().all(|&s| (s - 0.3).abs() < 1e-6), "{out:?}");
+}
+
+#[test]
+fn a_plugin_receives_the_centre_through_the_fold() {
+    use crate::effect::{Effect, PluginEffect};
+    let mut effect = PluginEffect {
+        handle: Arc::new(FoldingPlugin),
+        channels: 6,
+    };
+    // L R C LFE Ls Rs with only the centre (channel 2) carrying signal.
+    let mut samples = vec![0.0, 0.0, 0.9, 0.0, 0.0, 0.0];
+    effect.process(&mut samples);
+    let want = 0.9 / 3.0;
+    assert!(
+        samples.iter().step_by(2).all(|s| (s - want).abs() < 1e-6),
+        "{samples:?}"
+    );
+    assert_eq!(samples[1], 0.0);
+}
+
+/// Like a hosted instance that is busy or inactive: the block is left alone.
+struct BusyPlugin;
+
+impl crate::effect::PluginProcessor for BusyPlugin {
+    fn process(&self, _: &mut [f32], _: usize) -> bool {
+        false
+    }
+
+    fn reset(&self) {}
+
+    fn latency(&self) -> u32 {
+        0
+    }
+}
+
+#[test]
+fn a_plugin_that_skips_a_block_leaves_the_surround_channels_alone() {
+    use crate::effect::{Effect, PluginEffect};
+    let mut effect = PluginEffect {
+        handle: Arc::new(BusyPlugin),
+        channels: 6,
+    };
+    let mut samples = vec![0.0, 0.0, 0.9, 0.0, 0.0, 0.0];
+    let before = samples.clone();
+    effect.process(&mut samples);
+    assert_eq!(samples, before);
+}
+
+/// Folds the way the host does (mean of every second channel), writes the pair.
+struct FoldingPlugin;
+
+impl crate::effect::PluginProcessor for FoldingPlugin {
+    fn process(&self, samples: &mut [f32], channels: usize) -> bool {
+        for frame in samples.chunks_exact_mut(channels) {
+            let fold = |k: usize| {
+                let v: Vec<f32> = frame[k..].iter().step_by(2).copied().collect();
+                v.iter().sum::<f32>() / v.len() as f32
+            };
+            let (l, r) = (fold(0), fold(1));
+            frame[0] = l;
+            frame[1] = r;
+        }
+        true
+    }
+
+    fn reset(&self) {}
+
+    fn latency(&self) -> u32 {
+        0
+    }
+}
+
+#[test]
+fn the_keys_of_a_plugin_without_a_build_are_stable() {
+    let level = level_keys(
+        vec![vst3(1, b""), normalize(0.0)],
+        Some(FakePlugin::new(4.0)),
+    );
+    assert_eq!(level, [5936692045940253641]);
+}
+
+/// Pass-through: the segmented scheme, as before plugins processed.
+#[test]
+fn the_keys_of_an_unmade_plugin_are_stable() {
+    let level = level_keys(vec![vst3(1, b""), normalize(0.0)], None);
+    assert_eq!(level, [15893858193257760473]);
+}
+
+/// Realistic: the equalizer's cutoffs sit below Nyquist and settle in ms.
+const BUILTIN_RATE: u32 = 48_000;
+
+fn builtin_chain() -> Vec<vv_core::AudioEffect> {
+    let mut eq = vv_core::Equalizer::DEFAULT;
+    eq.bands[1].gain_db = -6.0;
+    vec![
+        vv_core::AudioEffect::new(vv_core::AudioEffectKind::Equalizer(eq)),
+        vv_core::AudioEffect::new(vv_core::AudioEffectKind::MultibandCompressor(
+            vv_core::MultibandCompressor::DEFAULT,
+        )),
+    ]
+}
+
+/// Two clips a long gap apart (5 timeline frames each, the second at 400).
+fn gapped_timeline(effects: Vec<vv_core::AudioEffect>) -> (Project, Timeline) {
+    let (project, a, _) = project();
+    let mut track = audio_track(vec![clip_at(a, 0, 0, 5), clip_at(a, 400, 0, 5)]);
+    track.mix.effects = effects;
+    (project, timeline(vec![track]))
+}
+
+#[test]
+fn a_builtin_only_track_does_no_work_in_a_long_gap_and_restarts_clean() {
+    let (project, tl) = gapped_timeline(builtin_chain());
+    let snap = MixSnapshot::from_timeline(&project, &tl, BUILTIN_RATE, 1, &mut buffers);
+    let mut state = MixState::new(&snap);
+    let mut out = vec![9.0; 2_000_000];
+    mix_range_from(&snap, &mut state, 0, &mut out);
+    assert!(state.skipped_blocks > 0, "the gap is skipped");
+    assert!(
+        out[24_000..1_900_000].iter().all(|&s| s.abs() < 1e-6),
+        "gap"
+    );
+    let mut first = vec![9.0; 24_000];
+    mix_range(&snap, 0, &mut first);
+    assert_eq!(out[..24_000], first);
+    let mut second = vec![9.0; 24_000];
+    mix_range(&snap, 1_920_000, &mut second);
+    assert!(second.iter().any(|&s| s != 0.0));
+    assert_eq!(out[1_920_000..1_944_000], second);
+}
+
+#[test]
+fn a_chunked_render_of_a_gapped_builtin_track_equals_the_whole() {
+    let (project, tl) = gapped_timeline(builtin_chain());
+    let snap = MixSnapshot::from_timeline(&project, &tl, BUILTIN_RATE, 1, &mut buffers);
+    let mut whole = vec![9.0; 1_944_000];
+    mix_range_from(&snap, &mut MixState::new(&snap), 0, &mut whole);
+    let mut state = MixState::new(&snap);
+    let mut chunked = vec![9.0; 1_944_000];
+    for (i, chunk) in chunked.chunks_mut(70_000).enumerate() {
+        mix_range_from(&snap, &mut state, (i * 70_000) as u64, chunk);
+    }
+    let worst = whole
+        .iter()
+        .zip(&chunked)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0, f32::max);
+    assert!(worst < 1e-5, "{worst}");
+}
+
+#[test]
+fn a_plugin_track_keeps_running_through_the_gap() {
+    let (project, tl) = gapped_timeline(vec![vst3(1, b"")]);
+    let plugin = FakePlugin::new(0.5);
+    let mut source = PluginSource {
+        plugin: Some(plugin.clone()),
+        ..Default::default()
+    };
+    let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    let mut state = MixState::new(&snap);
+    let mut out = vec![9.0; 5000];
+    mix_range_from(&snap, &mut state, 0, &mut out);
+    assert_eq!(state.skipped_blocks, 0);
+    assert_eq!(
+        plugin.processed.load(Ordering::Relaxed),
+        5000_usize.div_ceil(MIX_BLOCK_FRAMES)
+    );
+}
+
+fn gapped_at(second: i64, effects: Vec<vv_core::AudioEffect>) -> (Project, Timeline) {
+    let (project, a, _) = project();
+    let mut track = audio_track(vec![clip_at(a, 0, 0, 5), clip_at(a, second, 0, 5)]);
+    track.mix.effects = effects;
+    (project, timeline(vec![track]))
+}
+
+#[test]
+fn a_ringing_low_boost_is_not_cut_when_the_gap_passes_the_settle_time() {
+    let mut eq = vv_core::Equalizer::DEFAULT;
+    eq.bands[2] = vv_core::EqBand::new(vv_core::EqShape::Peak, 20.0, true);
+    eq.bands[2].gain_db = 24.0;
+    eq.bands[2].q = 18.0;
+    let effects = vec![vv_core::AudioEffect::new(
+        vv_core::AudioEffectKind::Equalizer(eq),
+    )];
+    let (project, tl) = gapped_at(40, effects);
+    let snap = MixSnapshot::from_timeline(&project, &tl, BUILTIN_RATE, 1, &mut buffers);
+    let mut out = vec![9.0; 192_000];
+    mix_range_from(&snap, &mut MixState::new(&snap), 0, &mut out);
+    let gap = &out[24_000..];
+    let loudest = gap.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    assert!(loudest > 0.01, "the tail rings: {loudest}");
+    let jump = gap
+        .windows(2)
+        .fold(0.0f32, |m, w| m.max((w[1] - w[0]).abs()));
+    assert!(jump < loudest * 0.05, "no thump: {jump} of {loudest}");
+}
+
+#[test]
+fn a_gap_near_the_settle_time_renders_the_same_whole_or_chunked() {
+    for second in [25, 26, 30] {
+        let (project, tl) = gapped_at(second, builtin_chain());
+        let snap = MixSnapshot::from_timeline(&project, &tl, BUILTIN_RATE, 1, &mut buffers);
+        let frames = (second as usize + 5) * 4800;
+        let mut whole = vec![9.0; frames];
+        mix_range_from(&snap, &mut MixState::new(&snap), 0, &mut whole);
+        let mut state = MixState::new(&snap);
+        let mut chunked = vec![9.0; frames];
+        let mut at = 0;
+        for chunk in chunked.chunks_mut(7001) {
+            mix_range_from(&snap, &mut state, at, chunk);
+            at += chunk.len() as u64;
+        }
+        let worst = whole
+            .iter()
+            .zip(&chunked)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f32::max);
+        assert!(worst < 1e-5, "{second}: {worst}");
+    }
+}
+
+#[test]
+fn a_slow_release_restarts_at_the_clip_whether_or_not_a_whole_block_fits_in_the_gap() {
+    let mut comp = vv_core::MultibandCompressor::DEFAULT;
+    comp.crossovers_hz = [100.0, 400.0];
+    for band in &mut comp.bands {
+        band.threshold_db = -40.0;
+        band.ratio = 10.0;
+        band.release_ms = 2000.0;
+    }
+    let effects = vec![vv_core::AudioEffect::new(
+        vv_core::AudioEffectKind::MultibandCompressor(comp),
+    )];
+    // 200 audio frames per timeline frame: the gap is 2 s and 200 samples.
+    let rate = 2000;
+    let frames = 31 * 200;
+    for chunk in [97, 331, 511, 777] {
+        let (project, tl) = gapped_at(26, effects.clone());
+        let snap = MixSnapshot::from_timeline(&project, &tl, rate, 1, &mut buffers);
+        let mut whole = vec![9.0; frames];
+        mix_range_from(&snap, &mut MixState::new(&snap), 0, &mut whole);
+        let mut state = MixState::new(&snap);
+        let mut chunked = vec![9.0; frames];
+        let mut at = 0;
+        for part in chunked.chunks_mut(chunk) {
+            mix_range_from(&snap, &mut state, at, part);
+            at += part.len() as u64;
+        }
+        let worst = whole
+            .iter()
+            .zip(&chunked)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f32::max);
+        assert!(worst < 1e-5, "chunk {chunk}: {worst}");
+    }
+}
+
+struct CountingAlloc;
+
+thread_local! {
+    static ALLOCS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+// SAFETY: forwards to the system allocator, only counting on this thread.
+unsafe impl std::alloc::GlobalAlloc for CountingAlloc {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        let _ = ALLOCS.try_with(|c| c.set(c.get() + 1));
+        unsafe { std::alloc::System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        unsafe { std::alloc::System.dealloc(ptr, layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new: usize) -> *mut u8 {
+        let _ = ALLOCS.try_with(|c| c.set(c.get() + 1));
+        unsafe { std::alloc::System.realloc(ptr, layout, new) }
+    }
+}
+
+#[global_allocator]
+static COUNTING: CountingAlloc = CountingAlloc;
+
+#[test]
+fn request_plugins_does_not_allocate_for_a_strip_without_plugins() {
+    let strip = ChannelStrip {
+        effects: vec![normalize(0.0), normalize(-3.0)],
+        ..Default::default()
+    };
+    let mut source = PluginSource::default();
+    let mut keys = PluginKeys::new(0, TRACK_STRIPS);
+    let before = ALLOCS.with(|c| c.get());
+    let plugins = request_plugins(&strip, None, &mut keys, &mut source, RATE);
+    assert_eq!(ALLOCS.with(|c| c.get()) - before, 0);
+    assert!(plugins.is_empty());
+}
+
+#[test]
+fn request_plugins_counts_the_plugins_after_the_stop() {
+    let strip = ChannelStrip {
+        effects: vec![vst3(7, b""), normalize(0.0), vst3(7, b"")],
+        ..Default::default()
+    };
+    let mut source = PluginSource::default();
+    let mut keys = PluginKeys::new(0, TRACK_STRIPS);
+    request_plugins(&strip, Some(2), &mut keys, &mut source, RATE);
+    let next = keys.next(&match &strip.effects[2].kind {
+        vv_core::AudioEffectKind::Vst3(plugin) => plugin.clone(),
+        _ => unreachable!(),
+    });
+    assert_eq!(next, plugin_key(0, TRACK_STRIPS, vv_core::EffectId(7), 2));
+}
+
+#[test]
+fn strip_keys_match_plugin_key_in_for_every_effect() {
+    let (_, a, _) = project();
+    let strip = |effects| {
+        let mut track = audio_track(vec![clip_at(a, 0, 0, 5)]);
+        track.mix.effects = effects;
+        track
+    };
+    let mut tl = timeline(vec![
+        strip(vec![vst3(7, b""), normalize(0.0), vst3(7, b"")]),
+        strip(vec![normalize(0.0)]),
+        strip(vec![vst3(7, b""), vst3(8, b"")]),
+    ]);
+    tl.master.effects = vec![vst3(9, b""), vst3(7, b""), vst3(7, b"")];
+    let keys = crate::mixer::plugin_keys_in(0, &tl);
+    let mut channels: Vec<_> = (0..3).map(MixerChannel::Track).collect();
+    channels.push(MixerChannel::Master);
+    let mut checked = 0;
+    for channel in channels {
+        for index in 0..4 {
+            let expected = crate::mixer::plugin_key_in(0, &tl, channel, index);
+            assert_eq!(keys.get(channel, index), expected, "{channel:?} {index}");
+            checked += usize::from(expected.is_some());
+        }
+    }
+    assert_eq!(checked, 7);
 }

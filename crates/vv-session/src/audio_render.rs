@@ -17,9 +17,11 @@ use vv_audio::mixer::{
     remix_channels_into,
 };
 use vv_audio::{
-    LevelAnalysis, LevelReading, LevelSegment, SampleBlocks, StretchRequest, Stretcher,
+    LevelAnalysis, LevelReading, LevelSegment, PluginHandle, PluginRequest, SampleBlocks,
+    StretchRequest, Stretcher,
 };
 use vv_core::{Project, Timeline};
+use vv_plugin::Instances;
 
 use crate::export::{ExportError, PROJECT_CHANNELS};
 
@@ -182,6 +184,7 @@ fn measure_run(
     let ch = PROJECT_CHANNELS as usize;
     let mut at = range.start;
     let outer_reads = std::mem::take(&mut levels.reads);
+    let outer_degraded = std::mem::take(&mut levels.degraded);
     let rendered = render(
         analysis.project,
         Mix::Measured(analysis),
@@ -206,11 +209,17 @@ fn measure_run(
     );
     let read = std::mem::replace(&mut levels.reads, outer_reads);
     levels.reads.extend(read.iter().cloned());
+    // A level measured dry nests into the render that reads it.
+    let degraded = levels.degraded;
+    levels.degraded |= outer_degraded;
     rendered?;
+    if levels.cancelled() {
+        return Err(ExportError::Cancelled);
+    }
     let sources = stamps(&read);
     for m in meters {
         let part = m.meter.into_parts(&m.after);
-        levels.put(m.segment.key, &part, sources.as_deref());
+        levels.put(m.segment.key, &part, sources.as_deref(), degraded);
     }
     Ok(())
 }
@@ -315,6 +324,13 @@ impl Mix<'_> {
             Mix::Stretch(request) => request.snapshot(source, range, (rate, channels)),
         }
     }
+
+    fn dry(&self) -> &[u64] {
+        match self {
+            Mix::Measured(analysis) => &analysis.dry,
+            _ => &[],
+        }
+    }
 }
 
 fn render(
@@ -324,8 +340,38 @@ fn render(
     levels: &mut LevelCache,
     mut sink: impl FnMut(&[f32]) -> ControlFlow<()>,
 ) -> Result<(), ExportError> {
-    let ch = PROJECT_CHANNELS as usize;
+    levels.refresh_known();
+    let plugins = levels.plugins.pop();
+    let listed = levels.known.clone();
     let mut audio = StreamingAudio::new(levels);
+    audio.plugins = plugins;
+    if let Some(plugins) = &mut audio.plugins {
+        plugins.begin_render();
+    }
+    let rendered = render_chunks(project, mix, range, &mut audio, &mut sink);
+    // Kept for the next render (creating instances is the cost), unless a
+    // nested render moved the list on.
+    if let Some(plugins) = audio.plugins.take() {
+        let current = match (&listed, &audio.cache.known) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        if current {
+            audio.cache.keep_pool(plugins);
+        }
+    }
+    rendered
+}
+
+fn render_chunks(
+    project: &Project,
+    mix: Mix,
+    range: Range<u64>,
+    audio: &mut StreamingAudio,
+    sink: &mut impl FnMut(&[f32]) -> ControlFlow<()>,
+) -> Result<(), ExportError> {
+    let ch = PROJECT_CHANNELS as usize;
     let mut state: Option<MixState> = None;
     let mut out = Vec::new();
     let mut at = range.start;
@@ -348,6 +394,10 @@ fn render(
         }
         at = chunk.end;
     }
+    // A nested measure stopped in this chunk left it incomplete.
+    if audio.cache.cancelled() {
+        return Err(ExportError::Cancelled);
+    }
     Ok(())
 }
 
@@ -365,10 +415,21 @@ pub struct LevelCache {
     pub threads: usize,
     /// A measure this render is nested in holds claimed segments.
     holding: bool,
+    /// Kept between renders, a render taking the last: a nested render gets
+    /// the one it used before, and each measure thread has its own. Made from
+    /// `known`, so dropped when a rescan replaces the list.
+    plugins: Vec<Instances>,
+    new_pool: Arc<dyn Fn(Arc<[vv_plugin::PluginInfo]>) -> Instances + Send + Sync>,
+    known: Option<Arc<[vv_plugin::PluginInfo]>>,
+    installed: Arc<dyn Fn() -> Arc<[vv_plugin::PluginInfo]> + Send + Sync>,
     /// Set, the renders through it stop with `ExportError::Cancelled`.
     pub cancel: Option<Arc<AtomicBool>>,
     /// Segments rendered, not found.
     pub rendered: usize,
+    /// A render through it played an installed plugin pass-through that was
+    /// meant to process (not made). Set by the renders, cleared by whoever
+    /// reads it (the level and stretch workers, before each measure).
+    pub degraded: bool,
 }
 
 #[derive(Default)]
@@ -379,10 +440,18 @@ struct SharedLevels {
 
 #[derive(Default)]
 struct LevelsState {
-    parts: HashMap<u64, LevelParts>,
+    parts: HashMap<u64, CachedParts>,
     /// Being measured by a thread: another one waits for them instead of
     /// rendering them too (two threads meeting the same compound clip).
     measuring: HashSet<u64>,
+    /// Measured while a plugin was not made: neither found by `claim` nor
+    /// kept on disk, so a render that has the plugin measures it again.
+    degraded: HashSet<u64>,
+}
+
+struct CachedParts {
+    parts: LevelParts,
+    sources: Option<Vec<Stamp>>,
 }
 
 impl Default for LevelCache {
@@ -394,8 +463,13 @@ impl Default for LevelCache {
             reads: HashSet::new(),
             threads: std::thread::available_parallelism().map_or(1, usize::from),
             holding: false,
+            plugins: Vec::new(),
+            new_pool: Arc::new(Instances::offline),
+            known: None,
+            installed: Arc::new(vv_plugin::installed),
             cancel: None,
             rendered: 0,
+            degraded: false,
         }
     }
 }
@@ -410,7 +484,7 @@ impl LevelCache {
     }
 
     /// For a thread of a measure: a measure it nests renders on it alone.
-    fn for_thread(&self) -> Self {
+    fn for_thread(&mut self) -> Self {
         Self {
             shared: self.shared.clone(),
             dir: self.dir.clone(),
@@ -418,9 +492,42 @@ impl LevelCache {
             reads: HashSet::new(),
             threads: 1,
             holding: self.holding,
+            plugins: self.plugins.pop().into_iter().collect(),
+            new_pool: self.new_pool.clone(),
+            known: self.known.clone(),
+            installed: self.installed.clone(),
             cancel: self.cancel.clone(),
             rendered: 0,
+            degraded: false,
         }
+    }
+
+    /// Lets the plugins that failed be made again by the next render.
+    pub fn clear_plugin_failures(&mut self) {
+        for plugins in &mut self.plugins {
+            plugins.clear_failures();
+        }
+    }
+
+    /// Bounded: a pool per thread of a measure and one for the render, and
+    /// `KEPT_INSTANCES` in all; the oldest pools go first.
+    fn keep_pool(&mut self, plugins: Instances) {
+        self.plugins.push(plugins);
+        let total = |pools: &[Instances]| pools.iter().map(Instances::len).sum::<usize>();
+        while self.plugins.len() > 1
+            && (self.plugins.len() > self.threads.max(1) + 1
+                || total(&self.plugins) > KEPT_INSTANCES)
+        {
+            self.plugins.remove(0);
+        }
+    }
+
+    fn refresh_known(&mut self) {
+        let now = (self.installed)();
+        if self.known.as_ref().is_some_and(|k| !Arc::ptr_eq(k, &now)) {
+            self.plugins.clear();
+        }
+        self.known = Some(now);
     }
 
     fn cancelled(&self) -> bool {
@@ -432,7 +539,20 @@ impl LevelCache {
     fn absorb(&mut self, other: LevelCache) {
         self.streams.extend(other.streams);
         self.reads.extend(other.reads);
+        if self.known.is_none() {
+            self.known = other.known.clone();
+        }
+        let same_list = match (&self.known, &other.known) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        };
+        if same_list {
+            for plugins in other.plugins {
+                self.keep_pool(plugins);
+            }
+        }
         self.rendered += other.rendered;
+        self.degraded |= other.degraded;
     }
 
     fn path(&self, key: u64) -> Option<PathBuf> {
@@ -445,8 +565,16 @@ impl LevelCache {
     }
 
     fn get_locked(&self, state: &mut LevelsState, key: u64) -> Option<LevelParts> {
-        if let Some(part) = state.parts.get(&key) {
-            return Some(part.clone());
+        if let Some(cached) = state.parts.get(&key) {
+            let current = cached.sources.as_ref().is_none_or(|sources| {
+                sources
+                    .iter()
+                    .all(|source| stamp(&source.path).as_ref() == Some(source))
+            });
+            if current {
+                return Some(cached.parts.clone());
+            }
+            state.parts.remove(&key);
         }
         let mut bytes = Vec::new();
         std::fs::File::open(self.path(key)?)
@@ -459,7 +587,13 @@ impl LevelCache {
         {
             return None;
         }
-        state.parts.insert(key, part.clone());
+        state.parts.insert(
+            key,
+            CachedParts {
+                parts: part.clone(),
+                sources: Some(sources),
+            },
+        );
         Some(part)
     }
 
@@ -472,7 +606,9 @@ impl LevelCache {
         let mut state = self.shared.state.lock().unwrap();
         let (mut mine, mut theirs) = (Vec::new(), Vec::<&LevelSegment>::new());
         for segment in segments {
-            if self.get_locked(&mut state, segment.key).is_some() {
+            if !state.degraded.contains(&segment.key)
+                && self.get_locked(&mut state, segment.key).is_some()
+            {
                 continue;
             }
             if state.measuring.insert(segment.key) {
@@ -500,16 +636,28 @@ impl LevelCache {
         }
     }
 
-    /// Kept on disk only with the `sources` it was measured from.
-    fn put(&mut self, key: u64, part: &LevelParts, sources: Option<&[Stamp]>) {
+    /// Kept on disk only with the `sources` it was measured from, and not
+    /// when `degraded`.
+    fn put(&mut self, key: u64, part: &LevelParts, sources: Option<&[Stamp]>, degraded: bool) {
         self.rendered += 1;
         {
             let mut state = self.shared.state.lock().unwrap();
-            state.parts.insert(key, part.clone());
+            if degraded {
+                state.degraded.insert(key);
+            } else {
+                state.degraded.remove(&key);
+            }
+            state.parts.insert(
+                key,
+                CachedParts {
+                    parts: part.clone(),
+                    sources: sources.map(<[Stamp]>::to_vec),
+                },
+            );
             state.measuring.remove(&key);
             self.shared.measured.notify_all();
         }
-        let (Some(path), Some(sources)) = (self.path(key), sources) else {
+        let (Some(path), Some(sources)) = (self.path(key), sources.filter(|_| !degraded)) else {
             return;
         };
         // Best effort: without it the level is measured again next time.
@@ -528,7 +676,7 @@ impl LevelCache {
 const PARTS_MAGIC: &[u8; 4] = b"VVLV";
 /// Raised when the format or what a measure computes changes: older files
 /// are measured again.
-const PARTS_VERSION: u32 = 2;
+const PARTS_VERSION: u32 = 3;
 
 fn encode_parts(sources: &[Stamp], part: &LevelParts) -> Vec<u8> {
     let mut bytes = PARTS_MAGIC.to_vec();
@@ -616,6 +764,12 @@ impl BytesReader<'_> {
     }
 }
 
+/// Instances an offline pool keeps for placements the chunk did not use.
+const IDLE_INSTANCES: usize = 32;
+
+/// Instances kept between renders by a cache, all its pools together.
+const KEPT_INSTANCES: usize = 32;
+
 type WindowKey = (PathBuf, usize, Range<u64>);
 
 /// The sources of the chunk being rendered, and what the next one may
@@ -629,16 +783,24 @@ struct StreamingAudio<'c> {
     /// By `LevelAnalysis::key`: a normalization is asked again by every
     /// chunk.
     levels: HashMap<u64, f32>,
+    plugins: Option<Instances>,
     cache: &'c mut LevelCache,
 }
 
 impl<'c> StreamingAudio<'c> {
+    fn plugins(&mut self) -> &mut Instances {
+        let known = self.cache.known.clone().unwrap_or_else(|| Arc::from([]));
+        let make = &self.cache.new_pool;
+        self.plugins.get_or_insert_with(|| make(known))
+    }
+
     fn new(cache: &'c mut LevelCache) -> Self {
         Self {
             readers: Vec::new(),
             windows: HashMap::new(),
             stretched: HashMap::new(),
             levels: HashMap::new(),
+            plugins: None,
             cache,
         }
     }
@@ -659,8 +821,12 @@ impl<'c> StreamingAudio<'c> {
         mix.collect(project, &mut wanted, range.clone());
         let windows = wanted.windows;
         self.load(windows, last)?;
+        if let Some(plugins) = &mut self.plugins {
+            plugins.begin_pass();
+        }
         let mut provider = Provider {
             audio: self,
+            dry: mix.dry(),
             stretched_used: HashSet::new(),
             levels_used: HashSet::new(),
         };
@@ -672,6 +838,9 @@ impl<'c> StreamingAudio<'c> {
         } = provider;
         self.stretched.retain(|key, _| stretched_used.contains(key));
         self.levels.retain(|key, _| levels_used.contains(key));
+        if let Some(plugins) = &mut self.plugins {
+            plugins.sweep_idle(IDLE_INSTANCES);
+        }
         Ok(snapshot)
     }
 
@@ -778,6 +947,9 @@ impl AudioSource for Wanted {
 
 struct Provider<'a, 'c> {
     audio: &'a mut StreamingAudio<'c>,
+    /// Plugin placements played pass-through, as the keys of the measure
+    /// assume.
+    dry: &'a [u64],
     stretched_used: HashSet<u64>,
     levels_used: HashSet<u64>,
 }
@@ -813,17 +985,40 @@ impl AudioSource for Provider<'_, '_> {
         }
     }
 
+    fn plugin(&mut self, request: PluginRequest<'_>) -> Option<PluginHandle> {
+        if self.dry.contains(&request.key) {
+            return None;
+        }
+        let process = request.process;
+        let effect = request.effect;
+        let plugins = self.audio.plugins();
+        let handle = plugins.get(request);
+        // A plugin not installed never plays: nothing to wait for.
+        let missed = process && handle.is_none() && plugins.knows(effect);
+        self.audio.cache.degraded |= missed;
+        handle
+    }
+
+    fn plugin_build(&mut self, effect: &vv_core::Vst3Effect) -> Option<u64> {
+        self.audio.plugins().build(effect)
+    }
+
     fn level(&mut self, analysis: LevelAnalysis) -> LevelReading {
         let key = analysis.key();
         self.levels_used.insert(key);
         if let Some(level) = self.audio.levels.get(&key) {
             return LevelReading::Ready(*level);
         }
-        // Unity gain rather than a failed render.
-        let level = measure_level(&analysis, self.audio.cache).unwrap_or_else(|e| {
-            eprintln!("[levels] {e}");
-            0.0
-        });
+        // Unity gain rather than a failed render, but a stop is not a level:
+        // the render it is in stops too (`render_chunks`).
+        let level = match measure_level(&analysis, self.audio.cache) {
+            Err(ExportError::Cancelled) => return LevelReading::Pending(None),
+            Err(e) => {
+                eprintln!("[levels] {e}");
+                0.0
+            }
+            Ok(level) => level,
+        };
         self.audio.levels.insert(key, level);
         LevelReading::Ready(level)
     }

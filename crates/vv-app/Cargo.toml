@@ -23,6 +23,7 @@ vv-core = { path = "../vv-core" }
 vv-media = { path = "../vv-media" }
 vv-render = { path = "../vv-render" }
 vv-mcp = { path = "../vv-mcp" }
+vv-plugin = { path = "../vv-plugin" }
 vv-session = { path = "../vv-session" }
 
 
@@ -36,3 +37,4 @@ wayland-backend = { version = "0.3.17", features = ["client_system"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["sync"] }
+vv-plugin = { path = "../vv-plugin", features = ["testing"] }

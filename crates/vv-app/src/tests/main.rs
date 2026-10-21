@@ -5379,3 +5379,161 @@ fn a_library_asset_previews_without_joining_the_project_until_dragged() {
     assert_eq!(app.import_library_asset(&id), first);
     assert_eq!(app.session.project.media_pool.len(), 1);
 }
+
+#[test]
+fn headless_startup_seeds_the_installed_list_from_the_cached_settings() {
+    let plugin = vv_plugin::PluginInfo {
+        class_id: "AB".into(),
+        name: "Cached".into(),
+        path: PathBuf::from("/p/cached.vst3"),
+        ..vv_plugin::testing::fixture_info()
+    };
+    let path = std::env::temp_dir()
+        .join(format!("vv-headless-seed-{}", std::process::id()))
+        .join("settings.json");
+    let settings = settings::Settings {
+        vst3_plugins: Some(vec![plugin.clone()]),
+        ..Default::default()
+    };
+    settings.save(&path).unwrap();
+    seed_installed_from_settings(Some(&path));
+    assert_eq!(&*vv_plugin::installed(), &[plugin]);
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    seed_installed_from_settings(Some(&path));
+    assert!(vv_plugin::installed().is_empty());
+}
+
+#[test]
+fn a_scan_result_updates_installed_and_the_cache_together() {
+    let plugin = |id: &str| vv_plugin::PluginInfo {
+        class_id: id.into(),
+        name: id.into(),
+        path: PathBuf::from(format!("/p/{id}.vst3")),
+        ..vv_plugin::testing::fixture_info()
+    };
+    let mut settings = settings::Settings::default();
+    vv_plugin::set_installed(vec![plugin("A")]);
+    // A stale cache must not decide "unchanged": installed() does.
+    settings.vst3_plugins = Some(vec![plugin("B")]);
+
+    assert!(apply_scan_result(&mut settings, vec![plugin("A")]));
+    assert_eq!(settings.vst3_plugins, Some(vec![plugin("A")]));
+
+    assert!(!apply_scan_result(
+        &mut settings,
+        vec![plugin("A"), plugin("B")]
+    ));
+    let scanned = settings.vst3_plugins.as_deref().unwrap();
+    assert_eq!(&*vv_plugin::installed(), scanned);
+    assert_eq!(scanned.len(), 2);
+    vv_plugin::set_installed(Vec::new());
+}
+
+#[derive(Default)]
+pub(crate) struct GestureOnce(
+    std::sync::Mutex<Option<(vv_core::PluginState, vv_core::PluginState)>>,
+);
+
+impl vv_audio::PluginProcessor for GestureOnce {
+    fn process(&self, _: &mut [f32], _: usize) -> bool {
+        true
+    }
+    fn reset(&self) {}
+    fn latency(&self) -> u32 {
+        0
+    }
+}
+
+impl vv_plugin::HostedPlugin for GestureOnce {
+    fn set_state(&self, _: &vv_core::Vst3Effect) {}
+    fn state_hash(&self) -> u64 {
+        0
+    }
+    fn mark_state(&self, _: u64) {}
+    fn service_restart(&self) {}
+    fn take_gesture(&self) -> Option<(vv_core::PluginState, vv_core::PluginState)> {
+        self.0.lock().unwrap().take()
+    }
+}
+
+/// An app whose timeline has one plugin and an editor holding an unrecorded gesture.
+pub(crate) fn app_with_pending_gesture() -> (VenturiApp, vv_core::TimelineId) {
+    let mut app = VenturiApp::default();
+    let id = app.ensure_timeline();
+    let effect = vv_core::Vst3Effect {
+        id: vv_core::EffectId(7),
+        name: "Comp".into(),
+        ..vv_plugin::testing::fixture_effect_of("ab", &[1])
+    };
+    app.session.project.timelines[id].master.effects = vec![vv_core::AudioEffect::new(
+        vv_core::AudioEffectKind::Vst3(effect),
+    )];
+    let gesture = GestureOnce::default();
+    *gesture.0.lock().unwrap() = Some((
+        vv_core::PluginState::new(vec![9]),
+        vv_core::PluginState::new(Vec::new()),
+    ));
+    let key = (
+        id,
+        crate::plugin_editors::Group::Master,
+        vv_core::EffectId(7),
+        0,
+    );
+    app.plugin_editors
+        .defer_gesture(key, std::sync::Arc::new(gesture));
+    (app, id)
+}
+
+pub(crate) fn plugin_state(app: &VenturiApp, id: vv_core::TimelineId) -> Vec<u8> {
+    match &app.session.project.timelines[id].master.effects[0].kind {
+        vv_core::AudioEffectKind::Vst3(v) => v.component_state.bytes().to_vec(),
+        _ => panic!("not a plugin"),
+    }
+}
+
+// A hidden main window gets `App::logic` only, never `App::ui`.
+#[test]
+fn plugin_editors_are_pumped_by_logic_without_a_ui_pass() {
+    let (mut app, id) = app_with_pending_gesture();
+    let steps = app.session.history.labels().count();
+    let ctx = egui::Context::default();
+    eframe::App::logic(&mut app, &ctx, &mut eframe::Frame::_new_kittest());
+
+    assert_eq!(app.session.history.labels().count(), steps + 1);
+    assert_eq!(plugin_state(&app, id), [9]);
+}
+
+// A hidden main window gets `App::logic` only: a finished scan must still publish.
+#[test]
+fn a_finished_plugin_scan_is_published_by_logic_without_a_ui_pass() {
+    let mut app = VenturiApp::default();
+    let (tx, rx) = mpsc::channel();
+    tx.send(Vec::new()).unwrap();
+    app.plugin_scan_rx = Some(rx);
+    let ctx = egui::Context::default();
+    eframe::App::logic(&mut app, &ctx, &mut eframe::Frame::_new_kittest());
+
+    assert!(app.plugin_scan_rx.is_none());
+    assert!(app.settings.vst3_plugins.is_some());
+}
+
+#[test]
+fn a_crash_marker_survives_a_quit_when_no_scan_is_running() {
+    let dir = std::env::temp_dir().join(format!("vv-quit-marker-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = VenturiApp::default();
+    app.settings_path = Some(dir.join("settings.json"));
+    let marker = app.plugin_scan_marker();
+    std::fs::write(&marker, b"/p/Crashed.vst3").unwrap();
+    app.abandon_plugin_scan();
+    let kept = marker.exists();
+
+    let (_tx, rx) = mpsc::channel();
+    app.plugin_scan_rx = Some(rx);
+    app.abandon_plugin_scan();
+    let removed = !marker.exists();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(kept);
+    assert!(removed);
+}

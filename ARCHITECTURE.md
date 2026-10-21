@@ -386,6 +386,8 @@ venturi/
     vv-render/   # wgpu compositor, wgsl shaders, text
     vv-audio/    # mixer, resample, time-stretch, cpal output
     vv-vad/      # voice activity detection (Silero VAD on tract)
+    vv-plugin/   # VST3 host: scan, load, realtime process, native editors (unsafe COM)
+    vv-plugin-fixture/ # gain VST3 used by the host tests (not published)
     vv-session/  # UI-free application core: export, import/relink workers
     vv-mcp/      # MCP server: tools over a Session, stdio and socket transports
     vv-app/      # egui UI (timeline, viewer, panels), playback, MCP editor host

@@ -10,6 +10,10 @@ workspace = true
 vv-audio = { path = "../vv-audio" }
 vv-core = { path = "../vv-core" }
 vv-media = { path = "../vv-media" }
+vv-plugin = { path = "../vv-plugin" }
 vv-render = { path = "../vv-render" }
 vv-vad = { path = "../vv-vad" }
 serde_json = "1.0.151"
+
+[dev-dependencies]
+vv-plugin = { path = "../vv-plugin", features = ["testing"] }

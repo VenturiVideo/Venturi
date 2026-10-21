@@ -21,6 +21,7 @@ fn export_uses_in_out_marks_unless_whole_timeline_is_chosen() {
         total_frames: 100,
         marks: Some((20, 60)),
         has_audio: true,
+        waits_for_scan: false,
     };
     let path = std::env::temp_dir().join("out.mp4");
     let mut dialog = ExportDialog::new(ExportSettings::new(path), Vec::new());
@@ -47,6 +48,7 @@ fn dialog_renders_without_starting_an_export_on_its_own() {
         total_frames: 28_800,
         marks: Some((600, 1200)),
         has_audio: true,
+        waits_for_scan: false,
     };
     let mut dialog = ExportDialog::new(
         ExportSettings::new(std::env::temp_dir().join("x.mp4")),

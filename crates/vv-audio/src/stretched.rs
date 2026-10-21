@@ -23,6 +23,8 @@ pub enum StretchInput<'a> {
     Nested {
         timeline: &'a Timeline,
         depth: u32,
+        /// Of the placement, like `MixClip`'s nested mix: keys its plugins.
+        scope: u64,
     },
 }
 
@@ -52,10 +54,15 @@ impl StretchRequest<'_> {
             StretchInput::File { path, stream } => {
                 MixSnapshot::of_file(rate, channels, source, path, stream, range)
             }
-            StretchInput::Nested { timeline, depth } => MixSnapshot::nested_range(
+            StretchInput::Nested {
+                timeline,
+                depth,
+                scope,
+            } => MixSnapshot::nested_range(
                 self.project,
                 timeline,
                 depth,
+                scope,
                 rate,
                 channels,
                 source,

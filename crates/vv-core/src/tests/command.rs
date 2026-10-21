@@ -287,7 +287,8 @@ fn moving_an_audio_effect_reorders_the_chain_and_undoes() {
                 crate::AudioEffectKind::Normalize { target_db, .. } => target_db,
                 crate::AudioEffectKind::MultibandCompressor(_)
                 | crate::AudioEffectKind::Mono
-                | crate::AudioEffectKind::Equalizer(_) => f32::NAN,
+                | crate::AudioEffectKind::Equalizer(_)
+                | crate::AudioEffectKind::Vst3(_) => f32::NAN,
             })
             .collect()
     };

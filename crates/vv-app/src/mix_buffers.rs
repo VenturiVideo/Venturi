@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use vv_audio::{
     AnalysisSlot, AudioSource, BLOCK_FRAMES, ClipAudio, LevelAnalysis, LevelReading, SampleBlocks,
 };
-use vv_audio::{LevelSegment, Measured, StretchInput, StretchRequest};
+use vv_audio::{LevelSegment, Measured, PluginHandle, PluginRequest, StretchInput, StretchRequest};
 use vv_core::{NormalizeMode, Project, Timeline};
 use vv_session::audio_render::{LevelCache, measure_level, stretch_offline};
 use vv_session::export::ExportError;
@@ -38,7 +38,7 @@ struct OwnedStretch {
 
 enum OwnedInput {
     File(PathBuf, usize),
-    Nested(Timeline, u32),
+    Nested(Timeline, u32, u64),
 }
 
 impl OwnedStretch {
@@ -50,9 +50,10 @@ impl OwnedStretch {
                     path,
                     stream: *stream,
                 },
-                OwnedInput::Nested(timeline, depth) => StretchInput::Nested {
+                OwnedInput::Nested(timeline, depth, scope) => StretchInput::Nested {
                     timeline,
                     depth: *depth,
+                    scope: *scope,
                 },
             },
             frames: self.frames.clone(),
@@ -85,6 +86,8 @@ struct OwnedAnalysis {
     mode: NormalizeMode,
     format: (u32, u16),
     segments: Vec<LevelSegment>,
+    dry: Vec<u64>,
+    scope: u64,
 }
 
 impl OwnedAnalysis {
@@ -98,6 +101,8 @@ impl OwnedAnalysis {
             sample_rate: self.format.0,
             channels: self.format.1,
             segments: self.segments.clone(),
+            dry: self.dry.clone(),
+            scope: self.scope,
         }
     }
 }
@@ -107,8 +112,18 @@ struct LevelJob {
     analysis: OwnedAnalysis,
 }
 
-/// `None`: dropped for a newer job of the same slot.
-type LevelResult = (u64, Option<AnalysisSlot>, Option<f32>);
+enum LevelOutcome {
+    Measured(f32),
+    /// Dropped for a newer job of the same slot, or stopped: asked again
+    /// at once if still wanted.
+    Superseded,
+    /// Asked again after `MISSING_RETRY`.
+    Failed,
+}
+
+/// Last: measured while an installed plugin was not made, with the `retry`
+/// generation it ran under.
+type LevelResult = (u64, Option<AnalysisSlot>, LevelOutcome, Option<u64>);
 
 /// Blocks kept on each side of what the clips read: a trim into them
 /// decodes nothing.
@@ -122,9 +137,40 @@ const JOB_BLOCKS: u64 = 8;
 /// block of every clip.
 const BLOCK_REBUILD_INTERVAL: Duration = Duration::from_millis(250);
 
-/// A decode error marks a stream `missing`; retried after this, in case it
-/// was transient (file briefly unavailable, disk busy).
+/// A decode or level error is retried after this, in case it was transient
+/// (file briefly unavailable, disk busy).
 const MISSING_RETRY: Duration = Duration::from_secs(2);
+
+/// A failure waiting out `MISSING_RETRY`.
+struct Backoff {
+    since: Instant,
+    /// `poll` reported it due: once, so an idle cache does not rebuild nonstop.
+    reported: bool,
+}
+
+impl Backoff {
+    fn new() -> Self {
+        Self {
+            since: Instant::now(),
+            reported: false,
+        }
+    }
+
+    fn elapsed(&self) -> bool {
+        self.since.elapsed() >= MISSING_RETRY
+    }
+
+    /// `true` the first time it is asked once due.
+    fn report(&mut self) -> bool {
+        let due = self.elapsed() && !self.reported;
+        self.reported |= due;
+        due
+    }
+
+    fn deadline(&self) -> Option<Instant> {
+        (!self.reported).then(|| self.since + MISSING_RETRY)
+    }
+}
 
 /// Over budget, a playhead move this long chooses again what to keep.
 const REBALANCE_FRAMES: u64 = 2 * vv_audio::mixer::PROJECT_SAMPLE_RATE as u64;
@@ -141,8 +187,8 @@ struct StreamCache {
     ends_before: Option<u64>,
     /// No such stream, or it does not decode.
     missing: bool,
-    /// When `missing` was last set: retried after `MISSING_RETRY`.
-    missing_at: Option<Instant>,
+    /// Set with `missing`: `lookup` retries the decode once it elapsed.
+    backoff: Option<Backoff>,
     /// Read since the pass began.
     asked: bool,
     /// Blocks read since the pass began, with when they play.
@@ -235,17 +281,31 @@ pub struct MixBufferCache {
     /// every frame.
     stretch_busy: Arc<AtomicUsize>,
     stretch_worker: Worker<StretchJob>,
-    stretch_rx: mpsc::Receiver<(u64, Result<SampleBlocks, String>)>,
+    stretch_rx: mpsc::Receiver<(u64, Result<SampleBlocks, String>, Option<u64>)>,
     /// Normalization levels by `LevelAnalysis::key`; `None` while measuring.
     levels: HashMap<u64, Option<f32>>,
+    /// Measures that failed, not asked again until their backoff elapsed.
+    level_failures: HashMap<u64, Backoff>,
     last_level: HashMap<AnalysisSlot, f32>,
     level_used: HashSet<u64>,
     queued_levels: Vec<OwnedAnalysis>,
     level_busy: Arc<AtomicUsize>,
     level_worker: Worker<LevelJob>,
     level_rx: mpsc::Receiver<LevelResult>,
+    /// Keys of the levels and stretches rendered while a plugin was not
+    /// made: a rescan measures them again.
+    degraded: HashSet<u64>,
+    /// Bumped by a rescan: the workers' pools forget their failures.
+    retry: Arc<AtomicU64>,
     /// Stops the level worker's measures when the cache drops.
     closing: Arc<AtomicBool>,
+    /// What the level worker measures, and the flag that stops it: set by
+    /// `abort_outdated_level` under the lock.
+    level_inflight: Arc<std::sync::Mutex<Option<(AnalysisSlot, u64)>>>,
+    level_abort: Arc<AtomicBool>,
+    /// Created on the first plugin asked for, so projects without plugins
+    /// never touch the host.
+    plugins: Option<vv_plugin::Instances>,
 }
 
 impl MixBufferCache {
@@ -255,6 +315,7 @@ impl MixBufferCache {
         let worker_playhead = playhead.clone();
         let worker = Worker::spawn(move |job_rx: mpsc::Receiver<DecodeJob>| {
             let mut queue: Vec<DecodeJob> = Vec::new();
+            let mut decode_logged = HashSet::new();
             loop {
                 if queue.is_empty() {
                     match job_rx.recv() {
@@ -269,7 +330,14 @@ impl MixBufferCache {
                 let Some(path) = batch.first().map(|job| job.path.clone()) else {
                     continue;
                 };
-                if !decode_blocks(&path, &batch, sample_rate, channels, &decoded_tx) {
+                if !decode_blocks(
+                    &path,
+                    &batch,
+                    sample_rate,
+                    channels,
+                    &decoded_tx,
+                    &mut decode_logged,
+                ) {
                     break;
                 }
             }
@@ -277,18 +345,25 @@ impl MixBufferCache {
         let (stretch_tx, stretch_rx) = mpsc::channel();
         let stretch_busy = Arc::new(AtomicUsize::new(0));
         let worker_stretch_busy = stretch_busy.clone();
+        let retry = Arc::new(AtomicU64::new(0));
+        let stretch_retry = retry.clone();
         let stretch_worker = Worker::spawn(move |jobs: mpsc::Receiver<StretchJob>| {
             let mut cache = worker_levels();
             cache.threads = 1;
+            let mut retried = 0;
             for StretchJob { project, stretch } in jobs {
+                retry_failures(&mut cache, &stretch_retry, &mut retried);
                 cache.cancel = Some(stretch.cancelled.clone());
+                cache.degraded = false;
                 let result = match stretch_offline(&stretch.request(&project), &mut cache) {
                     Err(ExportError::Cancelled) => None,
                     result => Some(result.map_err(|e| e.to_string())),
                 };
                 worker_stretch_busy.fetch_sub(1, Ordering::Relaxed);
                 if let Some(result) = result
-                    && stretch_tx.send((stretch.key, result)).is_err()
+                    && stretch_tx
+                        .send((stretch.key, result, cache.degraded.then_some(retried)))
+                        .is_err()
                 {
                     break;
                 }
@@ -299,12 +374,20 @@ impl MixBufferCache {
         let worker_level_busy = level_busy.clone();
         let closing = Arc::new(AtomicBool::new(false));
         let worker_closing = closing.clone();
+        let level_inflight = Arc::new(std::sync::Mutex::new(None));
+        let worker_inflight = level_inflight.clone();
+        let level_abort = Arc::new(AtomicBool::new(false));
+        let worker_abort = level_abort.clone();
+        let level_retry = retry.clone();
         let level_worker = Worker::spawn(move |jobs: mpsc::Receiver<LevelJob>| {
             // Half the cores: the playback's decodes need the rest.
             let mut cache = worker_levels();
             cache.threads = cache.threads.div_ceil(2);
-            cache.cancel = Some(worker_closing.clone());
+            cache.cancel = Some(worker_abort.clone());
+            let mut retried = 0;
+            let mut level_logged = HashSet::new();
             while let Ok(first) = jobs.recv() {
+                retry_failures(&mut cache, &level_retry, &mut retried);
                 let mut batch = vec![first];
                 // Only the newest job of each slot is worth measuring.
                 while let Ok(job) = jobs.try_recv() {
@@ -314,29 +397,63 @@ impl MixBufferCache {
                     if let Some(older) = older {
                         let dropped = std::mem::replace(&mut batch[older], job).analysis;
                         worker_level_busy.fetch_sub(1, Ordering::Relaxed);
-                        if level_tx.send((dropped.key, slot, None)).is_err() {
+                        let superseded = (dropped.key, slot, LevelOutcome::Superseded, None);
+                        if level_tx.send(superseded).is_err() {
                             return;
                         }
                     } else {
                         batch.push(job);
                     }
                 }
+                // Short measures first: a continuous one (plugins) can take long.
+                batch.sort_by_key(|job| {
+                    (job.analysis.segments.iter())
+                        .map(|s| s.frames.end - s.frames.start)
+                        .sum::<u64>()
+                });
                 for LevelJob { project, analysis } in batch {
+                    cache.degraded = false;
+                    if worker_closing.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    {
+                        let mut inflight = worker_inflight.lock().unwrap();
+                        *inflight = analysis.slot.map(|slot| (slot, analysis.key));
+                        worker_abort.store(worker_closing.load(Ordering::SeqCst), Ordering::SeqCst);
+                    }
+                    if worker_closing.load(Ordering::SeqCst) {
+                        return;
+                    }
                     let measured = measure_level(&analysis.analysis(&project), &mut cache);
+                    *worker_inflight.lock().unwrap() = None;
                     worker_level_busy.fetch_sub(1, Ordering::Relaxed);
                     if worker_closing.load(Ordering::Relaxed) {
                         return;
                     }
-                    // A failed measure is not cached: asked again, it is
-                    // retried rather than stuck at a wrong gain.
-                    let level = match measured {
-                        Ok(level) => Some(level),
+                    let outcome = match measured {
+                        Ok(level) => {
+                            level_logged.remove(&analysis.key);
+                            LevelOutcome::Measured(level)
+                        }
+                        // Superseded: asked again if still wanted.
+                        Err(ExportError::Cancelled) => LevelOutcome::Superseded,
+                        // Not cached as unity gain: retried after a backoff.
                         Err(e) => {
-                            eprintln!("[mix_buffers] level: {e}");
-                            None
+                            if level_logged.insert(analysis.key) {
+                                eprintln!("[mix_buffers] level: {e}");
+                            }
+                            LevelOutcome::Failed
                         }
                     };
-                    if level_tx.send((analysis.key, analysis.slot, level)).is_err() {
+                    if level_tx
+                        .send((
+                            analysis.key,
+                            analysis.slot,
+                            outcome,
+                            cache.degraded.then_some(retried),
+                        ))
+                        .is_err()
+                    {
                         return;
                     }
                 }
@@ -365,13 +482,19 @@ impl MixBufferCache {
             stretch_worker,
             stretch_rx,
             levels: HashMap::new(),
+            level_failures: HashMap::new(),
             last_level: HashMap::new(),
             level_used: HashSet::new(),
             queued_levels: Vec::new(),
             level_busy,
             level_worker,
             level_rx,
+            degraded: HashSet::new(),
+            retry,
             closing,
+            level_inflight,
+            level_abort,
+            plugins: None,
         }
     }
 
@@ -405,6 +528,9 @@ impl MixBufferCache {
     fn begin(&mut self, media_pass: bool) {
         self.in_pass = true;
         self.media_pass = media_pass;
+        if let (false, Some(plugins)) = (media_pass, &mut self.plugins) {
+            plugins.begin_pass();
+        }
         for stream in self.streams.values_mut() {
             stream.asked = false;
             stream.wanted.clear();
@@ -447,6 +573,11 @@ impl MixBufferCache {
         if self.media_pass {
             return;
         }
+        // The instances die here, on the UI thread: the mixer thread only
+        // ever holds clones of them.
+        if let Some(plugins) = &mut self.plugins {
+            plugins.sweep();
+        }
         let used = std::mem::take(&mut self.stretch_used);
         self.stretched.retain(|key, stretch| {
             let keep = used.contains(key);
@@ -459,9 +590,102 @@ impl MixBufferCache {
             .retain(|stretch| !stretch.cancelled.load(Ordering::Relaxed));
         let used = std::mem::take(&mut self.level_used);
         self.levels.retain(|key, _| used.contains(key));
+        self.level_failures.retain(|key, _| used.contains(key));
+        self.degraded
+            .retain(|key| self.levels.contains_key(key) || self.stretched.contains_key(key));
         let levels = &self.levels;
         self.queued_levels
             .retain(|analysis| levels.contains_key(&analysis.key));
+    }
+
+    /// Adopts the installed list in the live pool: see `Instances::refresh`.
+    /// Returns the instances dropped.
+    pub fn refresh_plugins(
+        &mut self,
+        known: Arc<[vv_plugin::PluginInfo]>,
+    ) -> Vec<Arc<dyn vv_plugin::HostedPlugin>> {
+        let dropped = self
+            .plugins
+            .as_mut()
+            .map(|plugins| plugins.refresh(known))
+            .unwrap_or_default();
+        self.retry.fetch_add(1, Ordering::Relaxed);
+        self.remeasure_degraded();
+        dropped
+    }
+
+    /// Lets plugins that failed be tried again, keeping the live ones.
+    pub fn clear_plugin_failures(&mut self) {
+        if let Some(plugins) = &mut self.plugins {
+            plugins.clear_failures();
+        }
+        self.retry.fetch_add(1, Ordering::Relaxed);
+        self.remeasure_degraded();
+    }
+
+    /// Drops what the workers rendered while a plugin was not made; the
+    /// next pass asks for it again (`last_level` plays meanwhile). Once per
+    /// rescan, so a plugin that keeps failing cannot loop.
+    fn remeasure_degraded(&mut self) {
+        for key in std::mem::take(&mut self.degraded) {
+            self.levels.remove(&key);
+            if let Some(Stretch::Ready(_) | Stretch::Failed) = self.stretched.get(&key) {
+                self.stretched.remove(&key);
+            }
+        }
+    }
+
+    fn plugins(&mut self) -> &mut vv_plugin::Instances {
+        self.plugins
+            .get_or_insert_with(|| vv_plugin::Instances::realtime(vv_plugin::installed()))
+    }
+
+    /// The instance playing under `live`, else one made for `aside` that no
+    /// mix uses: the pool's sweep drops its own copy at the next pass.
+    pub fn plugin_instance(
+        &mut self,
+        live: Option<u64>,
+        aside: u64,
+        effect: &vv_core::Vst3Effect,
+        sample_rate: u32,
+    ) -> Option<Arc<dyn vv_plugin::HostedPlugin>> {
+        let plugins = self.plugins();
+        if let Some(instance) = live.and_then(|key| plugins.instance(key)) {
+            return Some(instance);
+        }
+        plugins.get(PluginRequest {
+            key: aside,
+            effect,
+            sample_rate,
+            process: true,
+        });
+        plugins.instance(aside)
+    }
+
+    /// The instances open editors drive, by live key; see `Instances::set_held`.
+    pub fn hold_plugins(&mut self, held: Vec<(u64, Arc<dyn vv_plugin::HostedPlugin>)>) {
+        if let Some(plugins) = &mut self.plugins {
+            plugins.set_held(held);
+        }
+    }
+
+    pub fn service_plugin_restarts(&self) {
+        if let Some(plugins) = &self.plugins {
+            plugins.service_restarts();
+        }
+    }
+
+    pub fn plugin_latency(&self, key: u64) -> Option<u32> {
+        self.plugins.as_ref()?.instance(key).map(|p| p.latency())
+    }
+
+    /// Whether the pool has scanned `effect`'s plugin; `None` without a pool.
+    pub fn plugin_known(&self, effect: &vv_core::Vst3Effect) -> Option<bool> {
+        self.plugins.as_ref().map(|p| p.knows(effect))
+    }
+
+    pub fn plugin_failed(&self, key: u64) -> bool {
+        self.plugins.as_ref().is_some_and(|p| p.failed(key))
     }
 
     /// Frames `frames` of `stream` of `path`, as far as decoded; for the
@@ -496,14 +720,11 @@ impl MixBufferCache {
             .or_default();
         entry.asked = true;
         if entry.missing {
-            let retry = entry
-                .missing_at
-                .is_some_and(|at| at.elapsed() >= MISSING_RETRY);
-            if !retry {
+            if !entry.backoff.as_ref().is_some_and(Backoff::elapsed) {
                 return ClipAudio::Missing;
             }
             entry.missing = false;
-            entry.missing_at = None;
+            entry.backoff = None;
         }
         let first_block = needed.start / BLOCK_FRAMES;
         let limit = entry.end.or(entry.ends_before).unwrap_or(u64::MAX);
@@ -687,7 +908,7 @@ impl MixBufferCache {
                             (a, b) => a.or(b),
                         };
                         if missing && !stream.missing {
-                            stream.missing_at = Some(Instant::now());
+                            stream.backoff = Some(Backoff::new());
                         }
                         stream.missing |= missing;
                     }
@@ -704,8 +925,17 @@ impl MixBufferCache {
             self.unreported_blocks = false;
             self.last_block_report = Some(now);
         }
-        while let Ok((key, result)) = self.stretch_rx.try_recv() {
+        while let Ok((key, result, degraded)) = self.stretch_rx.try_recv() {
             if let Some(entry) = self.stretched.get_mut(&key) {
+                if let Some(started) = degraded {
+                    if started != self.retry.load(Ordering::Relaxed) {
+                        // Rendered on the pool a rescan replaced: asked again.
+                        self.stretched.remove(&key);
+                        changed = true;
+                        continue;
+                    }
+                    self.degraded.insert(key);
+                }
                 *entry = match result {
                     Ok(stretched) => Stretch::Ready(stretched),
                     Err(e) => {
@@ -716,11 +946,18 @@ impl MixBufferCache {
                 changed = true;
             }
         }
-        while let Ok((key, slot, level)) = self.level_rx.try_recv() {
-            match level {
-                Some(level) => {
-                    if let Some(entry) = self.levels.get_mut(&key) {
+        while let Ok((key, slot, outcome, degraded)) = self.level_rx.try_recv() {
+            match outcome {
+                LevelOutcome::Measured(level) => {
+                    self.level_failures.remove(&key);
+                    let stale = degraded.is_some_and(|s| s != self.retry.load(Ordering::Relaxed));
+                    if stale {
+                        self.levels.remove(&key);
+                    } else if let Some(entry) = self.levels.get_mut(&key) {
                         *entry = Some(level);
+                        if degraded.is_some() {
+                            self.degraded.insert(key);
+                        }
                         changed = true;
                     }
                     if let Some(slot) = slot {
@@ -729,20 +966,22 @@ impl MixBufferCache {
                 }
                 // Asked again, it is measured again: removing an entry
                 // still asked for must trigger the rebuild that re-queues it.
-                None => {
+                LevelOutcome::Superseded => {
                     changed |= self.levels.remove(&key).is_some();
+                }
+                LevelOutcome::Failed => {
+                    if self.levels.remove(&key).is_some() {
+                        self.level_failures.insert(key, Backoff::new());
+                    }
                 }
             }
         }
-        // An idle stream never asks `lookup` again on its own: once its
-        // backoff elapses, report it changed so a rebuild asks for it and
-        // gives it a chance to retry.
-        changed |= self.streams.values().any(|stream| {
-            stream.missing
-                && stream
-                    .missing_at
-                    .is_some_and(|at| at.elapsed() >= MISSING_RETRY)
-        });
+        // An idle cache never asks again on its own: once a backoff elapses,
+        // report it changed so a rebuild asks for it and retries.
+        let streams = self.streams.values_mut().filter_map(|s| s.backoff.as_mut());
+        for backoff in streams.chain(self.level_failures.values_mut()) {
+            changed |= backoff.report();
+        }
         changed
     }
 
@@ -750,6 +989,7 @@ impl MixBufferCache {
     /// are idle, with a copy of `project` to render them from. Every frame:
     /// a worker becoming idle takes the jobs waiting.
     pub fn send_jobs(&mut self, project: &Project) {
+        self.abort_outdated_level();
         let idle = |busy: &AtomicUsize| busy.load(Ordering::Relaxed) == 0;
         let levels = !self.queued_levels.is_empty() && idle(&self.level_busy);
         let stretches = !self.queued_stretches.is_empty() && idle(&self.stretch_busy);
@@ -779,16 +1019,36 @@ impl MixBufferCache {
         }
     }
 
-    /// When a missing stream is next due to retry, the earliest if several:
-    /// idle (nothing else asking for a rebuild), it is otherwise never
-    /// asked again once past this. The caller schedules a repaint for it.
+    /// When a failed decode or measure is next due to retry, the earliest if
+    /// several: idle (nothing else asking for a rebuild), it is otherwise
+    /// never asked again. The caller schedules a repaint for it.
     pub fn next_missing_retry(&self) -> Option<Instant> {
-        self.streams
-            .values()
-            .filter(|stream| stream.missing)
-            .filter_map(|stream| stream.missing_at)
-            .map(|at| at + MISSING_RETRY)
-            .min()
+        let now = Instant::now();
+        let streams = self.streams.values().filter_map(|s| s.backoff.as_ref());
+        let due = streams
+            .chain(self.level_failures.values())
+            .filter_map(Backoff::deadline)
+            .min()?;
+        // Overdue: `poll` has not run since (it clears it), so check back
+        // later rather than repainting nonstop.
+        Some(if due > now {
+            due
+        } else {
+            now + BLOCK_REBUILD_INTERVAL
+        })
+    }
+
+    /// Stops the measure in flight when nothing asks for its key any more
+    /// and a newer analysis of its slot waits: a wanted measure is never
+    /// stopped.
+    fn abort_outdated_level(&self) {
+        let inflight = self.level_inflight.lock().unwrap();
+        if let Some((slot, key)) = *inflight
+            && !self.levels.contains_key(&key)
+            && self.queued_levels.iter().any(|a| a.slot == Some(slot))
+        {
+            self.level_abort.store(true, Ordering::SeqCst);
+        }
     }
 
     #[cfg(test)]
@@ -804,6 +1064,13 @@ impl MixBufferCache {
 }
 
 /// In memory in this crate's tests: they would fill the user's cache.
+fn retry_failures(cache: &mut LevelCache, retry: &AtomicU64, retried: &mut u64) {
+    let now = retry.load(Ordering::Relaxed);
+    if std::mem::replace(retried, now) != now {
+        cache.clear_plugin_failures();
+    }
+}
+
 fn worker_levels() -> LevelCache {
     if cfg!(test) {
         LevelCache::default()
@@ -824,12 +1091,21 @@ impl Drop for MixBufferCache {
                 cancelled.store(true, Ordering::Relaxed);
             }
         }
-        self.closing.store(true, Ordering::Relaxed);
+        self.closing.store(true, Ordering::SeqCst);
+        self.level_abort.store(true, Ordering::SeqCst);
     }
 }
 
 /// Every buffer is at the `sample_rate`/`channels` given to `spawn`.
 impl AudioSource for MixBufferCache {
+    fn plugin(&mut self, request: PluginRequest<'_>) -> Option<PluginHandle> {
+        self.plugins().get(request)
+    }
+
+    fn plugin_build(&mut self, effect: &vv_core::Vst3Effect) -> Option<u64> {
+        self.plugins().build(effect)
+    }
+
     /// The mixer always asks for frames: a whole file is never held.
     fn file(&mut self, _path: &Path, _stream: usize) -> ClipAudio {
         ClipAudio::Missing
@@ -860,9 +1136,11 @@ impl AudioSource for MixBufferCache {
             cancelled: cancelled.clone(),
             input: match request.input {
                 StretchInput::File { path, stream } => OwnedInput::File(path.to_path_buf(), stream),
-                StretchInput::Nested { timeline, depth } => {
-                    OwnedInput::Nested(timeline.clone(), depth)
-                }
+                StretchInput::Nested {
+                    timeline,
+                    depth,
+                    scope,
+                } => OwnedInput::Nested(timeline.clone(), depth, scope),
             },
             frames: request.frames,
             tempo: request.tempo,
@@ -883,6 +1161,10 @@ impl AudioSource for MixBufferCache {
             Some(Some(level)) => LevelReading::Ready(*level),
             Some(None) => LevelReading::Pending(last),
             None => {
+                if self.level_failures.get(&key).is_some_and(|b| !b.elapsed()) {
+                    return LevelReading::Pending(last);
+                }
+                self.level_failures.remove(&key);
                 self.queued_levels.push(OwnedAnalysis {
                     key,
                     slot: analysis.slot,
@@ -891,6 +1173,8 @@ impl AudioSource for MixBufferCache {
                     mode: analysis.mode,
                     format: (analysis.sample_rate, analysis.channels),
                     segments: analysis.segments,
+                    dry: analysis.dry,
+                    scope: analysis.scope,
                 });
                 self.levels.insert(key, None);
                 LevelReading::Pending(last)
@@ -922,13 +1206,14 @@ fn take_batch(queue: &mut Vec<DecodeJob>, playhead: u64) -> Vec<DecodeJob> {
 /// Decodes the blocks of `jobs` (all of `path`) in one read,
 /// seeking to them, sending each block as soon as it is complete and
 /// stopping once the last job is. `false` if the receiver is gone (the
-/// worker must exit).
+/// worker must exit). `logged`: the paths whose failure was already printed.
 fn decode_blocks(
     path: &Path,
     jobs: &[DecodeJob],
     sample_rate: u32,
     channels: u16,
     decoded_tx: &mpsc::Sender<Decoded>,
+    logged: &mut HashSet<PathBuf>,
 ) -> bool {
     let mut streams: Vec<usize> = jobs.iter().map(|job| job.stream).collect();
     streams.sort_unstable();
@@ -1009,10 +1294,16 @@ fn decode_blocks(
     if receiver_gone {
         return false;
     }
+    // A file that stays missing is retried: only its first failure is logged.
     let formats = result.unwrap_or_else(|e| {
-        eprintln!("[mix_buffers] decode failed for {}: {e}", path.display());
+        if logged.insert(path.to_path_buf()) {
+            eprintln!("[mix_buffers] decode failed for {}: {e}", path.display());
+        }
         vec![None; streams.len()]
     });
+    if formats.iter().any(Option::is_some) {
+        logged.remove(path);
+    }
     for ((job, last), filled_to) in jobs.iter().zip(filling).zip(filled_to) {
         let slot = slot_of(job.stream);
         let missing = formats[slot].is_none();

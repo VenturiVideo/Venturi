@@ -586,3 +586,21 @@ fn retime_keeps_the_clip_speed() {
     assert_eq!(clip.rate(), rate_25.divided_by(Rational::new(2, 1)));
     assert_eq!(clip.conform_rate(), rate_25);
 }
+
+#[test]
+fn strips_walk_the_track_mixes_in_order_then_the_master() {
+    let mut tl = Timeline {
+        name: "T".into(),
+        fps: Rational::new(25, 1),
+        resolution: (1920, 1080),
+        tracks: vec![Track::new(TrackKind::Audio), Track::new(TrackKind::Audio)],
+        markers: Vec::new(),
+        master: Default::default(),
+    };
+    for (i, strip) in tl.strips_mut().enumerate() {
+        strip.gain_db = i as f32;
+    }
+    let gains: Vec<f32> = tl.strips().map(|s| s.gain_db).collect();
+    assert_eq!(gains, [0.0, 1.0, 2.0]);
+    assert_eq!(tl.master.gain_db, 2.0);
+}

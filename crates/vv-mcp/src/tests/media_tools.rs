@@ -196,6 +196,45 @@ fn audio_levels_of_a_media_and_of_the_timeline() {
 }
 
 #[test]
+fn timeline_audio_levels_wait_for_the_plugin_scan() {
+    let dir = test_dir("levels-scan");
+    let path = silence_then_tone(&dir);
+    let mut session = Session::default();
+    let media = media_id(&import(&mut session, &[&path]));
+    let timeline = timeline_from(&mut session, &media);
+    insert(&mut session, &timeline, &media, 0);
+    let id = ids::timeline_id(&session.project, &timeline).unwrap();
+    let mut effect = vv_core::AudioEffect::new(vv_core::AudioEffectKind::Vst3(
+        vv_plugin::testing::fixture_effect_of("0123456789ABCDEF0123456789ABCDEF", &[]),
+    ));
+    effect.enabled = true;
+    session.project.timelines[id].master.effects.push(effect);
+    let fps = session.project.timelines[id].fps.as_f64().round() as i64;
+    let levels = || {
+        ToolCall::GetAudioLevels(AudioLevelsArgs {
+            media_id: None,
+            stream: None,
+            timeline_id: Some(timeline.clone()),
+            start: 0,
+            end: 2 * fps,
+            window: Some(fps),
+        })
+    };
+
+    vv_plugin::set_scanning(true);
+    let Dispatch::Handled(refused) = dispatch(&mut session, levels()) else {
+        panic!("levels must be refused before rendering");
+    };
+    assert_eq!(
+        refused.unwrap_err().0,
+        "plugins are being scanned, retry shortly"
+    );
+    vv_plugin::set_scanning(false);
+    let result = run_deferred(&mut session, levels()).unwrap().value;
+    assert_eq!(result["rms_db"].as_array().unwrap().len(), 2);
+}
+
+#[test]
 fn export_runs_in_the_background_and_reports_its_state() {
     let dir = test_dir("export");
     let mut session = Session::default();

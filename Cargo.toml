@@ -5,6 +5,8 @@ members = [
     "crates/vv-media",
     "crates/vv-render",
     "crates/vv-audio",
+    "crates/vv-plugin",
+    "crates/vv-plugin-fixture",
     "crates/vv-session",
     "crates/vv-vad",
     "crates/vv-mcp",

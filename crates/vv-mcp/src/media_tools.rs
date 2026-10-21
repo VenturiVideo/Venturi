@@ -180,6 +180,9 @@ pub(crate) fn audio_levels(session: &Session, args: AudioLevelsArgs) -> Dispatch
                 Ok(id) => id,
                 Err(e) => return Dispatch::Handled(Err(e)),
             };
+            if session.export_waits_for_scan(timeline, true) {
+                return fail("plugins are being scanned, retry shortly");
+            }
             let fps = project.timelines[timeline].fps;
             let snapshot = project.clone();
             on_worker(session, move || {
@@ -230,6 +233,9 @@ pub(crate) fn export(session: &mut Session, args: ExportArgs) -> ToolResult {
     settings.scale_percent = scale;
     if !args.audio {
         settings.audio = None;
+    }
+    if session.export_waits_for_scan(timeline, settings.audio.is_some()) {
+        return Err(ToolError("plugins are being scanned, retry shortly".into()));
     }
     let total = range.end - range.start;
     let (job, _) = session

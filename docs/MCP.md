@@ -14,9 +14,12 @@ Both speak MCP over stdin/stdout, so any MCP client can use them.
 
 ## Setup
 
-The commands below use `vv-app`, the binary built from source. With a
-release, use the AppImage itself (`/path/to/Venturi-x86_64.AppImage mcp`) or,
-on macOS, `/Applications/Venturi.app/Contents/MacOS/vv-app mcp`.
+The commands below use `vv-app`, the binary built from source. Installed by
+`install.sh` or `scripts/install-linux.sh`, the command is `venturi`
+(`~/.local/bin/venturi mcp`); the old `vv-app` there is removed, so update
+existing MCP configs. With a release AppImage, use the AppImage itself
+(`/path/to/Venturi-x86_64.AppImage mcp`) or, on macOS,
+`/Applications/Venturi.app/Contents/MacOS/vv-app mcp`.
 
 ### Headless
 

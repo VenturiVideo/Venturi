@@ -2,10 +2,15 @@
 //! `EffectStack`. The transforms are evaluated at runtime from
 //! the keyframes, never "baked" into the cached frames (see ARCHITECTURE.md).
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::{Deserialize, Serialize};
+use std::hash::Hasher;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::grade::{GradePreset, GradeTracks, GradeValue};
+use crate::stable_hash::StableHasher;
 
 pub use crate::id_map::{FolderId, Id, IdMap, MediaId, TimelineId};
 
@@ -2277,6 +2282,157 @@ impl AudioEffect {
             kind,
         }
     }
+
+    /// Pasted or duplicated plugins must not share their instance id.
+    pub fn with_fresh_ids(mut self) -> Self {
+        if let AudioEffectKind::Vst3(plugin) = &mut self.kind {
+            plugin.id = EffectId::fresh();
+        }
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct EffectId(pub u64);
+
+impl EffectId {
+    pub fn fresh() -> Self {
+        use std::hash::{BuildHasher, Hasher};
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        loop {
+            let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+            hasher.write_u64(COUNTER.fetch_add(1, Ordering::Relaxed));
+            let id = hasher.finish();
+            if id != 0 {
+                return Self(id);
+            }
+        }
+    }
+}
+
+/// The class id as the factory scan writes it: 32 uppercase hex chars of the TUID.
+/// Every identity check compares this form, so all other spellings go through here.
+pub fn canonical_class_id(cid: &str) -> String {
+    cid.to_ascii_uppercase()
+}
+
+/// Serde hook for class id fields: loads any spelling in canonical form.
+pub fn deserialize_class_id<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    String::deserialize(d).map(|cid| canonical_class_id(&cid))
+}
+
+/// A VST3 plugin in an insert slot, with the state it was saved with.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+pub struct Vst3Effect {
+    pub id: EffectId,
+    /// Canonical form, see `canonical_class_id`.
+    #[serde(deserialize_with = "deserialize_class_id")]
+    pub class_id: String,
+    pub name: String,
+    pub vendor: String,
+    pub version: String,
+    pub component_state: PluginState,
+    pub controller_state: PluginState,
+}
+
+impl Vst3Effect {
+    /// id, name and vendor are left out so a fresh-id copy keeps the same hash (level-cache keys).
+    pub fn content_hash(&self) -> u64 {
+        let mut hasher = StableHasher::default();
+        hasher.write(self.class_id.as_bytes());
+        hasher.write(self.version.as_bytes());
+        for state in [&self.component_state, &self.controller_state] {
+            hasher.write(&state.hash().to_le_bytes());
+        }
+        hasher.finish()
+    }
+}
+
+impl std::fmt::Debug for Vst3Effect {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Vst3Effect")
+            .field("id", &self.id)
+            .field("class_id", &self.class_id)
+            .field("name", &self.name)
+            .field("component_state", &self.component_state)
+            .field("controller_state", &self.controller_state)
+            .finish()
+    }
+}
+
+/// Opaque plugin state. Stored as base64 and printed as its length and hash.
+/// Shared bytes and a hash computed once: copies and comparisons stay cheap.
+/// An `Arc<Vec>` so `new` moves the buffer instead of copying it.
+#[derive(Clone)]
+pub struct PluginState {
+    bytes: Arc<Vec<u8>>,
+    hash: u64,
+}
+
+impl PluginState {
+    pub fn new(bytes: Vec<u8>) -> Self {
+        let mut hasher = StableHasher::default();
+        hasher.write(&bytes);
+        let hash = hasher.finish();
+        Self {
+            bytes: Arc::new(bytes),
+            hash,
+        }
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn hash(&self) -> u64 {
+        self.hash
+    }
+
+    pub fn shares_bytes_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.bytes, &other.bytes)
+    }
+}
+
+impl Default for PluginState {
+    fn default() -> Self {
+        Self::new(Vec::new())
+    }
+}
+
+impl PartialEq for PluginState {
+    fn eq(&self, other: &Self) -> bool {
+        self.hash == other.hash && self.bytes == other.bytes
+    }
+}
+
+impl Eq for PluginState {}
+
+impl std::fmt::Debug for PluginState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "PluginState {{ len: {}, hash: {:016x} }}",
+            self.bytes.len(),
+            self.hash
+        )
+    }
+}
+
+impl Serialize for PluginState {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&BASE64.encode(self.bytes.as_slice()))
+    }
+}
+
+impl<'de> Deserialize<'de> for PluginState {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        BASE64
+            .decode(text)
+            .map(Self::new)
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 /// An audio effect of the mixer. The variety is open: new variants for new
@@ -2297,6 +2453,7 @@ pub enum AudioEffectKind {
     /// comes out of both.
     Mono,
     Equalizer(Equalizer),
+    Vst3(Vst3Effect),
 }
 
 impl AudioEffectKind {
@@ -2714,6 +2871,30 @@ pub struct Timeline {
 }
 
 impl Timeline {
+    /// Every channel strip: the tracks' mixes in order, then the master.
+    pub fn strips(&self) -> impl Iterator<Item = &ChannelStrip> {
+        self.tracks
+            .iter()
+            .map(|track| &track.mix)
+            .chain([&self.master])
+    }
+
+    pub fn strips_mut(&mut self) -> impl Iterator<Item = &mut ChannelStrip> {
+        self.tracks
+            .iter_mut()
+            .map(|track| &mut track.mix)
+            .chain([&mut self.master])
+    }
+
+    /// A copy of a timeline must not share plugin instance ids with its source.
+    pub(crate) fn refresh_effect_ids(&mut self) {
+        for strip in self.strips_mut() {
+            for effect in &mut strip.effects {
+                *effect = effect.clone().with_fresh_ids();
+            }
+        }
+    }
+
     pub fn marker(&self, id: MarkerId) -> Option<&Marker> {
         self.markers.iter().find(|m| m.id == id)
     }
@@ -2782,6 +2963,18 @@ impl Timeline {
         self.tracks_of_kind(kind)
             .map(|(i, _)| i)
             .nth(number.checked_sub(1)?)
+    }
+
+    pub fn has_audio_clips(&self) -> bool {
+        self.tracks_of_kind(TrackKind::Audio)
+            .any(|(_, t)| !t.clips.is_empty())
+    }
+
+    /// Whether an enabled VST3 effect sits on one of its own strips.
+    fn has_enabled_plugin(&self) -> bool {
+        self.strips()
+            .flat_map(|strip| &strip.effects)
+            .any(|effect| effect.enabled && matches!(effect.kind, AudioEffectKind::Vst3(_)))
     }
 
     /// The tracks of kind `kind`, with their absolute index in `tracks`.
@@ -2926,6 +3119,31 @@ pub struct ProjectView {
 }
 
 impl Project {
+    /// Whether `id` plays an enabled VST3, in itself or in the compounds it
+    /// holds. Conservative: it also counts muted tracks and disabled clips.
+    pub fn timeline_uses_enabled_plugins(&self, id: TimelineId) -> bool {
+        self.holds_enabled_plugin(id, 0)
+    }
+
+    fn holds_enabled_plugin(&self, id: TimelineId, depth: u32) -> bool {
+        let Some(timeline) = self.timelines.get(id) else {
+            return false;
+        };
+        if depth >= MAX_COMPOUND_DEPTH {
+            return false;
+        }
+        timeline.has_enabled_plugin()
+            || timeline
+                .tracks
+                .iter()
+                .flat_map(|track| &track.clips)
+                .filter_map(|clip| match &clip.source {
+                    ClipSource::Media(media) => self.media_pool.get(*media)?.compound,
+                    _ => None,
+                })
+                .any(|nested| self.holds_enabled_plugin(nested, depth + 1))
+    }
+
     pub fn alloc_clip_id(&mut self) -> ClipId {
         let id = ClipId(self.next_clip_id);
         self.next_clip_id += 1;
@@ -2970,9 +3188,10 @@ impl Project {
         format!("{TIMELINE_NAME_PREFIX}{number}")
     }
 
-    /// Clip and link group ids are unique project-wide: a timeline coming
-    /// from elsewhere needs fresh ones.
+    /// Clip, link group and plugin effect ids are unique project-wide: a
+    /// timeline coming from elsewhere needs fresh ones.
     pub(crate) fn reallocate_clip_ids(&mut self, timeline: &mut Timeline) {
+        timeline.refresh_effect_ids();
         let mut groups = std::collections::HashMap::new();
         for track in &mut timeline.tracks {
             let mut clip_ids = std::collections::HashMap::new();
@@ -3173,3 +3392,7 @@ mod keyframe_tests;
 #[cfg(test)]
 #[path = "tests/model_timeline.rs"]
 mod timeline_tests;
+
+#[cfg(test)]
+#[path = "tests/model_audio_effect.rs"]
+mod audio_effect_tests;

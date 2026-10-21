@@ -94,6 +94,12 @@ type (so the file manager opens projects with Venturi) into `~/.local` (or
 scripts/install-linux.sh              # --uninstall to remove, --prefix DIR to change
 ```
 
+Both this script and the release installer use the command `venturi` and the
+repository's desktop entry, icons and `.vvproj` association. When installed
+into the same directories, the last installer run wins. Both remove the
+legacy `bin/vv-app` binary on installation and uninstallation, and say so
+when it was there, since MCP configs pointing at it stop working.
+
 ## Test
 
 ```sh
@@ -184,7 +190,8 @@ export uses FFmpeg's native AAC encoder.
 scripts/build-macos.sh
 ```
 
-Must run on a Mac with the Xcode command line tools and `pkgconf`. Produces
+Must run on a Mac with the Xcode command line tools, `pkgconf`, `meson` and
+`ninja` (`brew install pkgconf meson ninja`; meson builds rubberband). Produces
 `target/macos/Venturi.app` and `target/macos/Venturi-arm64.dmg`, with FFmpeg
 (libx264, librubberband, zlib, libmp3lame, libopus, libvorbis,
 VideoToolbox) bundled in

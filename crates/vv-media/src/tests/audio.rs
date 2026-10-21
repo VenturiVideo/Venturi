@@ -405,10 +405,8 @@ fn a_seeked_resampled_decode_matches_the_full_decode() {
         let path = test_file(name, &chirp_at(rate), &["-c:a", codec], false);
         assert_seek_matches_full_decode(&path, tolerance);
     }
-    // Not up to the end: at 44.1 kHz AAC differs in its last 10 ms after a
-    // seek, resampled or not (TODO.md).
     let path = test_file("chirp44.mp4", &chirp_at(44_100), &["-c:a", "aac"], true);
-    assert_seeks_match_full_decode(&path, 1e-4, &SEEK_OFFSETS[..3]);
+    assert_seeks_match_full_decode(&path, 1e-4, &SEEK_OFFSETS);
 }
 
 #[test]
