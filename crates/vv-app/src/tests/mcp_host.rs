@@ -289,6 +289,17 @@ fn an_agent_export_shows_in_the_progress_window() {
 
     let job: vv_session::JobId = started.value["job_id"].as_str().unwrap().parse().unwrap();
     assert_eq!(app.export.as_ref().map(|e| e.job), Some(job));
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while app.session.has_running_jobs() {
+        assert!(Instant::now() < deadline, "export never finished");
+        app.poll_session(&ctx);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    app.poll_session(&ctx);
+    let progress = app.export.as_ref().unwrap().progress.lock().unwrap();
+    assert!(progress.done);
+    assert!(progress.error.is_none(), "{:?}", progress.error);
 }
 
 #[test]
