@@ -872,11 +872,7 @@ struct TexturePool {
     /// Resolved, in `OUTPUT_FORMAT`.
     outputs: Vec<wgpu::Texture>,
     i420: Option<I420Buffers>,
-    /// Uploaded masks of recent titles, keyed by `TitleRender::id`.
-    titles: Vec<(u64, Vec<CachedTitleMask>)>,
 }
-
-type CachedTitleMask = (wgpu::Texture, wgpu::TextureView, vv_core::Rgba);
 
 /// Buffer of the I420 conversion, for the size of the last frame.
 struct I420Buffers {
@@ -1207,11 +1203,6 @@ impl Compositor {
         pool.planes
             .iter()
             .chain(&pool.outputs)
-            .chain(
-                pool.titles
-                    .iter()
-                    .flat_map(|(_, layers)| layers.iter().map(|(t, _, _)| t)),
-            )
             .chain(scratch.iter())
             .map(bytes)
             .sum()
@@ -1903,7 +1894,7 @@ impl Compositor {
                     output.timeline_size,
                     (output.width, output.height),
                 );
-                let layers = self.title_views(&render);
+                let layers = self.title_views(&render, &mut rec.planes);
                 let mut groups = Vec::with_capacity(layers.len());
                 for (mask_view, color) in &layers {
                     // Shadow, background and text are distinct passes: each one
@@ -2046,7 +2037,7 @@ impl Compositor {
                     output.timeline_size,
                     (output.width, output.height),
                 );
-                self.title_views(&render)
+                self.title_views(&render, planes)
                     .iter()
                     .map(|(mask_view, color)| {
                         self.title_bind_group(
@@ -2403,59 +2394,21 @@ impl Compositor {
         out
     }
 
-    /// Uploads the three planes of the layer and the bind group ready for the pass:
-    /// crop/zoom, letterbox and YUV→RGB conversion are all in the
-    /// shader, here only its inputs are prepared.
-    /// Uploaded views of `render`'s masks, cached by `TitleRender::id`.
     fn title_views(
         &self,
         render: &crate::text::TitleRender,
+        planes: &mut Vec<wgpu::Texture>,
     ) -> Vec<(wgpu::TextureView, vv_core::Rgba)> {
-        const TITLE_POOL_CAP: usize = 16;
-        let mut pool = self.pool.lock().unwrap();
-        if let Some(pos) = pool.titles.iter().position(|(id, _)| *id == render.id) {
-            let entry = pool.titles.remove(pos);
-            let out = entry
-                .1
-                .iter()
-                .map(|(_, view, color)| (view.clone(), *color))
-                .collect();
-            pool.titles.push(entry);
-            return out;
-        }
-        drop(pool);
-        let mut uploaded = Vec::with_capacity(render.layers.len());
-        let mut out = Vec::with_capacity(render.layers.len());
-        for (mask, color) in &render.layers {
-            let texture = self.device.create_texture_with_data(
-                &self.queue,
-                &wgpu::TextureDescriptor {
-                    label: Some("vv-render title mask"),
-                    size: wgpu::Extent3d {
-                        width: mask.width,
-                        height: mask.height,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: PLANE_FORMAT,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                    view_formats: &[],
-                },
-                wgpu::util::TextureDataOrder::LayerMajor,
-                &mask.data,
-            );
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            out.push((view.clone(), *color));
-            uploaded.push((texture, view, *color));
-        }
-        let mut pool = self.pool.lock().unwrap();
-        if pool.titles.len() >= TITLE_POOL_CAP {
-            pool.titles.remove(0);
-        }
-        pool.titles.push((render.id, uploaded));
-        out
+        render
+            .layers
+            .iter()
+            .map(|(mask, color)| {
+                let texture = self.plane_texture(&mask.data, mask.width, mask.height);
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                planes.push(texture);
+                (view, *color)
+            })
+            .collect()
     }
 
     fn title_bind_group(
@@ -2505,6 +2458,9 @@ impl Compositor {
         )
     }
 
+    /// Uploads the three planes of the layer and the bind group ready for the pass:
+    /// crop/zoom, letterbox and YUV→RGB conversion are all in the
+    /// shader, here only its inputs are prepared.
     fn layer_bind_group(
         &self,
         planes: &mut Vec<wgpu::Texture>,

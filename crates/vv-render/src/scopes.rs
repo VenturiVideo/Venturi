@@ -261,3 +261,7 @@ impl Scopes {
         texture
     }
 }
+
+#[cfg(test)]
+#[path = "tests/scopes.rs"]
+mod tests;
