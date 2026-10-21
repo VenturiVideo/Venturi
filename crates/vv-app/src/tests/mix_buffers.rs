@@ -297,7 +297,14 @@ fn every_stream_of_a_file_starts_playing_before_any_of_them_is_fully_decoded() {
         })
         .collect();
     let (tx, rx) = mpsc::channel();
-    assert!(decode_blocks(&path, &jobs, 48_000, 2, &tx));
+    assert!(decode_blocks(
+        &path,
+        &jobs,
+        48_000,
+        2,
+        &tx,
+        &mut HashSet::new()
+    ));
     drop(tx);
     let messages: Vec<Decoded> = rx.iter().collect();
     let first_done = messages
@@ -799,10 +806,10 @@ fn a_degraded_result_from_before_a_rescan_is_asked_again() {
     cache.stretched.insert(4, Stretch::Pending(Arc::default()));
     let blocks = SampleBlocks::contiguous(Arc::new(Vec::new()), 0, 1);
     level_tx
-        .send((1, None, Some(1.0), Some(generation - 1)))
+        .send((1, None, LevelOutcome::Measured(1.0), Some(generation - 1)))
         .unwrap();
     level_tx
-        .send((2, None, Some(1.0), Some(generation)))
+        .send((2, None, LevelOutcome::Measured(1.0), Some(generation)))
         .unwrap();
     stretch_tx
         .send((3, Ok(blocks.clone()), Some(generation - 1)))
@@ -925,4 +932,147 @@ fn a_rescan_with_one_more_plugin_keeps_the_live_instances() {
     assert!(cache.plugin_latency(1).is_some());
     assert!(cache.plugins.as_ref().unwrap().knows(&effect_of("B")));
     assert_eq!(cache.retry.load(Ordering::Relaxed), generation + 1);
+}
+
+fn elapse(backoff: &mut Backoff) {
+    backoff.since -= MISSING_RETRY;
+}
+
+fn missing_path() -> PathBuf {
+    std::env::temp_dir().join("vv-app-mix-buffers-test/absent.wav")
+}
+
+/// A cache that asked for `path` in a timeline pass and found it missing.
+fn missing_in_timeline(path: &Path) -> MixBufferCache {
+    let mut cache = MixBufferCache::spawn(48_000, 1);
+    cache.begin_pass();
+    read(&mut cache, path, 0..SEC);
+    cache.sweep_unused();
+    wait_done(&mut cache);
+    cache.begin_pass();
+    assert!(matches!(read(&mut cache, path, 0..SEC), ClipAudio::Missing));
+    cache.sweep_unused();
+    cache
+}
+
+fn stream_backoff<'a>(cache: &'a mut MixBufferCache, path: &Path) -> &'a mut Backoff {
+    let stream = cache.streams.get_mut(&(path.to_path_buf(), 0)).unwrap();
+    assert!(stream.missing);
+    stream.backoff.as_mut().unwrap()
+}
+
+#[test]
+fn an_idle_missing_stream_is_retried_once_its_backoff_elapsed() {
+    let path = missing_path();
+    let mut cache = missing_in_timeline(&path);
+    assert!(!cache.poll(), "not due yet");
+    elapse(stream_backoff(&mut cache, &path));
+
+    assert!(cache.poll(), "due: a rebuild must ask for it again");
+    cache.begin_pass();
+    assert!(matches!(
+        read(&mut cache, &path, 0..SEC),
+        ClipAudio::Partial(_)
+    ));
+    cache.sweep_unused();
+    wait_done(&mut cache);
+
+    assert!(stream_backoff(&mut cache, &path).since.elapsed() < MISSING_RETRY);
+    assert!(matches!(
+        read(&mut cache, &path, 0..SEC),
+        ClipAudio::Missing
+    ));
+}
+
+#[test]
+fn a_due_retry_is_reported_once_even_if_nothing_asks_the_stream_again() {
+    let path = missing_path();
+    let mut cache = missing_in_timeline(&path);
+    // The preview of a media parks the timeline's streams without asking them.
+    cache.begin_media_pass();
+    cache.sweep_unused();
+    assert!(cache.streams.contains_key(&(path.clone(), 0)));
+    elapse(stream_backoff(&mut cache, &path));
+    assert!(cache.next_missing_retry().is_some());
+
+    assert!(cache.poll());
+    for _ in 0..3 {
+        assert!(!cache.poll(), "reported already");
+        assert!(cache.next_missing_retry().is_none(), "no repaint to wait");
+    }
+}
+
+#[test]
+fn a_failed_level_measure_is_asked_again_only_after_its_backoff() {
+    let mut cache = MixBufferCache::spawn(48_000, 1);
+    let (level_tx, level_rx) = mpsc::channel();
+    cache.level_rx = level_rx;
+    let (project, timeline) = (Project::default(), queued_timeline());
+    let key = analysis(&project, &timeline, 1).key();
+    assert!(matches!(
+        cache.level(analysis(&project, &timeline, 1)),
+        LevelReading::Pending(None)
+    ));
+    assert_eq!(cache.queued_levels.len(), 1);
+    cache.queued_levels.clear();
+
+    level_tx
+        .send((key, None, LevelOutcome::Failed, None))
+        .unwrap();
+    assert!(!cache.poll(), "nothing to rebuild before the backoff");
+    assert!(matches!(
+        cache.level(analysis(&project, &timeline, 1)),
+        LevelReading::Pending(None)
+    ));
+    assert!(cache.queued_levels.is_empty(), "not asked again at once");
+    assert!(cache.next_missing_retry().is_some());
+
+    elapse(cache.level_failures.get_mut(&key).unwrap());
+    assert!(cache.poll(), "due: a rebuild must ask for it again");
+    assert!(!cache.poll(), "reported once");
+    cache.level(analysis(&project, &timeline, 1));
+    assert_eq!(cache.queued_levels.len(), 1);
+    assert_eq!(cache.levels[&key], None);
+    assert!(cache.level_failures.is_empty());
+}
+
+#[test]
+fn a_superseded_level_measure_is_asked_again_at_once() {
+    let mut cache = MixBufferCache::spawn(48_000, 1);
+    let (level_tx, level_rx) = mpsc::channel();
+    cache.level_rx = level_rx;
+    let (project, timeline) = (Project::default(), queued_timeline());
+    let key = analysis(&project, &timeline, 1).key();
+    cache.level(analysis(&project, &timeline, 1));
+    cache.queued_levels.clear();
+
+    level_tx
+        .send((key, None, LevelOutcome::Superseded, None))
+        .unwrap();
+    assert!(cache.poll());
+    assert!(cache.level_failures.is_empty());
+    cache.level(analysis(&project, &timeline, 1));
+    assert_eq!(cache.queued_levels.len(), 1);
+}
+
+#[test]
+fn a_file_that_keeps_failing_is_logged_once_until_it_decodes() {
+    let good = sine_wav("logged.wav", 1);
+    let bad = good.with_file_name("logged-then-present.wav");
+    let _ = std::fs::remove_file(&bad);
+    let (tx, _rx) = mpsc::channel();
+    let mut logged = HashSet::new();
+    let decode = |path: &Path, logged: &mut HashSet<PathBuf>| {
+        let jobs = [job(0, path.to_str().unwrap(), 0, 0..1, 0)];
+        assert!(decode_blocks(path, &jobs, 48_000, 1, &tx, logged));
+    };
+
+    decode(&bad, &mut logged);
+    assert!(logged.contains(&bad));
+    decode(&good, &mut logged);
+    assert!(logged.contains(&bad), "another file's success");
+    std::fs::copy(&good, &bad).unwrap();
+    decode(&bad, &mut logged);
+    assert!(logged.is_empty(), "decoded again: logged again if it fails");
+    std::fs::remove_file(&bad).unwrap();
 }
