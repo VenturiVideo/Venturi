@@ -1130,6 +1130,8 @@ fn collect_clips(
                     span.step.to_bits(),
                     (sample_rate, channels),
                 ));
+                // A truncated request yields no audio past its stretched length.
+                let reach = ((frames.end - frames.start) as f64 / span.step).ceil() as u64 + 1;
                 let request = StretchRequest {
                     project,
                     input,
@@ -1142,7 +1144,7 @@ fn collect_clips(
                 match source.stretched(request) {
                     ClipAudio::Ready(stretched) => ClipInput::Blocks(stretched),
                     ClipAudio::Pending | ClipAudio::Partial(_) => {
-                        pending.push(span.start..span.start + span.len);
+                        pending.push(span.start..span.start + span.len.min(reach));
                         continue;
                     }
                     ClipAudio::Missing => continue,
