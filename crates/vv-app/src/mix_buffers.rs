@@ -153,6 +153,23 @@ struct StreamCache {
 }
 
 impl StreamCache {
+    /// Cancels and forgets the jobs left without a block `wanted` accepts.
+    /// Takes the job list, not `&mut self`: callers hold other field borrows.
+    fn retain_jobs(
+        jobs: &mut Vec<Job>,
+        job_keys: &mut HashMap<u64, Key>,
+        wanted: impl Fn(u64) -> bool,
+    ) {
+        jobs.retain(|job| {
+            let keep = job.blocks.clone().any(&wanted);
+            if !keep {
+                job.cancelled.store(true, Ordering::Relaxed);
+                job_keys.remove(&job.id);
+            }
+            keep
+        });
+    }
+
     fn in_flight(&self, block: u64) -> bool {
         self.jobs.iter().any(|job| job.blocks.contains(&block))
     }
@@ -500,14 +517,7 @@ impl MixBufferCache {
             if !parked {
                 blocks.retain(|index, _| wanted.contains_key(index));
             }
-            jobs.retain(|job| {
-                let keep = job.blocks.clone().any(|index| wanted.contains_key(&index));
-                if !keep {
-                    job.cancelled.store(true, Ordering::Relaxed);
-                    job_keys.remove(&job.id);
-                }
-                keep
-            });
+            StreamCache::retain_jobs(jobs, job_keys, |index| wanted.contains_key(&index));
             *asked || parked
         });
         self.rebalance();
@@ -752,13 +762,8 @@ impl MixBufferCache {
                 .retain(|index, _| keep_set.contains(index) || !wanted.contains_key(index));
             dropped |= stream.blocks.len() < before;
             let job_keys = &mut self.job_keys;
-            stream.jobs.retain(|job| {
-                let keep = job.blocks.clone().any(|index| keep_set.contains(&index));
-                if !keep {
-                    job.cancelled.store(true, Ordering::Relaxed);
-                    job_keys.remove(&job.id);
-                }
-                keep
+            StreamCache::retain_jobs(&mut stream.jobs, job_keys, |index| {
+                keep_set.contains(&index)
             });
             let mut missing: Vec<(u64, u64)> = keep
                 .into_iter()
