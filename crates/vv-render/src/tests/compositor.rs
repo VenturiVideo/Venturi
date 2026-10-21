@@ -2715,3 +2715,37 @@ fn an_empty_matte_hides_the_layer() {
     let (center, _) = matted_red_over_blue(&[], vv_core::MatteMode::Alpha);
     assert_close_rgba(center, [0, 0, 255, 255]);
 }
+
+#[test]
+fn changing_titles_reuse_the_same_mask_planes() {
+    let compositor = Compositor::new_headless();
+    let mut title = vv_core::TitleParams {
+        size: 40.0,
+        background: vv_core::TitleBackground {
+            enabled: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut previous: Option<Vec<wgpu::Texture>> = None;
+    for i in 0..20 {
+        title.content = vv_core::Keyframed::constant(format!("Title {i}"));
+        compositor.render_layers(
+            &[Layer::new(LayerContent::Text(&title), Transform::default())],
+            OutputFrame::exact(320, 180),
+        );
+        let pool = compositor.pool.lock().unwrap();
+        assert_eq!(
+            pool.planes.len(),
+            2,
+            "only background and text masks are pooled"
+        );
+        if let Some(expected) = &previous {
+            assert!(
+                pool.planes.iter().all(|t| expected.contains(t)),
+                "a changed title must reuse the textures"
+            );
+        }
+        previous = Some(pool.planes.clone());
+    }
+}

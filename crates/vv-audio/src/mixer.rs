@@ -323,7 +323,7 @@ impl Default for Channel {
 pub struct MixSnapshot {
     pub sample_rate: u32,
     pub channels: u16,
-    /// Sorted by track.
+    /// Sorted by (track, start).
     pub clips: Vec<MixClip>,
     /// Track and range of `clips` of each track with clips.
     groups: Vec<(usize, std::ops::Range<usize>)>,
@@ -2182,66 +2182,36 @@ fn add_resampled(buffer: &impl Frames, pos: f64, step: f64, gain: f32, out: &mut
         return;
     }
     let last = buffer.end().saturating_sub(1);
+    let at = |frame: u64, c: usize| {
+        buffer
+            .frame(frame.min(last))
+            .map_or(0.0, |samples| samples[c])
+    };
     let pos = pos.max(buffer.start() as f64);
     let i = pos as u64;
     if step < 1.0 {
         let t = (pos - i as f64) as f32;
-        let i0 = i.min(last);
-        let i1 = (i + 1).min(last);
-        if i0 == i1 {
-            if let Some(s0) = buffer.frame(i0) {
-                for (o, &v0) in out.iter_mut().zip(s0) {
-                    *o += v0 * gain;
-                }
-            }
-        } else if let Run::Samples(samples) = buffer.run(i0)
-            && samples.len() >= 2 * ch
-        {
-            let (s0, rest) = samples.split_at(ch);
-            let s1 = &rest[..ch];
-            for ((o, &v0), &v1) in out.iter_mut().zip(s0).zip(s1) {
-                *o += (v0 + (v1 - v0) * t) * gain;
-            }
-        } else {
-            let s0 = buffer.frame(i0);
-            let s1 = buffer.frame(i1);
-            for (c, o) in out.iter_mut().enumerate() {
-                let v0 = s0.map_or(0.0, |s| s[c]);
-                let v1 = s1.map_or(0.0, |s| s[c]);
-                *o += (v0 + (v1 - v0) * t) * gain;
-            }
+        let s0 = buffer.frame(i.min(last));
+        let s1 = buffer.frame((i + 1).min(last));
+        for (c, o) in out.iter_mut().enumerate() {
+            let v0 = s0.map_or(0.0, |s| s[c]);
+            let v1 = s1.map_or(0.0, |s| s[c]);
+            *o += (v0 + (v1 - v0) * t) * gain;
         }
     } else {
-        let n = (step as usize).max(1) as u64;
-        let end = i + n;
-        let unclamped_end = end.min(last);
-        let scale = gain / n as f32;
-        let mut cur = i.min(unclamped_end);
-        while cur < unclamped_end {
-            match buffer.run(cur) {
-                Run::Samples(samples) => {
-                    let avail = (samples.len() / ch) as u64;
-                    let take = avail.min(unclamped_end - cur).max(1);
-                    for frame in samples[..take as usize * ch].chunks_exact(ch) {
-                        for (o, &v) in out.iter_mut().zip(frame) {
-                            *o += v * scale;
-                        }
-                    }
-                    cur += take;
-                }
-                Run::Silence(frames) => {
-                    cur += frames.max(1).min(unclamped_end - cur);
-                }
-                Run::End => break,
-            }
-        }
-        let tail = end - unclamped_end;
-        if tail > 0
-            && let Some(last_frame) = buffer.frame(last)
+        let n = (step as usize).max(1);
+        if let Run::Samples(samples) = buffer.run(i)
+            && samples.len() / ch >= n
         {
-            let tail_scale = tail as f32 * scale;
-            for (o, &v) in out.iter_mut().zip(last_frame) {
-                *o += v * tail_scale;
+            for (c, o) in out.iter_mut().enumerate() {
+                let sum: f32 = samples[c..n * ch].iter().step_by(ch).copied().sum();
+                *o += sum / n as f32 * gain;
+            }
+        } else {
+            // Keep clamping and summation order across gaps and the buffer end.
+            for (c, o) in out.iter_mut().enumerate() {
+                let sum: f32 = (i..i + n as u64).map(|frame| at(frame, c)).sum();
+                *o += sum / n as f32 * gain;
             }
         }
     }

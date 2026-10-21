@@ -4046,22 +4046,17 @@ fn paint_clip_label(
     max_width: f32,
     color: egui::Color32,
 ) {
-    if max_width <= 0.0 || label.is_empty() {
+    let font = egui::FontId::proportional(LABEL_FONT_SIZE);
+    let min_text: String = label.chars().take(LABEL_MIN_CHARS).collect();
+    if min_text.is_empty() {
         return;
     }
-    let font = egui::FontId::proportional(LABEL_FONT_SIZE);
-    if max_width < LABEL_FONT_SIZE * LABEL_MIN_CHARS as f32 {
-        let min_end = label
-            .char_indices()
-            .nth(LABEL_MIN_CHARS)
-            .map_or(label.len(), |(idx, _)| idx);
-        let min_width = painter
-            .layout_no_wrap(label[..min_end].to_owned(), font.clone(), color)
-            .size()
-            .x;
-        if max_width < min_width {
-            return;
-        }
+    let min_width = painter
+        .layout_no_wrap(min_text, font.clone(), color)
+        .size()
+        .x;
+    if max_width < min_width {
+        return;
     }
     let mut job = egui::text::LayoutJob::simple_singleline(label.to_owned(), font, color);
     job.wrap = egui::text::TextWrapping::truncate_at_width(max_width);

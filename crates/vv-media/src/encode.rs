@@ -432,7 +432,6 @@ impl Encoder {
         let (luma, chroma) = i420.split_at(width * height);
         let (u, v) = chroma.split_at(chroma.len() / 2);
         let pts = video.next_pts;
-        video.next_pts += 1;
         if let Some(nv12) = &mut video.nv12 {
             fill_plane(nv12, 0, luma, width);
             interleave_chroma(nv12, u, v, chroma_width);
@@ -453,6 +452,7 @@ impl Encoder {
             yuv.set_kind(ffmpeg::picture::Type::None);
             video.encoder.send_frame(yuv)?;
         }
+        video.next_pts += 1;
         drain_packets(
             &mut self.octx,
             &mut video.encoder,

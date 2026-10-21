@@ -534,3 +534,7 @@ impl SmoothCut {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "tests/smooth_cut.rs"]
+mod tests;
