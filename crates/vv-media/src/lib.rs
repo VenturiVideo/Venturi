@@ -66,13 +66,20 @@ pub mod test_support {
     impl TempDir {
         pub fn new(prefix: &str) -> Self {
             static SEQ: AtomicU64 = AtomicU64::new(0);
-            let dir = std::env::temp_dir().join(format!(
-                "{prefix}-{}-{}",
-                std::process::id(),
-                SEQ.fetch_add(1, Ordering::Relaxed)
-            ));
-            std::fs::create_dir_all(&dir).unwrap();
-            Self(dir)
+            // `create_dir`, not `create_dir_all`: drop must only remove a
+            // directory this guard made, never a stale one from a reused PID.
+            loop {
+                let dir = std::env::temp_dir().join(format!(
+                    "{prefix}-{}-{}",
+                    std::process::id(),
+                    SEQ.fetch_add(1, Ordering::Relaxed)
+                ));
+                match std::fs::create_dir(&dir) {
+                    Ok(()) => return Self(dir),
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(e) => panic!("temp dir {}: {e}", dir.display()),
+                }
+            }
         }
 
         pub fn path(&self) -> &Path {
