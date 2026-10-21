@@ -820,6 +820,24 @@ fn a_pitch_corrected_compound_clip_stretches_its_nested_timeline() {
     assert_eq!(out[0], 0.9);
 }
 
+#[test]
+fn a_snapshot_is_not_ready_where_a_pitch_corrected_stretch_is_pending() {
+    let (project, compound) = project_with_long_compound();
+    let mut clip = sped_up_clip(compound, Rational::new(2, 1), 2);
+    clip.pitch_correction = true;
+    let tl = timeline(vec![audio_track(vec![clip])]);
+    let mut pending = FakeStretch::default();
+    let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut pending);
+    assert!(!snap.is_ready(0..20), "stretch pending");
+    assert!(snap.is_ready(1000..2000), "nothing plays there");
+    let mut ready = FakeStretch {
+        ready: true,
+        ..FakeStretch::default()
+    };
+    let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut ready);
+    assert!(snap.is_ready(0..20), "stretch ready");
+}
+
 /// Stretch keys of two pitch-corrected copies of `media`, one placement apart.
 fn copy_stretch_keys(project: &Project, media: vv_core::MediaId) -> Vec<u64> {
     let copies = [0, 10].map(|start| {
