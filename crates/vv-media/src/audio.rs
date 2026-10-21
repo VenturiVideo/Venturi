@@ -371,9 +371,9 @@ fn decode_streams(
                 let Some(slot) = slot_of(&decoders, packet.stream()) else {
                     continue;
                 };
-                let Some((_, stream)) = decoders[slot].as_mut() else {
-                    continue;
-                };
+                let (_, stream) = decoders[slot]
+                    .as_mut()
+                    .expect("slot_of returns a live slot");
                 stream.decoder.send_packet(&packet)?;
                 if stream.drain(slot, &mut samples, &mut on_chunk)?.is_break() {
                     return Ok(formats);
