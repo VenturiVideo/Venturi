@@ -4507,12 +4507,17 @@ fn walk_and_fill_in_keyframe_mode_caches_only_keyframes() {
     );
 }
 
-fn landed_at_50(file_name: &str) -> (Project, MediaId, OpenDecoder) {
-    let (project, _, media, _dir) = project_with_gop_25(file_name);
+fn landed_at_50(file_name: &str) -> (crate::test_support::TempDir, Project, MediaId, OpenDecoder) {
+    let (project, _, media, dir) = project_with_gop_25(file_name);
     let path = project.media_pool[media].path.clone();
     let mut decoder = Decoder::open(&path).unwrap();
     decoder.seek_to_time(70.0 / 25.0).unwrap();
-    (project, media, OpenDecoder::fresh(decoder, path, false))
+    (
+        dir,
+        project,
+        media,
+        OpenDecoder::fresh(decoder, path, false),
+    )
 }
 
 fn paused_context<'a>(
@@ -4543,7 +4548,8 @@ fn paused_context<'a>(
 /// landed on first, as a stand-in.
 #[test]
 fn a_slow_seek_while_paused_shows_its_keyframe_first() {
-    let (project, media, mut od) = landed_at_50("kf_scrub.mp4");
+    // The directory comes first so it drops after the decoder.
+    let (_dir, project, media, mut od) = landed_at_50("kf_scrub.mp4");
     let caches = SharedFrameCache::new();
     let pacing = RefCell::new(Pacing::default());
     pacing.borrow_mut().throughput.insert((media, 1), 10.0);
@@ -4564,7 +4570,8 @@ fn a_slow_seek_while_paused_shows_its_keyframe_first() {
 
 #[test]
 fn a_quick_seek_while_paused_goes_straight_to_the_frame() {
-    let (project, media, mut od) = landed_at_50("kf_scrub_quick.mp4");
+    // The directory comes first so it drops after the decoder.
+    let (_dir, project, media, mut od) = landed_at_50("kf_scrub_quick.mp4");
     let caches = SharedFrameCache::new();
     let pacing = RefCell::new(Pacing::default());
     pacing.borrow_mut().throughput.insert((media, 1), 10_000.0);
