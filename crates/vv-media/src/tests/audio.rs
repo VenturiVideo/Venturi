@@ -523,6 +523,13 @@ fn a_stream_without_an_early_anchor_falls_back_resetting_every_stream() {
 
     for (slot, got) in got.iter().enumerate() {
         let full = placed_full_decode_of(&path, slot);
+        assert!(!got.is_empty(), "stream {slot}: nothing decoded");
+        assert!(
+            got.len().abs_diff(full.len()) <= 2,
+            "stream {slot}: {} samples, a decode from the start has {}",
+            got.len(),
+            full.len()
+        );
         let len = got.len().min(full.len());
         assert_eq!(
             got[..len],
