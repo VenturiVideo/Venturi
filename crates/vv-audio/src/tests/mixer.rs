@@ -838,6 +838,26 @@ fn a_snapshot_is_not_ready_where_a_pitch_corrected_stretch_is_pending() {
     assert!(snap.is_ready(0..20), "stretch ready");
 }
 
+#[test]
+fn a_snapshot_is_ready_where_a_pitch_corrected_stretch_is_missing() {
+    struct Failed;
+    impl AudioSource for Failed {
+        fn file(&mut self, path: &Path, stream: usize) -> ClipAudio {
+            buffers(path, stream).map_or(ClipAudio::Missing, ClipAudio::Ready)
+        }
+
+        fn stretched(&mut self, _: StretchRequest) -> ClipAudio {
+            ClipAudio::Missing
+        }
+    }
+    let (project, compound) = project_with_long_compound();
+    let mut clip = sped_up_clip(compound, Rational::new(2, 1), 2);
+    clip.pitch_correction = true;
+    let tl = timeline(vec![audio_track(vec![clip])]);
+    let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut Failed);
+    assert!(snap.is_ready(0..20));
+}
+
 /// Stretch keys of two pitch-corrected copies of `media`, one placement apart.
 fn copy_stretch_keys(project: &Project, media: vv_core::MediaId) -> Vec<u64> {
     let copies = [0, 10].map(|start| {

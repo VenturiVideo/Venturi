@@ -325,8 +325,8 @@ pub struct MixSnapshot {
     pub channels: u16,
     /// Sorted by track.
     pub clips: Vec<MixClip>,
-    /// Where a pitch-corrected clip is left out for its stretch not being
-    /// ready: silent, and not in `clips` for `is_ready` to see.
+    /// Where a pitch-corrected clip is left out while its stretch is still
+    /// coming: silent, and not in `clips` for `is_ready` to see.
     pending: Vec<std::ops::Range<u64>>,
     /// Track and range of `clips` of each track with clips.
     groups: Vec<(usize, std::ops::Range<usize>)>,
@@ -1141,10 +1141,11 @@ fn collect_clips(
                 };
                 match source.stretched(request) {
                     ClipAudio::Ready(stretched) => ClipInput::Blocks(stretched),
-                    ClipAudio::Pending | ClipAudio::Partial(_) | ClipAudio::Missing => {
+                    ClipAudio::Pending | ClipAudio::Partial(_) => {
                         pending.push(span.start..span.start + span.len);
                         continue;
                     }
+                    ClipAudio::Missing => continue,
                 }
             } else if item.compound.is_some() {
                 let Some((mix, nested_cyclic)) = nested_mix(
