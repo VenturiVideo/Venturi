@@ -1164,7 +1164,14 @@ impl Reader {
     /// Up to the end of the file if it comes first.
     fn read(&mut self, stream: usize, frames: Range<u64>) -> Result<SampleBlocks, ExportError> {
         let slot = self.streams.iter().position(|s| *s == stream).unwrap();
-        while self.kept[slot].end() < frames.end && !self.ended {
+        // A sibling stream this far ahead means a shorter one has ended: the
+        // decode only reports the end of the whole file.
+        let sibling_ahead = |kept: &[KeptStream]| {
+            kept.iter()
+                .enumerate()
+                .any(|(i, k)| i != slot && k.end() >= frames.end + READ_AHEAD_FRAMES)
+        };
+        while self.kept[slot].end() < frames.end && !self.ended && !sibling_ahead(&self.kept) {
             match self.decoded.recv() {
                 Ok(Decoded::Samples { slot, at, samples }) => self.append(slot, at, &samples),
                 Ok(Decoded::End(Err(e))) => return Err(ExportError::Failed(e)),
