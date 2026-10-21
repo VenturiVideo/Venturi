@@ -815,6 +815,38 @@ fn a_cancelled_render_stops_at_the_next_chunk() {
 }
 
 #[test]
+fn a_stream_shorter_than_its_window_does_not_buffer_the_others_to_the_end() {
+    let path = source(
+        "short_and_long.mkv",
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=1",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=660:sample_rate=48000:duration=120",
+            "-map",
+            "0",
+            "-map",
+            "1",
+            "-c:a",
+            "pcm_s16le",
+        ],
+    );
+    let mut reader = Reader::open(path, vec![0, 1], 0);
+    let rate = PROJECT_SAMPLE_RATE as u64;
+    let blocks = reader.read(0, 0..2 * rate).unwrap();
+    assert!(blocks.end() >= rate - BLOCK_FRAMES && blocks.end() <= 2 * rate);
+    let held = reader.kept[1].end();
+    assert!(
+        held <= 2 * rate + READ_AHEAD_FRAMES + rate,
+        "{held} frames of the long stream held"
+    );
+}
+
+#[test]
 fn a_decode_thread_gone_without_an_end_fails_the_render() {
     let (tx, decoded) = sync_channel(1);
     drop(tx);
