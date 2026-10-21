@@ -260,8 +260,14 @@ pub fn stretch_offline(
     request: &StretchRequest,
     levels: &mut LevelCache,
 ) -> Result<SampleBlocks, ExportError> {
-    let mut stretcher = Stretcher::new(PROJECT_SAMPLE_RATE, PROJECT_CHANNELS, request.tempo)
-        .map_err(ExportError::Failed)?;
+    let mut stretcher = Stretcher::with_pitch(
+        PROJECT_SAMPLE_RATE,
+        PROJECT_CHANNELS,
+        request.tempo,
+        request.pitch,
+        request.preserve_formants,
+    )
+    .map_err(ExportError::Failed)?;
     let mut out = Vec::new();
     let mut failed = None;
     render(

@@ -781,6 +781,7 @@ struct FakeStretch {
     ready: bool,
     asked: Vec<(std::ops::Range<u64>, f64)>,
     nested: bool,
+    pitch: Vec<(u64, f64, bool)>,
 }
 
 impl AudioSource for FakeStretch {
@@ -789,6 +790,8 @@ impl AudioSource for FakeStretch {
     }
 
     fn stretched(&mut self, request: StretchRequest) -> ClipAudio {
+        self.pitch
+            .push((request.key, request.pitch, request.preserve_formants));
         self.asked.push((request.frames.clone(), request.tempo));
         self.nested |= matches!(request.input, StretchInput::Nested { .. });
         if self.ready {
@@ -796,6 +799,54 @@ impl AudioSource for FakeStretch {
         } else {
             ClipAudio::Pending
         }
+    }
+}
+
+#[test]
+fn pitch_edits_invalidate_the_processed_clip_and_bypass_uses_the_original() {
+    let (project, media, _) = project();
+    let mut tl = timeline(vec![audio_track(vec![clip_at(media, 0, 0, 10)])]);
+    let mut source = FakeStretch::default();
+    let mut ask = |tl: &Timeline| {
+        MixSnapshot::from_timeline(&project, tl, RATE, 1, &mut source);
+        source.pitch.last().copied()
+    };
+    assert_eq!(ask(&tl), None, "neutral clips do not request processing");
+    tl.tracks[0].clips[0].effects.pitch_shift.semitones = 12.0;
+    let first = ask(&tl).unwrap();
+    assert_eq!((first.1, first.2), (2.0, false));
+    tl.tracks[0].clips[0].effects.pitch_shift.cents = 50.0;
+    let fine = ask(&tl).unwrap();
+    assert_ne!(fine.0, first.0);
+    tl.tracks[0].clips[0].effects.pitch_shift.preserve_formants = true;
+    let formants = ask(&tl).unwrap();
+    assert_ne!(formants.0, fine.0);
+    assert!(formants.2);
+    tl.tracks[0].clips[0].effects.pitch_shift.enabled = false;
+    let mut source = FakeStretch::default();
+    let snapshot = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    assert!(source.pitch.is_empty());
+    let mut out = vec![0.0; 100];
+    mix_range(&snapshot, 0, &mut out);
+    assert!(out.iter().all(|s| *s == 0.5));
+}
+
+#[test]
+fn varispeed_pitch_shift_keeps_the_pitch_ratio_within_the_processors_range() {
+    let (project, media, _) = project();
+    for speed in [Rational::new(1, 100), Rational::new(100, 1)] {
+        let mut clip = sped_up_clip(media, speed, 1);
+        clip.pitch_correction = false;
+        clip.effects.pitch_shift.semitones = -24.0;
+        let tl = timeline(vec![audio_track(vec![clip])]);
+        let mut source = FakeStretch {
+            ready: true,
+            ..Default::default()
+        };
+        let snapshot = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+        assert_eq!(source.asked[0].1, 1.0, "varispeed runs in the mixer");
+        assert_eq!(source.pitch[0].1, 0.25);
+        assert_eq!(snapshot.clips[0].step, speed.as_f64());
     }
 }
 

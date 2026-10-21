@@ -2627,6 +2627,20 @@ impl VenturiApp {
                                                     })
                                                     .map(|c| c.timeline_frame_at(source_frame));
                                             }
+                                            if let Some(current) = tl
+                                                .and_then(|tl| tl.clip(primary.track_index, primary.clip_id))
+                                                .map(|clip| clip.effects.pitch_shift)
+                                                && let Some(value) = crate::pitch_shift_panel::show(ui, current)
+                                            {
+                                                for target in targets {
+                                                    pending_effects.push(Box::new(vv_core::set_clip_pitch_shift(
+                                                        target.timeline,
+                                                        target.track_index,
+                                                        target.clip_id,
+                                                        value,
+                                                    )));
+                                                }
+                                            }
                                         }
                                     }
                                 }

@@ -1,0 +1,61 @@
+_version: 2
+
+pitch_shift.title:
+  en: "Pitch Shift"
+  it: "Pitch Shift"
+
+pitch_shift.enabled:
+  en: "Enabled"
+  it: "Abilitato"
+
+pitch_shift.semitones:
+  en: "Semitones"
+  it: "Semitoni"
+
+pitch_shift.cents:
+  en: "Cents"
+  it: "Centesimi"
+
+pitch_shift.formants:
+  en: "Preserve formants"
+  it: "Preserva formanti"
+
+pitch_shift.formants_hint:
+  en: "Keeps the vocal resonances closer to the original while changing its pitch."
+  it: "Mantiene le risonanze della voce più vicine all'originale mentre cambia l'intonazione."
+
+pitch_shift.hint:
+  en: "Changes pitch without changing clip duration. Audio is prepared in the background."
+  it: "Cambia l'intonazione senza modificare la durata della clip. L'audio viene preparato in background."
+
+pitch_shift.reset:
+  en: "Reset pitch"
+  it: "Reimposta intonazione"
+
+pitch_shift.default:
+  en: "Original pitch"
+  it: "Intonazione originale"
+
+pitch_shift.custom:
+  en: "Custom"
+  it: "Personalizzato"
+
+pitch_shift.octave_down:
+  en: "Octave down"
+  it: "Ottava sotto"
+
+pitch_shift.octave_up:
+  en: "Octave up"
+  it: "Ottava sopra"
+
+pitch_shift.fifth_down:
+  en: "Fifth down"
+  it: "Quinta sotto"
+
+pitch_shift.fifth_up:
+  en: "Fifth up"
+  it: "Quinta sopra"
+
+history.pitch_shift:
+  en: "Pitch Shift"
+  it: "Pitch Shift"

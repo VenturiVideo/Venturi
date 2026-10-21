@@ -65,6 +65,8 @@ the part that has to be perfect.
   with custom curves.
 - **Titles, solid colours, filters, transitions.** Applied straight from the
   timeline, no node graph to wire up.
+- **Audio Pitch Shift.** Transpose individual clips in semitones and cents,
+  with formant preservation and presets. See [the controls](docs/PITCH_SHIFT.md).
 - **Color correction.** Shadows, midtones, highlights and offset wheels,
   auto balance and GPU scopes (waveform, RGB parade, vectorscope,
   histogram), composed in 16-bit float.

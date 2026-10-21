@@ -29,6 +29,7 @@ mod mixer_panel;
 mod new_timeline_dialog;
 mod paste_attributes;
 mod paste_image;
+mod pitch_shift_panel;
 mod pool_view;
 mod presets;
 mod project_io;

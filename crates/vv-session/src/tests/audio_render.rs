@@ -72,6 +72,118 @@ fn audio_track(clips: Vec<Clip>) -> Track {
     }
 }
 
+#[test]
+fn clip_pitch_shift_preview_and_export_agree_without_changing_placement_or_duration() {
+    let mut project = Project::default();
+    let path = source(
+        "pitch_shift.wav",
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=4",
+        ],
+    );
+    let file = media(&mut project, path, 48_000, 1);
+    let cases = [
+        (Rational::one(), true, 12.0, true, false, 880.0),
+        (Rational::one(), true, -12.0, true, true, 220.0),
+        (Rational::one(), true, 12.0, false, false, 440.0),
+        (Rational::new(2, 1), true, 12.0, true, false, 880.0),
+        (Rational::new(2, 1), false, -12.0, true, false, 440.0),
+        (Rational::new(1, 2), false, 12.0, true, false, 440.0),
+    ];
+    for (speed, correction, semitones, enabled, preserve_formants, expected) in cases {
+        let mut shifted = Clip::new(
+            ClipId(1),
+            ClipSource::Media(file),
+            10,
+            10,
+            25,
+            Rational::one(),
+            speed,
+        );
+        shifted.pitch_correction = correction;
+        shifted.effects.pitch_shift = vv_core::PitchShift {
+            enabled,
+            semitones,
+            preserve_formants,
+            ..Default::default()
+        };
+        let tl = timeline(vec![audio_track(vec![shifted])]);
+        let range = samples(0..45);
+        let preview = mixed_whole(&project, &tl, range.clone());
+        let export = rendered(&project, &tl, range);
+        assert_eq!(
+            preview, export,
+            "speed {speed:?}, correction {correction}, pitch {semitones}"
+        );
+        assert_eq!(
+            export.len(),
+            samples(0..45).end as usize * PROJECT_CHANNELS as usize
+        );
+        assert!(
+            export[..samples(0..10).end as usize * PROJECT_CHANNELS as usize]
+                .iter()
+                .all(|s| *s == 0.0)
+        );
+        assert!(
+            export[samples(0..35).end as usize * PROJECT_CHANNELS as usize..]
+                .iter()
+                .all(|s| *s == 0.0)
+        );
+        let window = &export[samples(0..16).end as usize * PROJECT_CHANNELS as usize
+            ..samples(0..29).end as usize * PROJECT_CHANNELS as usize];
+        let mono: Vec<f32> = window
+            .iter()
+            .step_by(PROJECT_CHANNELS as usize)
+            .copied()
+            .collect();
+        let crossings = mono
+            .windows(2)
+            .filter(|pair| pair[0] <= 0.0 && pair[1] > 0.0)
+            .count();
+        let heard = crossings as f64 * PROJECT_SAMPLE_RATE as f64 / mono.len() as f64;
+        assert!(
+            (heard - expected).abs() < 8.0,
+            "expected {expected}, heard {heard}"
+        );
+        let seek = rendered(&project, &tl, samples(13..30));
+        assert_eq!(
+            seek,
+            export[samples(0..13).end as usize * PROJECT_CHANNELS as usize
+                ..samples(0..30).end as usize * PROJECT_CHANNELS as usize]
+        );
+    }
+}
+
+#[test]
+fn a_pitch_shifted_compound_clip_matches_preview_and_export() {
+    let mut project = Project::default();
+    let file = media(
+        &mut project,
+        chirp("pitch_compound.wav", 48_000, 3),
+        48_000,
+        1,
+    );
+    let mut inner = clip(1, file, 0, 50, 0);
+    inner.effects.pitch_shift.semitones = -7.0;
+    let nested = project
+        .timelines
+        .insert(timeline(vec![audio_track(vec![inner])]));
+    let compound = project.media_pool.insert(MediaItem {
+        compound: Some(nested),
+        ..project.media_pool[file].clone()
+    });
+    let mut outer = clip(2, compound, 0, 50, 0);
+    outer.effects.pitch_shift.semitones = 12.0;
+    let tl = timeline(vec![audio_track(vec![outer])]);
+    let range = samples(0..50);
+    let preview = mixed_whole(&project, &tl, range.clone());
+    assert!(preview.iter().any(|s| s.abs() > 0.01));
+    assert_eq!(rendered(&project, &tl, range), preview);
+}
+
 fn samples(frames: std::ops::Range<u64>) -> Range<u64> {
     frames.start * FRAME_SAMPLES..frames.end * FRAME_SAMPLES
 }

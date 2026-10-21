@@ -1573,6 +1573,8 @@ impl MatteMode {
 pub struct EffectStack {
     pub transform: TransformTracks,
     pub gain_db: Keyframed<f32>,
+    #[serde(default)]
+    pub pitch_shift: crate::PitchShift,
     pub color: Option<Keyframed<Rgba>>,
     #[serde(default)]
     pub title: Option<TitleParams>,
@@ -1599,6 +1601,8 @@ pub struct EffectStack {
 struct StoredEffectStack {
     transform: TransformTracks,
     gain_db: Keyframed<f32>,
+    #[serde(default)]
+    pitch_shift: crate::PitchShift,
     color: Option<Keyframed<Rgba>>,
     #[serde(default)]
     title: Option<StoredTitle>,
@@ -1628,6 +1632,7 @@ impl From<StoredEffectStack> for EffectStack {
         Self {
             transform: stored.transform,
             gain_db: stored.gain_db,
+            pitch_shift: stored.pitch_shift,
             color: stored.color,
             title,
             filters,
@@ -1645,6 +1650,7 @@ impl Default for EffectStack {
         Self {
             transform: TransformTracks::default(),
             gain_db: Keyframed::constant(0.0),
+            pitch_shift: crate::PitchShift::default(),
             color: None,
             title: None,
             filters: Vec::new(),
@@ -1765,6 +1771,7 @@ impl EffectStack {
         self.transform.is_pristine()
             && self.gain_db.is_constant()
             && self.gain_db.default == 0.0
+            && !self.pitch_shift.is_active()
             && self.color.is_none()
             && self.blend_mode == BlendMode::Normal
             && self.matte.is_none()

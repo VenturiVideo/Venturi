@@ -180,6 +180,11 @@ fn input_clips_at(
             let body = stable_hash((
                 (span.len, span.source_offset, span.step.to_bits()),
                 (span.fade_in, span.fade_out, clip.pitch_correction),
+                (
+                    clip.effects.pitch_shift.ratio().to_bits(),
+                    clip.effects.pitch_shift.is_active()
+                        && clip.effects.pitch_shift.preserve_formants,
+                ),
                 format!("{:?}", clip.effects.gain_db),
                 item.meta.fps.as_f64().to_bits(),
                 source,

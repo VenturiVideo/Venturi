@@ -1,4 +1,4 @@
-//! Pitch-preserving time-stretch with libavfilter's `rubberband` filter.
+//! Time-stretch and pitch transposition with libavfilter's `rubberband` filter.
 //! It works on windows of a few seconds (`vv-app::timeline_audio`), not on
 //! the whole track: stretching everything would delay the first sound by
 //! seconds.
@@ -45,10 +45,28 @@ const FORMAT: SampleFormat = SampleFormat::F32(SampleType::Packed);
 
 impl Stretcher {
     pub fn new(sample_rate: u32, channels: u16, tempo: f64) -> Result<Self, String> {
-        if tempo.is_nan() || tempo <= 0.0 {
+        Self::with_pitch(sample_rate, channels, tempo, 1.0, false)
+    }
+
+    pub fn with_pitch(
+        sample_rate: u32,
+        channels: u16,
+        tempo: f64,
+        pitch: f64,
+        preserve_formants: bool,
+    ) -> Result<Self, String> {
+        if !tempo.is_finite() || tempo <= 0.0 {
             return Err(format!("invalid stretch tempo: {tempo}"));
         }
+        if !pitch.is_finite() || pitch <= 0.0 {
+            return Err(format!("invalid pitch ratio: {pitch}"));
+        }
+        if sample_rate == 0 || channels == 0 {
+            return Err("audio sample rate and channels must be positive".into());
+        }
         ensure_init();
+        ffmpeg::filter::find("rubberband")
+            .ok_or("FFmpeg was built without the rubberband audio filter")?;
         let layout = ChannelLayout::default(channels as i32);
         let mut graph = ffmpeg::filter::Graph::new();
         let args = format!(
@@ -73,12 +91,22 @@ impl Stretcher {
         // `rubberband` can output planar even with packed input: `aformat`
         // forces packed, otherwise `drain_filtered` reads past the first
         // plane (panic with stereo audio).
+        let formant = if preserve_formants {
+            "preserved"
+        } else {
+            "shifted"
+        };
+        let pitch_options = if pitch == 1.0 {
+            String::new()
+        } else {
+            format!(":pitch={pitch}:formant={formant}:pitchq=quality:channels=together")
+        };
         graph
             .output("in", 0)
             .and_then(|p| p.input("out", 0))
             .and_then(|p| {
                 p.parse(&format!(
-                    "rubberband=tempo={tempo},aformat=sample_fmts={}",
+                    "rubberband=tempo={tempo}{pitch_options},aformat=sample_fmts={}",
                     FORMAT.name()
                 ))
             })
