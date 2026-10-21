@@ -78,9 +78,19 @@ pub mod test_support {
         pub fn path(&self) -> &Path {
             &self.0
         }
+    }
 
-        pub fn join(&self, name: impl AsRef<Path>) -> PathBuf {
-            self.0.join(name)
+    impl std::ops::Deref for TempDir {
+        type Target = Path;
+
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<Path> for TempDir {
+        fn as_ref(&self) -> &Path {
+            &self.0
         }
     }
 
