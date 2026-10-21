@@ -6,7 +6,13 @@ fn gpu_timing_requires_features_and_collects_submissions() {
         backends: wgpu::Backends::VULKAN,
         ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
-    let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+    let adapter = match pollster::block_on(instance.request_adapter(&Default::default())) {
+        Ok(adapter) => adapter,
+        Err(error) => {
+            eprintln!("Skipping timestamp collection: no Vulkan adapter ({error})");
+            return;
+        }
+    };
     let (device, _) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
     assert!(GpuTelemetry::new(&device).is_none());
     if !adapter.features().contains(FEATURES) {

@@ -4950,17 +4950,6 @@ fn main() -> eframe::Result<()> {
     if args.first().map(String::as_str) == Some("mcp") {
         run_mcp_command(&args[1..]);
     }
-    #[cfg(feature = "performance")]
-    let _puffin_server = match puffin_http::Server::new("127.0.0.1:8585") {
-        Ok(server) => {
-            puffin::set_scopes_on(true);
-            Some(server)
-        }
-        Err(error) => {
-            eprintln!("Could not start Puffin server: {error}");
-            None
-        }
-    };
     let mcp_forced = args.iter().any(|a| a == "--mcp");
     args.retain(|a| a != "--mcp");
     // Files to open at startup, as if dropped on the window: this is also how
@@ -4975,6 +4964,17 @@ fn main() -> eframe::Result<()> {
         // SAFETY: no other thread started yet.
         unsafe { hw_decode::enable_intel_experimental_decode() };
     }
+    #[cfg(feature = "performance")]
+    let _puffin_server = match puffin_http::Server::new("127.0.0.1:8585") {
+        Ok(server) => {
+            puffin::set_scopes_on(true);
+            Some(server)
+        }
+        Err(error) => {
+            eprintln!("Could not start Puffin server: {error}");
+            None
+        }
+    };
     std::thread::spawn(vv_render::text::warm_up);
 
     let mut viewport = egui::ViewportBuilder::default()
