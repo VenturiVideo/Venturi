@@ -8,6 +8,7 @@ use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabiliti
 use rmcp::{ErrorData, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 use vv_session::Session;
 
+use crate::stdout_guard::ProtocolOut;
 use crate::tools::*;
 use crate::{McpHandle, channel, run_headless};
 
@@ -339,14 +340,25 @@ impl ServerHandler for VenturiServer {
     }
 }
 
-/// Serves MCP on stdin/stdout until the client disconnects. Blocking.
-pub fn serve_stdio(handle: McpHandle) -> std::io::Result<()> {
+#[cfg(unix)]
+fn protocol_writer(out: ProtocolOut) -> tokio::fs::File {
+    tokio::fs::File::from_std(out)
+}
+
+#[cfg(not(unix))]
+fn protocol_writer(_: ProtocolOut) -> tokio::io::Stdout {
+    tokio::io::stdout()
+}
+
+/// Serves MCP on stdin and the protected output until the client
+/// disconnects. Blocking.
+pub fn serve_stdio(handle: McpHandle, out: ProtocolOut) -> std::io::Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     runtime.block_on(async {
         let service = VenturiServer::new(handle)
-            .serve(rmcp::transport::stdio())
+            .serve((tokio::io::stdin(), protocol_writer(out)))
             .await
             .map_err(std::io::Error::other)?;
         service.waiting().await.map_err(std::io::Error::other)?;
@@ -356,9 +368,9 @@ pub fn serve_stdio(handle: McpHandle) -> std::io::Result<()> {
 
 /// `vv-app mcp`: the session is served on this thread, the protocol on
 /// another; returns when the client disconnects.
-pub fn serve_headless_stdio(session: Session) -> std::io::Result<()> {
+pub fn serve_headless_stdio(session: Session, out: ProtocolOut) -> std::io::Result<()> {
     let (handle, inbox) = channel(|| {});
-    let transport = std::thread::spawn(move || serve_stdio(handle));
+    let transport = std::thread::spawn(move || serve_stdio(handle, out));
     run_headless(session, inbox);
     transport
         .join()

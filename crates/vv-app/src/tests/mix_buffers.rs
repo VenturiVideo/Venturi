@@ -761,3 +761,217 @@ fn previewing_a_media_keeps_the_timeline_blocks_and_not_the_previous_media() {
     cache.sweep_unused();
     assert!(blocks_held(&cache, &second).is_empty());
 }
+
+fn analysis<'a>(
+    project: &'a Project,
+    timeline: &'a vv_core::Timeline,
+    key: u64,
+) -> LevelAnalysis<'a> {
+    LevelAnalysis {
+        slot: None,
+        project,
+        timeline,
+        measured: vv_audio::Measured {
+            channel: vv_core::MixerChannel::Master,
+            insert: 0,
+            clip: None,
+        },
+        mode: vv_core::NormalizeMode::SamplePeak,
+        sample_rate: 48_000,
+        channels: 1,
+        segments: vec![LevelSegment {
+            frames: 0..10,
+            preroll: 0,
+            key,
+        }],
+        dry: Vec::new(),
+        scope: 0,
+    }
+}
+
+#[test]
+fn a_rescan_measures_again_what_was_rendered_while_a_plugin_was_not_made() {
+    let mut cache = MixBufferCache::spawn(48_000, 1);
+    let (project, timeline) = (
+        Project::default(),
+        vv_core::Timeline {
+            name: String::new(),
+            fps: vv_core::Rational::new(25, 1),
+            resolution: (4, 2),
+            tracks: Vec::new(),
+            markers: Vec::new(),
+            master: Default::default(),
+        },
+    );
+    let (bad, good) = (
+        analysis(&project, &timeline, 1),
+        analysis(&project, &timeline, 2),
+    );
+    let (bad_key, good_key) = (bad.key(), good.key());
+    cache.levels.insert(bad_key, Some(1.0));
+    cache.levels.insert(good_key, Some(2.0));
+    let blocks = SampleBlocks::contiguous(Arc::new(Vec::new()), 0, 1);
+    cache.stretched.insert(10, Stretch::Ready(blocks.clone()));
+    cache.stretched.insert(11, Stretch::Ready(blocks));
+    cache.stretched.insert(12, Stretch::Pending(Arc::default()));
+    cache.degraded.extend([bad_key, 10, 12]);
+
+    cache.clear_plugin_failures();
+
+    assert!(!cache.levels.contains_key(&bad_key));
+    assert_eq!(cache.levels[&good_key], Some(2.0));
+    assert!(!cache.stretched.contains_key(&10));
+    assert!(cache.stretched.contains_key(&11));
+    assert!(matches!(cache.stretched[&12], Stretch::Pending(_)));
+    assert!(cache.degraded.is_empty());
+    assert!(matches!(cache.level(bad), LevelReading::Pending(None)));
+    assert_eq!(cache.queued_levels.len(), 1);
+
+    cache.degraded.extend([bad_key, 99]);
+    cache.sweep_unused();
+    assert_eq!(cache.degraded, HashSet::from([bad_key]));
+}
+
+#[test]
+fn a_degraded_result_from_before_a_rescan_is_asked_again() {
+    let mut cache = MixBufferCache::spawn(48_000, 1);
+    let (level_tx, level_rx) = mpsc::channel();
+    let (stretch_tx, stretch_rx) = mpsc::channel();
+    cache.level_rx = level_rx;
+    cache.stretch_rx = stretch_rx;
+    cache.clear_plugin_failures();
+    let generation = cache.retry.load(Ordering::Relaxed);
+    for key in [1, 2] {
+        cache.levels.insert(key, None);
+    }
+    cache.stretched.insert(3, Stretch::Pending(Arc::default()));
+    cache.stretched.insert(4, Stretch::Pending(Arc::default()));
+    let blocks = SampleBlocks::contiguous(Arc::new(Vec::new()), 0, 1);
+    level_tx
+        .send((1, None, Some(1.0), Some(generation - 1)))
+        .unwrap();
+    level_tx
+        .send((2, None, Some(1.0), Some(generation)))
+        .unwrap();
+    stretch_tx
+        .send((3, Ok(blocks.clone()), Some(generation - 1)))
+        .unwrap();
+    stretch_tx.send((4, Ok(blocks), Some(generation))).unwrap();
+
+    cache.poll();
+
+    assert!(!cache.levels.contains_key(&1));
+    assert_eq!(cache.levels[&2], Some(1.0));
+    assert!(!cache.stretched.contains_key(&3));
+    assert!(matches!(cache.stretched[&4], Stretch::Ready(_)));
+    assert_eq!(cache.degraded, HashSet::from([2, 4]));
+}
+
+fn queued(slot: AnalysisSlot, key: u64) -> OwnedAnalysis {
+    OwnedAnalysis {
+        key,
+        slot: Some(slot),
+        timeline: queued_timeline(),
+        measured: Measured {
+            channel: vv_core::MixerChannel::Master,
+            insert: 0,
+            clip: None,
+        },
+        mode: NormalizeMode::SamplePeak,
+        format: (48_000, 1),
+        segments: Vec::new(),
+        dry: Vec::new(),
+        scope: 0,
+    }
+}
+
+#[test]
+fn only_an_outdated_level_in_flight_is_stopped_by_a_newer_one_of_its_slot() {
+    let mut project = Project::default();
+    let id = project.timelines.insert(queued_timeline());
+    let slot = (id, vv_core::MixerChannel::Master, 0, 0);
+    let other = (id, vv_core::MixerChannel::Master, 1, 0);
+    let aborts = |inflight: (AnalysisSlot, u64), wanted: &[u64], queue: OwnedAnalysis| {
+        let mut cache = MixBufferCache::spawn(48_000, 1);
+        *cache.level_inflight.lock().unwrap() = Some(inflight);
+        cache.levels.extend(wanted.iter().map(|&k| (k, None)));
+        cache.queued_levels.push(queue);
+        cache.abort_outdated_level();
+        cache.level_abort.load(Ordering::SeqCst)
+    };
+    assert!(aborts((slot, 1), &[2], queued(slot, 2)), "outdated");
+    assert!(!aborts((slot, 1), &[1, 2], queued(slot, 2)), "still wanted");
+    assert!(!aborts((slot, 1), &[2], queued(other, 2)), "another slot");
+}
+
+fn queued_timeline() -> vv_core::Timeline {
+    vv_core::Timeline {
+        name: String::new(),
+        fps: vv_core::Rational::new(25, 1),
+        resolution: (1, 1),
+        tracks: Vec::new(),
+        markers: Vec::new(),
+        master: Default::default(),
+    }
+}
+
+struct Stub;
+
+impl vv_audio::PluginProcessor for Stub {
+    fn process(&self, _: &mut [f32], _: usize) -> bool {
+        true
+    }
+    fn reset(&self) {}
+    fn latency(&self) -> u32 {
+        0
+    }
+}
+
+impl vv_plugin::HostedPlugin for Stub {
+    fn set_state(&self, _: &vv_core::Vst3Effect) {}
+    fn state_hash(&self) -> u64 {
+        0
+    }
+    fn mark_state(&self, _: u64) {}
+}
+
+fn listed(class_id: &str, path: &str) -> vv_plugin::PluginInfo {
+    vv_plugin::PluginInfo {
+        class_id: class_id.into(),
+        path: path.into(),
+        ..vv_plugin::testing::fixture_info()
+    }
+}
+
+fn effect_of(class_id: &str) -> vv_core::Vst3Effect {
+    vv_plugin::testing::fixture_effect_of(class_id, &[])
+}
+
+#[test]
+fn a_rescan_with_one_more_plugin_keeps_the_live_instances() {
+    let mut cache = MixBufferCache::spawn(48_000, 1);
+    cache.plugins = Some(vv_plugin::Instances::with_maker(
+        vec![listed("A", "/a.vst3")].into(),
+        Box::new(|_, _, _| Some(Arc::new(Stub))),
+    ));
+    let effect = effect_of("A");
+    let request = |effect| PluginRequest {
+        key: 1,
+        effect,
+        sample_rate: 48_000,
+        process: true,
+    };
+    let plugins = cache.plugins.as_mut().unwrap();
+    plugins.begin_pass();
+    plugins.get(request(&effect)).unwrap();
+    assert!(cache.plugin_latency(1).is_some());
+    let generation = cache.retry.load(Ordering::Relaxed);
+
+    let dropped =
+        cache.refresh_plugins(vec![listed("A", "/a.vst3"), listed("B", "/b.vst3")].into());
+
+    assert!(dropped.is_empty());
+    assert!(cache.plugin_latency(1).is_some());
+    assert!(cache.plugins.as_ref().unwrap().knows(&effect_of("B")));
+    assert_eq!(cache.retry.load(Ordering::Relaxed), generation + 1);
+}

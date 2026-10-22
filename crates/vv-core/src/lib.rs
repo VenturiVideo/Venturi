@@ -10,6 +10,7 @@ pub mod otio;
 pub mod persistence;
 pub mod pitch_shift;
 pub mod pool;
+mod stable_hash;
 
 pub use command::{
     AddAudioEffect, AddTrack, Command, CommandLabel, CompositeCommand, CompoundPlan, FadeEdge,
@@ -37,6 +38,11 @@ pub use pitch_shift::PitchShift;
 pub use pool::{
     AddEntities, DeleteFolder, MoveFolder, RenameFolder, RenameTimeline, SetMediaFolder,
 };
+pub use stable_hash::{StableHasher, stable_hash};
+
+#[cfg(test)]
+#[path = "tests/test_support.rs"]
+mod test_support;
 
 #[cfg(test)]
 #[path = "tests/lib.rs"]

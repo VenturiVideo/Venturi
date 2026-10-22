@@ -1,6 +1,7 @@
 use super::*;
 use crate::GradePreset;
 use crate::model::*;
+use crate::test_support::TempDir;
 
 #[test]
 fn save_then_load_round_trips_a_project_with_clips_and_keyframes() {
@@ -46,8 +47,7 @@ fn save_then_load_round_trips_a_project_with_clips_and_keyframes() {
     clip.effects = effects;
     project.timelines[timeline_id].tracks[0].clips.push(clip);
 
-    let dir = std::env::temp_dir().join("vv-core-persistence-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("vv-core-persistence-test");
     let path = dir.join("project.vvproj");
 
     save_project(&project, &path).expect("save failed");
@@ -77,8 +77,7 @@ fn save_then_load_round_trips_a_project_with_clips_and_keyframes() {
 
 #[test]
 fn load_project_from_malformed_ron_returns_an_error() {
-    let dir = std::env::temp_dir().join("vv-core-persistence-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("vv-core-persistence-test");
     let path = dir.join("broken.vvproj");
     std::fs::write(&path, "this is not valid RON {{{").unwrap();
 
@@ -87,8 +86,7 @@ fn load_project_from_malformed_ron_returns_an_error() {
 
 #[test]
 fn load_project_from_missing_file_returns_an_error() {
-    let dir = std::env::temp_dir().join("vv-core-persistence-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("vv-core-persistence-test");
     let path = dir.join("does-not-exist.vvproj");
     let _ = std::fs::remove_file(&path);
 
@@ -195,7 +193,8 @@ fn media_folders_survive_save_and_load() {
         compound: None,
         folder: Some(inner),
     });
-    let path = std::env::temp_dir().join("vv-core-folders-test.vvproj");
+    let dir = TempDir::new("vv-core-folders-test");
+    let path = dir.join("project.vvproj");
     save_project(&project, &path).unwrap();
     let loaded = load_project(&path).unwrap();
 
@@ -221,8 +220,7 @@ fn the_view_round_trips_and_an_older_file_without_it_still_loads() {
     project.view.active_timeline = Some(TimelineId::from_raw(3));
     project.view.playheads.insert(TimelineId::from_raw(3), 1234);
 
-    let dir = std::env::temp_dir().join("vv-core-persistence-view-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("vv-core-persistence-view-test");
     let path = dir.join("project.vvproj");
     save_project(&project, &path).unwrap();
     assert_eq!(load_project(&path).unwrap().view, project.view);

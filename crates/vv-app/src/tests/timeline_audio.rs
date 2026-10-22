@@ -400,6 +400,7 @@ fn a_failed_stretch_is_not_retried_every_frame() {
         .stretch_tx
         .send(StretchResult {
             id: failed.id,
+            _mix: audio.mix.clone(),
             samples: Err("failed".into()),
         })
         .unwrap();
@@ -409,4 +410,61 @@ fn a_failed_stretch_is_not_retried_every_frame() {
         audio.tick();
     }
     assert_eq!(audio.next_request_id, before);
+}
+
+fn stretch_result(mix: &Arc<MixSnapshot>) -> StretchResult {
+    StretchResult {
+        id: 0,
+        _mix: mix.clone(),
+        samples: Ok(Vec::new()),
+    }
+}
+
+#[test]
+fn a_stretch_result_without_receiver_is_leaked_not_dropped() {
+    let mix = Arc::new(MixSnapshot::empty(PROJECT_SAMPLE_RATE, 2));
+    let (tx, rx) = mpsc::channel();
+    drop(rx);
+    hand_back(&tx, stretch_result(&mix));
+    assert_eq!(
+        Arc::strong_count(&mix),
+        2,
+        "the snapshot must not be dropped"
+    );
+}
+
+#[test]
+fn a_stretch_result_with_receiver_is_delivered() {
+    let mix = Arc::new(MixSnapshot::empty(PROJECT_SAMPLE_RATE, 2));
+    let (tx, rx) = mpsc::channel();
+    hand_back(&tx, stretch_result(&mix));
+    drop(rx.try_recv().expect("delivered"));
+    assert_eq!(Arc::strong_count(&mix), 1);
+}
+
+fn after_a_rescan(rescan: impl Fn(&mut TimelineAudio)) {
+    let mut audio = TimelineAudio::new();
+    audio.synced = Some((<TimelineId as vv_core::Id>::from_raw(1), 3));
+    rescan(&mut audio);
+    assert_eq!(
+        audio.synced, None,
+        "the next sync rebuilds the timeline mix"
+    );
+
+    let media = PathBuf::from("/preview.wav");
+    audio.synced_media = Some(media.clone());
+    rescan(&mut audio);
+    assert_eq!(
+        audio.synced_media,
+        Some(media),
+        "the plugin-free media mix is not rebuilt"
+    );
+}
+
+#[test]
+fn a_rescan_forces_a_timeline_rebuild_and_keeps_a_media_preview() {
+    after_a_rescan(TimelineAudio::plugins_rescan_unchanged);
+    after_a_rescan(|audio| {
+        audio.plugins_rescanned();
+    });
 }

@@ -620,6 +620,11 @@ pub struct Settings {
     /// Saved by the user, in the order they were first saved.
     pub compressor_presets: Vec<Preset<vv_core::MultibandCompressor>>,
     pub eq_presets: Vec<Preset<vv_core::Equalizer>>,
+    /// The last VST3 scan; `None` until one has run, `Some` empty when it
+    /// found none.
+    pub vst3_plugins: Option<Vec<vv_plugin::PluginInfo>>,
+    /// Bundles whose scan crashed; not loaded again until they change on disk.
+    pub vst3_blocklist: Vec<Blocked>,
     /// Microphone of the voiceover, by name; `None` is the system's default.
     pub input_device: Option<String>,
     /// Of the takes; `None`, or one this FFmpeg lacks, is
@@ -695,6 +700,8 @@ impl Default for Settings {
             panels: PanelLayout::default(),
             compressor_presets: Vec::new(),
             eq_presets: Vec::new(),
+            vst3_plugins: None,
+            vst3_blocklist: Vec::new(),
             input_device: None,
             recording_format: None,
             recording_dir: None,
@@ -768,6 +775,12 @@ struct SettingsFile {
     #[serde(default)]
     eq_presets: Vec<serde_json::Value>,
     #[serde(default)]
+    vst3_plugins: Vec<serde_json::Value>,
+    #[serde(default)]
+    vst3_scanned: Option<bool>,
+    #[serde(default)]
+    vst3_blocklist: Vec<serde_json::Value>,
+    #[serde(default)]
     input_device: Option<String>,
     #[serde(default)]
     recording_format: Option<String>,
@@ -807,7 +820,88 @@ struct PanelLayoutFile {
     library_layout: Option<crate::media_pool::PoolLayout>,
 }
 
+/// A bundle that crashed a scan, with its modification time (seconds since the
+/// epoch) when it was blocked; `None` for entries saved before it was recorded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "BlockedRepr")]
+pub struct Blocked {
+    pub path: PathBuf,
+    pub modified: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum BlockedRepr {
+    Path(PathBuf),
+    Entry {
+        path: PathBuf,
+        modified: Option<u64>,
+    },
+}
+
+impl From<BlockedRepr> for Blocked {
+    fn from(repr: BlockedRepr) -> Self {
+        match repr {
+            BlockedRepr::Path(path) => Self {
+                path,
+                modified: None,
+            },
+            BlockedRepr::Entry { path, modified } => Self { path, modified },
+        }
+    }
+}
+
+impl Blocked {
+    pub fn new(path: PathBuf) -> Self {
+        let modified = bundle_mtime(&path);
+        Self { path, modified }
+    }
+
+    /// Legacy entries (no recorded time) stay blocked.
+    fn is_unchanged(&self) -> bool {
+        self.modified.is_none() || self.modified == bundle_mtime(&self.path)
+    }
+}
+
+/// Of the module binary (what crashed): replacing a bundle in place leaves the
+/// directory's own time alone. Single-file bundles use their own.
+fn bundle_mtime(path: &Path) -> Option<u64> {
+    let file = vv_plugin::bundle_binary(path)
+        .filter(|binary| binary.is_file())
+        .unwrap_or_else(|| path.to_path_buf());
+    let modified = std::fs::metadata(file).ok()?.modified().ok()?;
+    Some(
+        modified
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs(),
+    )
+}
+
 impl Settings {
+    /// A bundle that crashed the last scan is blocked (and so persisted) before
+    /// this one starts. The blocklist only grows, except that a manual rescan
+    /// retries bundles changed on disk since: clearing it all made several
+    /// crashing bundles take turns crashing every rescan.
+    pub fn prepare_plugin_scan(&mut self, manual: bool, marker: &Path) {
+        if manual {
+            self.vst3_blocklist.retain(Blocked::is_unchanged);
+        }
+        if let Some(crashed) = vv_plugin::take_crashed(marker)
+            && !self.vst3_blocklist.iter().any(|b| b.path == crashed)
+        {
+            self.vst3_blocklist.push(Blocked::new(crashed));
+        }
+    }
+
+    pub fn blocked_paths(&self) -> Vec<PathBuf> {
+        self.vst3_blocklist.iter().map(|b| b.path.clone()).collect()
+    }
+
+    pub fn needs_plugin_scan(&self) -> bool {
+        self.vst3_plugins.is_none()
+    }
+
     pub fn default_path() -> Option<PathBuf> {
         let config = std::env::var_os("XDG_CONFIG_HOME")
             .filter(|d| !d.is_empty())
@@ -879,8 +973,12 @@ impl Settings {
             .as_deref()
             .and_then(AudioFileFormat::from_id);
         settings.recording_dir = file.recording_dir;
-        settings.compressor_presets = readable_presets(file.compressor_presets);
-        settings.eq_presets = readable_presets(file.eq_presets);
+        settings.compressor_presets = readable_entries(file.compressor_presets);
+        settings.eq_presets = readable_entries(file.eq_presets);
+        let scanned = file.vst3_scanned.unwrap_or(!file.vst3_plugins.is_empty());
+        let plugins = readable_entries(file.vst3_plugins);
+        settings.vst3_plugins = (scanned || !plugins.is_empty()).then_some(plugins);
+        settings.vst3_blocklist = readable_entries(file.vst3_blocklist);
         settings.mcp_enabled = file.mcp_enabled.unwrap_or(false);
         let defaults = PanelLayout::default();
         settings.panels = PanelLayout {
@@ -981,8 +1079,11 @@ impl Settings {
                 media_pool_layout: Some(self.panels.media_pool_layout),
                 library_layout: Some(self.panels.library_layout),
             },
-            compressor_presets: preset_values(&self.compressor_presets),
-            eq_presets: preset_values(&self.eq_presets),
+            compressor_presets: entry_values(&self.compressor_presets),
+            eq_presets: entry_values(&self.eq_presets),
+            vst3_plugins: entry_values(self.vst3_plugins.as_deref().unwrap_or_default()),
+            vst3_scanned: Some(self.vst3_plugins.is_some()),
+            vst3_blocklist: entry_values(&self.vst3_blocklist),
             input_device: self.input_device.clone(),
             recording_format: self.recording_format.map(|f| f.id().to_owned()),
             recording_dir: self.recording_dir.clone(),
@@ -996,20 +1097,28 @@ impl Settings {
     }
 }
 
-fn readable_presets<P: serde::de::DeserializeOwned>(
-    values: Vec<serde_json::Value>,
-) -> Vec<Preset<P>> {
+fn readable_entries<T: serde::de::DeserializeOwned>(values: Vec<serde_json::Value>) -> Vec<T> {
     values
         .into_iter()
-        .filter_map(|preset| serde_json::from_value(preset).ok())
+        .filter_map(|value| serde_json::from_value(value).ok())
         .collect()
 }
 
-fn preset_values<P: Serialize>(presets: &[Preset<P>]) -> Vec<serde_json::Value> {
-    presets
+/// Entries that cannot be written as JSON (a path that is not valid UTF-8) are
+/// dropped instead of failing the whole save.
+fn entry_values<T: Serialize>(entries: &[T]) -> Vec<serde_json::Value> {
+    let values: Vec<_> = entries
         .iter()
-        .filter_map(|preset| serde_json::to_value(preset).ok())
-        .collect()
+        .filter_map(|entry| serde_json::to_value(entry).ok())
+        .collect();
+    let dropped = entries.len() - values.len();
+    if dropped > 0 {
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            eprintln!("settings: {dropped} entry(ies) that cannot be written are not saved");
+        });
+    }
+    values
 }
 
 #[cfg(test)]

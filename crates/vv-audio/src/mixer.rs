@@ -4,22 +4,25 @@
 //! produce the same mix.
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use vv_core::{
-    AudioEffectKind, ChannelStrip, ClipId, ClipSource, Equalizer, FrameIdx, Keyframed, MediaId,
-    MixerChannel, MultibandCompressor, NormalizeMode, Project, SetLevel, Timeline, TimelineId,
+    AudioEffectKind, ChannelStrip, ClipId, ClipSource, EffectId, Equalizer, FrameIdx, Keyframed,
+    MediaId, MixerChannel, MultibandCompressor, NormalizeMode, Project, SetLevel, Timeline,
+    TimelineId, Vst3Effect,
 };
 
 use crate::blocks::{Run, SampleBlocks};
 use crate::dynamics::{BandActivity, MultibandProcessor};
-use crate::effect::Effect;
+use crate::effect::{Effect, PluginEffect, PluginHandle, PluginRequest};
 use crate::eq::EqProcessor;
 use crate::levels::{
-    InputClip, LevelAnalysis, Measured, StableHasher, has_state, hash_channel, hash_inserts,
-    input_clips, inputs_have_state, level_segments, stable_hash, timeline_key,
+    InputClip, LevelAnalysis, Measured, Memory, StableHasher, has_processing_plugin, has_state,
+    hash_channel, hash_inserts, input_clips, inputs_have_state, level_segments, stable_hash,
+    timeline_key,
 };
 use crate::spectrum::SpectrumTap;
 use crate::stretched::{StretchInput, StretchRequest};
@@ -28,7 +31,7 @@ pub const PROJECT_SAMPLE_RATE: u32 = 48_000;
 /// Control-rate (~60Hz) granularity of the keyframed gain, not sample-accurate.
 pub const GAIN_BLOCK_FRAMES: u64 = 800;
 /// The mix goes track by track through buffers of this many frames.
-const MIX_BLOCK_FRAMES: usize = 512;
+pub const MIX_BLOCK_FRAMES: usize = 512;
 
 #[derive(Clone)]
 pub struct MixClip {
@@ -267,6 +270,34 @@ pub enum Insert {
     Compressor(MultibandCompressor),
     Mono,
     Eq(Equalizer),
+    Plugin(PluginInsert),
+}
+
+/// A hosted plugin in a chain. Equality is by what it plays, not by the
+/// instance, but whether it processes counts: `handle` is `None` when the
+/// source has none (it passes through).
+#[derive(Clone)]
+pub struct PluginInsert {
+    pub key: u64,
+    pub content: u64,
+    pub handle: Option<PluginHandle>,
+}
+
+impl PartialEq for PluginInsert {
+    fn eq(&self, other: &Self) -> bool {
+        (self.key, self.content, self.handle.is_some())
+            == (other.key, other.content, other.handle.is_some())
+    }
+}
+
+impl std::fmt::Debug for PluginInsert {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PluginInsert")
+            .field("key", &self.key)
+            .field("content", &self.content)
+            .field("processes", &self.handle.is_some())
+            .finish()
+    }
 }
 
 /// A mixer strip, ready for the mix: its inserts, then fader and balance.
@@ -341,6 +372,17 @@ impl MixSnapshot {
         }
     }
 
+    /// Runs the chains of `tracks` that have no clip here on silence, so
+    /// their tails ring through gaps and across offline chunks.
+    fn keep_running(&mut self, tracks: &[usize]) {
+        for &track in tracks {
+            if !self.groups.iter().any(|(t, _)| *t == track) {
+                self.groups.push((track, 0..0));
+            }
+        }
+        self.groups.sort_by_key(|(track, _)| *track);
+    }
+
     /// Clips whose audio is `Pending` are silent.
     pub fn from_timeline(
         project: &Project,
@@ -356,6 +398,7 @@ impl MixSnapshot {
             channels,
             source,
             None,
+            0,
             0,
             0,
             None,
@@ -383,6 +426,7 @@ impl MixSnapshot {
             Some(range),
             0,
             0,
+            0,
             None,
         )
         .0
@@ -394,6 +438,7 @@ impl MixSnapshot {
         project: &Project,
         timeline: &Timeline,
         depth: u32,
+        scope: u64,
         sample_rate: u32,
         channels: u16,
         source: &mut impl AudioSource,
@@ -408,6 +453,7 @@ impl MixSnapshot {
             Some(range),
             depth,
             0,
+            scope,
             None,
         )
         .0
@@ -460,6 +506,7 @@ impl MixSnapshot {
         channels: u16,
         source: &mut impl AudioSource,
         range: Option<std::ops::Range<u64>>,
+        scope: u64,
     ) -> Self {
         collect_clips(
             project,
@@ -470,6 +517,7 @@ impl MixSnapshot {
             range,
             0,
             0,
+            scope,
             Some(measured),
         )
         .0
@@ -493,6 +541,55 @@ impl MixSnapshot {
             })
     }
 
+    fn has_plugins(&self) -> bool {
+        let (tracks, master) = self.skip_from();
+        master != usize::MAX || tracks.iter().any(|&t| t != usize::MAX)
+    }
+
+    /// Per track and for the master, the insert from which a normalize gain
+    /// was measured through a processing plugin, or `usize::MAX`.
+    fn skip_from(&self) -> (Vec<usize>, usize) {
+        let own = |channel: &Channel| {
+            channel
+                .inserts
+                .iter()
+                .position(|i| matches!(i, Insert::Plugin(p) if p.handle.is_some()))
+                .unwrap_or(usize::MAX)
+        };
+        let mut tracks: Vec<usize> = self.tracks.iter().map(own).collect();
+        for (track, range) in &self.groups {
+            let nested = self.clips[range.clone()]
+                .iter()
+                .any(|clip| matches!(&clip.input, ClipInput::Nested(n) if n.mix.has_plugins()));
+            if let (true, Some(t)) = (nested, tracks.get_mut(*track)) {
+                *t = 0;
+            }
+        }
+        let master = if tracks.iter().any(|&t| t != usize::MAX) {
+            0
+        } else {
+            own(&self.master)
+        };
+        (tracks, master)
+    }
+
+    /// Whether the chain of `track` may output something once its input is
+    /// silent: a processing plugin, here or in a compound clip. The
+    /// compressor and the equalizer give silence back once they have settled.
+    fn track_rings(&self, track: usize) -> bool {
+        has_processing_plugin(&self.track(track).inserts)
+            || self.groups.iter().any(|(t, range)| {
+                *t == track
+                    && self.clips[range.clone()].iter().any(
+                        |clip| matches!(&clip.input, ClipInput::Nested(n) if n.mix.has_plugins()),
+                    )
+            })
+    }
+
+    fn settle_frames(&self) -> u64 {
+        2 * self.sample_rate as u64
+    }
+
     fn track(&self, index: usize) -> &Channel {
         static UNITY: Channel = Channel::UNITY;
         self.tracks.get(index).unwrap_or(&UNITY)
@@ -501,7 +598,7 @@ impl MixSnapshot {
 
 impl Insert {
     /// What runs it, if it keeps a state from one block to the next.
-    fn effect(&self, sample_rate: u32, channels: u16) -> Option<Box<dyn Effect>> {
+    fn effect(&self, sample_rate: u32, channels: u16, plugins: bool) -> Option<Box<dyn Effect>> {
         match self {
             Insert::Off | Insert::Gain(_) | Insert::ClipGains(_) | Insert::Mono => None,
             Insert::Compressor(params) => Some(Box::new(MultibandProcessor::new(
@@ -510,8 +607,34 @@ impl Insert {
                 channels,
             ))),
             Insert::Eq(params) => Some(Box::new(EqProcessor::new(params, sample_rate, channels))),
+            Insert::Plugin(plugin) => plugin.handle.clone().filter(|_| plugins).map(|handle| {
+                Box::new(PluginEffect {
+                    handle,
+                    channels: channels as usize,
+                }) as Box<dyn Effect>
+            }),
         }
     }
+}
+
+/// Below this a chain's output counts as silence.
+const SILENCE: f32 = 1e-6;
+
+/// Whether a track without a plugin may skip its blocks: its last clip
+/// ended `last_end` and the output of its chain has gone quiet.
+#[derive(Clone, Copy)]
+struct Idle {
+    last_end: u64,
+    settled: bool,
+    ringing: bool,
+}
+
+impl Idle {
+    const SETTLED: Self = Self {
+        last_end: 0,
+        settled: true,
+        ringing: false,
+    };
 }
 
 /// The memory of the mix between two calls: the state of the effects that
@@ -526,18 +649,47 @@ pub struct MixState {
     scratch: Vec<f32>,
     peaks: Vec<[f32; 2]>,
     next: Option<u64>,
+    /// First insert of each track (and of the master) whose gains were
+    /// measured through a plugin that passes through here: they are dropped.
+    track_skip: Vec<usize>,
+    master_skip: usize,
+    /// Per track, for those not in `rings`.
+    idle: Vec<Idle>,
+    /// Per track: a plugin may ring on after the input stops, so the chain
+    /// runs through the gaps.
+    rings: Vec<bool>,
+    #[cfg(test)]
+    skipped_blocks: usize,
 }
 
 impl MixState {
     pub fn new(snapshot: &MixSnapshot) -> Self {
+        Self::build(snapshot, true)
+    }
+
+    /// Without the hosted plugins, which pass through: for a thread other
+    /// than the one playing them, as an instance takes one caller at a time.
+    pub fn without_plugins(snapshot: &MixSnapshot) -> Self {
+        Self::build(snapshot, false)
+    }
+
+    fn build(snapshot: &MixSnapshot, plugins: bool) -> Self {
         let (rate, channels) = (snapshot.sample_rate, snapshot.channels);
+        let (track_skip, master_skip) = if plugins {
+            (vec![usize::MAX; snapshot.tracks.len()], usize::MAX)
+        } else {
+            snapshot.skip_from()
+        };
         let processors = |channel: &Channel| -> Vec<Option<Box<dyn Effect>>> {
             channel
                 .inserts
                 .iter()
-                .map(|insert| insert.effect(rate, channels))
+                .map(|insert| insert.effect(rate, channels, plugins))
                 .collect()
         };
+        let rings = (0..snapshot.tracks.len())
+            .map(|track| snapshot.track_rings(track))
+            .collect();
         Self {
             tracks: snapshot.tracks.iter().map(processors).collect(),
             master: processors(&snapshot.master),
@@ -545,12 +697,18 @@ impl MixState {
                 .clips
                 .iter()
                 .map(|clip| match &clip.input {
-                    ClipInput::Nested(nested) => Some(NestedState::new(clip, nested)),
+                    ClipInput::Nested(nested) => Some(NestedState::new(clip, nested, plugins)),
                     ClipInput::Blocks(_) => None,
                 })
                 .collect(),
             scratch: vec![0.0; MIX_BLOCK_FRAMES * snapshot.channels.max(1) as usize],
             peaks: vec![[0.0; 2]; snapshot.tracks.len()],
+            track_skip,
+            master_skip,
+            idle: vec![Idle::SETTLED; snapshot.tracks.len()],
+            rings,
+            #[cfg(test)]
+            skipped_blocks: 0,
             next: None,
         }
     }
@@ -582,6 +740,9 @@ impl MixState {
             }
         }
         self.next = previous.next;
+        for (idle, old) in self.idle.iter_mut().zip(&previous.idle) {
+            *idle = *old;
+        }
     }
 
     fn reset(&mut self) {
@@ -597,6 +758,7 @@ impl MixState {
         for nested in self.nested.iter_mut().flatten() {
             nested.rendered.clear();
         }
+        self.idle.fill(Idle::SETTLED);
     }
 }
 
@@ -614,13 +776,13 @@ struct NestedState {
 }
 
 impl NestedState {
-    fn new(clip: &MixClip, nested: &NestedMix) -> Self {
+    fn new(clip: &MixClip, nested: &NestedMix, plugins: bool) -> Self {
         let ch = nested.mix.channels.max(1) as usize;
         // What one mixer block reads, so the callback never allocates.
         let frames = (MIX_BLOCK_FRAMES as f64 * clip.step).ceil() as usize + clip.step as usize + 3;
         Self {
             key: clip.clip,
-            state: MixState::new(&nested.mix),
+            state: MixState::build(&nested.mix, plugins),
             rendered: Vec::with_capacity(frames * ch),
             from: 0,
             channels: ch,
@@ -759,6 +921,7 @@ pub(crate) fn hash_insert(insert: &Insert, h: &mut impl Hasher) {
                 fields.map(f32::to_bits).hash(h);
             }
         }
+        Insert::Plugin(plugin) => (6u8, plugin.content, plugin.handle.is_some()).hash(h),
         Insert::Eq(params) => {
             4u8.hash(h);
             for band in &params.bands {
@@ -826,6 +989,21 @@ pub trait AudioSource {
     {
         LevelReading::Ready(analysis.measure_with(self))
     }
+
+    /// The processor of a plugin placement, `None` to play it as a
+    /// pass-through. The same `key` asked again, in a later pass or in the
+    /// same one (a level analysis through `self`), gets the same instance:
+    /// the callers use it one after the other, never at once.
+    fn plugin(&mut self, _: PluginRequest<'_>) -> Option<PluginHandle> {
+        None
+    }
+
+    /// The installed build of `plugin`, `None` if it is not installed: part
+    /// of every key of what it renders, so an update drops the cached
+    /// measures. A nested timeline's keys cannot ask for its handles.
+    fn plugin_build(&mut self, _: &Vst3Effect) -> Option<u64> {
+        None
+    }
 }
 
 pub fn stretch_range(
@@ -860,6 +1038,7 @@ fn collect_clips(
     range: Option<std::ops::Range<u64>>,
     depth: u32,
     placement: i64,
+    scope: u64,
     measuring: Option<Measured>,
 ) -> (MixSnapshot, bool) {
     let fps = timeline.fps.as_f64().max(1e-9);
@@ -914,13 +1093,17 @@ fn collect_clips(
                         continue;
                     }
                 }
+                let nested_scope = stable_hash((scope, clip.id));
                 let (input, content) = match nested {
                     Some(timeline) => (
                         StretchInput::Nested {
                             timeline,
                             depth: depth + 1,
+                            scope: nested_scope,
                         },
-                        timeline_key(project, timeline, sample_rate, depth + 1),
+                        timeline_key(project, timeline, sample_rate, depth + 1, &mut |effect| {
+                            source.plugin_build(effect)
+                        }),
                     ),
                     None => (
                         StretchInput::File {
@@ -969,6 +1152,7 @@ fn collect_clips(
                     range.is_some().then(|| needed.clone()),
                     depth,
                     nested_placement,
+                    stable_hash((scope, clip.id)),
                 ) else {
                     continue;
                 };
@@ -1029,13 +1213,29 @@ fn collect_clips(
         .find(|(_, t)| std::ptr::eq(*t, timeline))
         .map(|(id, _)| id);
     let slot = |channel, insert, clip| timeline_id.map(|id| (id, channel, insert, clip));
-    let inputs = input_clips(project, timeline, sample_rate);
+    let inputs = input_clips(project, timeline, sample_rate, &mut |effect| {
+        source.plugin_build(effect)
+    });
+    // Export renders to the timeline end, video included.
+    let mix_end = inputs
+        .iter()
+        .map(|c| c.start + c.len)
+        .max()
+        .unwrap_or(0)
+        .max(timeline_frame_to_sample(
+            timeline.total_frames(),
+            fps,
+            sample_rate,
+        ));
     let measured_channel = measuring.map(|m| m.channel);
     let format = (sample_rate, channels);
     let mut tracks: Vec<Channel> = Vec::with_capacity(timeline.tracks.len());
+    let mut running = Vec::new();
+    let mut plugin_keys = PluginKeys::new(scope, TRACK_STRIPS);
     for (index, track) in timeline.tracks.iter().enumerate() {
         let channel = MixerChannel::Track(index);
         if matches!(measured_channel, Some(MixerChannel::Track(t)) if t != index) {
+            plugin_keys.count(&track.mix);
             tracks.push(Channel::UNITY);
             continue;
         }
@@ -1044,6 +1244,7 @@ fn collect_clips(
         let mut track_clips: Vec<(ClipId, u64)> =
             track_inputs.iter().map(|c| (c.id, c.start)).collect();
         track_clips.sort_by_key(|&(_, start)| start);
+        let plugins = request_plugins(&track.mix, stop, &mut plugin_keys, source, sample_rate);
         let analyze = |inserts: &[Insert], clip: Option<(usize, ClipId)>, mode| {
             let input: Vec<&InputClip> = match clip {
                 Some((_, id)) => track_inputs
@@ -1053,9 +1254,17 @@ fn collect_clips(
                     .collect(),
                 None => track_inputs.clone(),
             };
-            let stateful = has_state(inserts) || inputs_have_state(&input);
-            let segments =
-                level_segments(&input, chain_key(mode, format, inserts), |_| 0, stateful);
+            let memory = Memory::of(
+                has_processing_plugin(inserts) || input.iter().any(|c| c.plugin),
+                has_state(inserts) || inputs_have_state(&input),
+            );
+            let segments = level_segments(
+                &input,
+                chain_key(mode, format, inserts),
+                |_| 0,
+                memory,
+                mix_end,
+            );
             source.level(LevelAnalysis {
                 slot: slot(channel, inserts.len(), clip.map_or(0, |(i, _)| i)),
                 project,
@@ -1069,6 +1278,8 @@ fn collect_clips(
                 sample_rate,
                 channels,
                 segments,
+                scope,
+                dry: unmade_plugins(inserts),
             })
         };
         let inserts = resolve_chain(
@@ -1076,8 +1287,12 @@ fn collect_clips(
             stop,
             !track_inputs.is_empty(),
             &track_clips,
+            plugins,
             analyze,
         );
+        if !track_inputs.is_empty() && has_state(&inserts) {
+            running.push(index);
+        }
         // Measured before the fader.
         let bus = match stop {
             Some(_) => Bus::UNITY,
@@ -1095,8 +1310,26 @@ fn collect_clips(
                 .get(clip.track)
                 .is_some_and(|t| has_state(&t.inserts))
         });
+        let tracks_have_plugin = all.iter().any(|clip| {
+            tracks
+                .get(clip.track)
+                .is_some_and(|t| has_processing_plugin(&t.inserts))
+        });
+        let mut plugin_keys = PluginKeys::new(scope, MASTER_STRIPS);
+        let plugins = request_plugins(
+            &timeline.master,
+            stop,
+            &mut plugin_keys,
+            source,
+            sample_rate,
+        );
         let analyze = |inserts: &[Insert], _: Option<(usize, ClipId)>, mode| {
-            let stateful = has_state(inserts) || tracks_have_state || inputs_have_state(&all);
+            let memory = Memory::of(
+                has_processing_plugin(inserts)
+                    || tracks_have_plugin
+                    || all.iter().any(|c| c.plugin),
+                has_state(inserts) || tracks_have_state || inputs_have_state(&all),
+            );
             let track_key = |track: usize| {
                 let mut h = StableHasher::default();
                 if let Some(channel) = tracks.get(track) {
@@ -1104,8 +1337,13 @@ fn collect_clips(
                 }
                 h.finish()
             };
-            let segments =
-                level_segments(&all, chain_key(mode, format, inserts), track_key, stateful);
+            let segments = level_segments(
+                &all,
+                chain_key(mode, format, inserts),
+                track_key,
+                memory,
+                mix_end,
+            );
             source.level(LevelAnalysis {
                 slot: slot(MixerChannel::Master, inserts.len(), 0),
                 project,
@@ -1119,16 +1357,30 @@ fn collect_clips(
                 sample_rate,
                 channels,
                 segments,
+                scope,
+                dry: tracks
+                    .iter()
+                    .flat_map(|t| unmade_plugins(&t.inserts))
+                    .chain(unmade_plugins(inserts))
+                    .collect(),
             })
         };
-        let inserts = resolve_chain(&timeline.master, stop, !all.is_empty(), &[], analyze);
+        let inserts = resolve_chain(
+            &timeline.master,
+            stop,
+            !all.is_empty(),
+            &[],
+            plugins,
+            analyze,
+        );
         let bus = match stop {
             Some(_) => Bus::UNITY,
             None => Bus::from_strip(&timeline.master),
         };
         Channel { inserts, bus }
     };
-    let snapshot = MixSnapshot::new(sample_rate, channels, clips, tracks, master);
+    let mut snapshot = MixSnapshot::new(sample_rate, channels, clips, tracks, master);
+    snapshot.keep_running(&running);
     (snapshot, cyclic)
 }
 
@@ -1145,16 +1397,23 @@ fn chain_key(mode: NormalizeMode, (sample_rate, channels): (u32, u16), inserts: 
 /// normalization measures the channel through the effects before it
 /// (`analyze`), so it stays right after a compressor too. `clips`: a
 /// track's, by start, measured one by one when its normalization asks so;
-/// the master is measured whole.
+/// the master is measured whole. `plugins`: `request_plugins` of the same
+/// `strip` and `stop`, so the keys of the measures see what plays.
 fn resolve_chain(
     strip: &ChannelStrip,
     stop: Option<usize>,
     has_audio: bool,
     clips: &[(ClipId, u64)],
+    mut plugins: Vec<Option<PluginInsert>>,
     mut analyze: impl FnMut(&[Insert], Option<(usize, ClipId)>, NormalizeMode) -> LevelReading,
 ) -> Vec<Insert> {
     let mut inserts = Vec::new();
-    for effect in strip.effects.iter().take(stop.unwrap_or(usize::MAX)) {
+    for (i, effect) in strip
+        .effects
+        .iter()
+        .enumerate()
+        .take(stop.unwrap_or(usize::MAX))
+    {
         if !effect.enabled {
             inserts.push(Insert::Off);
             continue;
@@ -1199,10 +1458,189 @@ fn resolve_chain(
             AudioEffectKind::MultibandCompressor(params) => Insert::Compressor(params.clone()),
             AudioEffectKind::Mono => Insert::Mono,
             AudioEffectKind::Equalizer(params) => Insert::Eq(params.clone()),
+            AudioEffectKind::Vst3(_) => plugins
+                .get_mut(i)
+                .and_then(Option::take)
+                .map_or(Insert::Off, Insert::Plugin),
         };
         inserts.push(insert);
     }
     inserts
+}
+
+/// Keys of the plugin placements of the track strips (or of the master).
+/// The strip's position is not part of the key, so removing a track keeps
+/// the instances of the others; every strip is counted, also when a measure
+/// skips it, so the occurrences match the live pass.
+struct PluginKeys {
+    scope: u64,
+    group: u64,
+    met: HashMap<EffectId, u32>,
+}
+
+const TRACK_STRIPS: u64 = 0;
+const MASTER_STRIPS: u64 = 1;
+
+pub fn plugin_key(scope: u64, group: u64, id: EffectId, occurrence: u32) -> u64 {
+    stable_hash((scope, group, id.0, occurrence))
+}
+
+/// Key of the plugin at `index` of a strip, as the mixer asks it: the panel
+/// finds the live instance of an effect with it.
+pub fn plugin_key_in(
+    scope: u64,
+    timeline: &Timeline,
+    channel: MixerChannel,
+    index: usize,
+) -> Option<u64> {
+    let (group, before, strip) = match channel {
+        MixerChannel::Track(i) => {
+            let mix = &timeline.tracks.get(i)?.mix;
+            (TRACK_STRIPS, &timeline.tracks[..i], mix)
+        }
+        MixerChannel::Master => (MASTER_STRIPS, &[][..], &timeline.master),
+    };
+    let AudioEffectKind::Vst3(this) = &strip.effects.get(index)?.kind else {
+        return None;
+    };
+    let mut keys = PluginKeys::new(scope, group);
+    for track in before {
+        keys.count(&track.mix);
+    }
+    for effect in &strip.effects[..index] {
+        if let AudioEffectKind::Vst3(plugin) = &effect.kind {
+            keys.next(plugin);
+        }
+    }
+    Some(keys.next(this))
+}
+
+/// The keys of every plugin of a timeline's strips, computed in one pass.
+pub struct StripKeys {
+    tracks: Vec<Vec<Option<u64>>>,
+    master: Vec<Option<u64>>,
+}
+
+impl StripKeys {
+    /// What `plugin_key_in` gives, without walking the preceding strips again.
+    pub fn get(&self, channel: MixerChannel, index: usize) -> Option<u64> {
+        let strip = match channel {
+            MixerChannel::Track(i) => self.tracks.get(i)?,
+            MixerChannel::Master => &self.master,
+        };
+        strip.get(index).copied().flatten()
+    }
+}
+
+/// The keys of all the strips of `timeline`: for a panel that asks one per row.
+pub fn plugin_keys_in(scope: u64, timeline: &Timeline) -> StripKeys {
+    let mut keys = PluginKeys::new(scope, TRACK_STRIPS);
+    let tracks = timeline
+        .tracks
+        .iter()
+        .map(|track| keys.strip_keys(&track.mix))
+        .collect();
+    let master = PluginKeys::new(scope, MASTER_STRIPS).strip_keys(&timeline.master);
+    StripKeys { tracks, master }
+}
+
+impl PluginKeys {
+    fn strip_keys(&mut self, strip: &ChannelStrip) -> Vec<Option<u64>> {
+        strip
+            .effects
+            .iter()
+            .map(|effect| match &effect.kind {
+                AudioEffectKind::Vst3(plugin) => Some(self.next(plugin)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn new(scope: u64, group: u64) -> Self {
+        Self {
+            scope,
+            group,
+            met: HashMap::new(),
+        }
+    }
+
+    /// The same id twice in a pass (a duplicated strip) is two placements.
+    fn next(&mut self, effect: &Vst3Effect) -> u64 {
+        let seen = self.met.entry(effect.id).or_insert(0);
+        let occurrence = *seen;
+        *seen += 1;
+        plugin_key(self.scope, self.group, effect.id, occurrence)
+    }
+
+    fn count(&mut self, strip: &ChannelStrip) {
+        for effect in &strip.effects {
+            if let AudioEffectKind::Vst3(plugin) = &effect.kind {
+                self.next(plugin);
+            }
+        }
+    }
+}
+
+/// Asks `source` for the processor of each plugin of `strip` up to `stop`,
+/// once (a bypassed one only to keep its instance): aligned with its
+/// effects, `None` for the bypassed and the others. Before the
+/// chain is resolved, since the keys of its measures include whether each
+/// plugin processes.
+fn request_plugins(
+    strip: &ChannelStrip,
+    stop: Option<usize>,
+    plugin_keys: &mut PluginKeys,
+    source: &mut impl AudioSource,
+    sample_rate: u32,
+) -> Vec<Option<PluginInsert>> {
+    if !strip
+        .effects
+        .iter()
+        .any(|effect| matches!(effect.kind, AudioEffectKind::Vst3(_)))
+    {
+        return Vec::new();
+    }
+    let stop = stop.unwrap_or(usize::MAX);
+    let mut plugins = Vec::with_capacity(strip.effects.len().min(stop));
+    for (i, effect) in strip.effects.iter().enumerate() {
+        let AudioEffectKind::Vst3(plugin) = &effect.kind else {
+            if i < stop {
+                plugins.push(None);
+            }
+            continue;
+        };
+        // Past the stop the key is still taken, to keep the occurrences.
+        let key = plugin_keys.next(plugin);
+        if i >= stop {
+            continue;
+        }
+        let build = source.plugin_build(plugin);
+        let handle = source.plugin(PluginRequest {
+            key,
+            effect: plugin,
+            sample_rate,
+            process: effect.enabled,
+        });
+        plugins.push(effect.enabled.then(|| PluginInsert {
+            key,
+            content: build.map_or(plugin.content_hash(), |b| {
+                stable_hash((plugin.content_hash(), b))
+            }),
+            handle,
+        }));
+    }
+    plugins
+}
+
+/// The keys of the plugins in `inserts` that process but were not made.
+fn unmade_plugins(inserts: &[Insert]) -> Vec<u64> {
+    inserts
+        .iter()
+        .filter_map(|insert| match insert {
+            Insert::Plugin(plugin) if plugin.handle.is_none() => Some(plugin.key),
+            _ => None,
+        })
+        .collect()
 }
 
 /// A reading still on its way plays the last one. `None` for silence,
@@ -1228,6 +1666,7 @@ fn nested_mix(
     frames: Option<std::ops::Range<u64>>,
     depth: u32,
     placement: i64,
+    scope: u64,
 ) -> Option<(MixSnapshot, bool)> {
     if depth >= vv_core::MAX_COMPOUND_DEPTH {
         return Some((MixSnapshot::empty(sample_rate, channels), true));
@@ -1243,6 +1682,7 @@ fn nested_mix(
         frames,
         depth + 1,
         placement,
+        scope,
         None,
     ))
 }
@@ -1408,6 +1848,12 @@ pub fn mix_range(snapshot: &MixSnapshot, start: u64, out: &mut [f32]) {
     mix_into(snapshot, &mut MixState::new(snapshot), start, out, false);
 }
 
+/// `mix_range` with the hosted plugins passing through.
+pub fn mix_range_without_plugins(snapshot: &MixSnapshot, start: u64, out: &mut [f32]) {
+    let mut state = MixState::without_plugins(snapshot);
+    mix_into(snapshot, &mut state, start, out, false);
+}
+
 /// `mix_range` carrying on the effects from the previous call through
 /// `state`: a mix split into calls equals a single one.
 pub fn mix_range_from(snapshot: &MixSnapshot, state: &mut MixState, start: u64, out: &mut [f32]) {
@@ -1450,6 +1896,40 @@ fn mix_into(
         let block = &mut out[block_start * ch..(block_start + len) * ch];
         let block_time = start + block_start as u64;
         for (track, range) in &snapshot.groups {
+            if !state.rings.get(*track).copied().unwrap_or(true) {
+                let end = block_time + len as u64;
+                let mut plays = false;
+                let mut first_start = u64::MAX;
+                let idle = &mut state.idle[*track];
+                let previous_end = idle.last_end;
+                for clip in &snapshot.clips[range.clone()] {
+                    if clip.start < end {
+                        idle.last_end = idle.last_end.max(clip.start + clip.len);
+                        if clip.start + clip.len > block_time {
+                            plays = true;
+                            first_start = first_start.min(clip.start);
+                        }
+                    }
+                }
+                let after_settle = |from: u64| from >= previous_end + snapshot.settle_frames();
+                let restart = if plays {
+                    !idle.settled && !idle.ringing && after_settle(first_start)
+                } else {
+                    !idle.settled && !idle.ringing && after_settle(block_time)
+                };
+                if let (true, Some(chain)) = (restart, state.tracks.get_mut(*track)) {
+                    chain.iter_mut().flatten().for_each(|p| p.reset());
+                }
+                let idle = &mut state.idle[*track];
+                idle.settled = !plays && (idle.settled || restart);
+                if idle.settled {
+                    #[cfg(test)]
+                    {
+                        state.skipped_blocks += 1;
+                    }
+                    continue;
+                }
+            }
             let channel = snapshot.track(*track);
             let scratch = &mut state.scratch[..len * ch];
             scratch.fill(0.0);
@@ -1466,16 +1946,22 @@ fn mix_into(
                 ch,
                 block_time,
                 meters,
+                state.track_skip.get(*track).copied().unwrap_or(usize::MAX),
             );
             let mut peak = [0.0f32; 2];
+            let mut raw = 0.0f32;
             for (dst, src) in block.chunks_exact_mut(ch).zip(scratch.chunks_exact(ch)) {
                 for (c, (d, s)) in dst.iter_mut().zip(src).enumerate() {
+                    raw = raw.max(s.abs());
                     let value = s * channel.bus.channel_gain(c, ch);
                     *d += value;
                     if c < 2 {
                         peak[c] = peak[c].max(value.abs());
                     }
                 }
+            }
+            if let Some(idle) = state.idle.get_mut(*track) {
+                idle.ringing = raw > SILENCE;
             }
             if let Some(track_peak) = state.peaks.get_mut(*track) {
                 *track_peak = [track_peak[0].max(peak[0]), track_peak[1].max(peak[1])];
@@ -1489,6 +1975,7 @@ fn mix_into(
             ch,
             block_time,
             meters,
+            state.master_skip,
         );
         for frame in block.chunks_exact_mut(ch) {
             for (c, s) in frame.iter_mut().enumerate() {
@@ -1521,10 +2008,12 @@ fn apply_inserts(
     channels: usize,
     time: u64,
     meters: Option<&[InsertMeter]>,
+    skip_from: usize,
 ) {
     for (index, insert) in inserts.iter().enumerate() {
         match insert {
             Insert::Off => {}
+            Insert::Gain(_) | Insert::ClipGains(_) if index >= skip_from => {}
             Insert::Gain(gain) => samples.iter_mut().for_each(|s| *s *= gain),
             Insert::ClipGains(gains) => apply_clip_gains(gains, time, samples, channels),
             Insert::Mono => {
@@ -1533,7 +2022,7 @@ fn apply_inserts(
                     frame.fill(average);
                 }
             }
-            Insert::Compressor(_) | Insert::Eq(_) => {
+            Insert::Compressor(_) | Insert::Eq(_) | Insert::Plugin(_) => {
                 let Some(Some(processor)) = processors.get_mut(index) else {
                     continue;
                 };

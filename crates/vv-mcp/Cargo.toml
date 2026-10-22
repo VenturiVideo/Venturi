@@ -8,12 +8,13 @@ workspace = true
 
 [dependencies]
 base64 = "0.22"
+libc = "0.2"
 png = "0.18"
 rmcp = { version = "3.4.1", features = ["server", "macros", "transport-io"] }
 schemars = "1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-tokio = { version = "1", features = ["sync", "rt", "io-std", "net", "macros"] }
+tokio = { version = "1", features = ["sync", "rt", "io-std", "net", "macros", "fs"] }
 vv-core = { path = "../vv-core" }
 vv-render = { path = "../vv-render" }
 vv-session = { path = "../vv-session" }
@@ -22,3 +23,4 @@ vv-session = { path = "../vv-session" }
 rmcp = { version = "3.4.1", features = ["client"] }
 tokio = { version = "1", features = ["macros", "rt", "io-util"] }
 vv-media = { path = "../vv-media" }
+vv-plugin = { path = "../vv-plugin", features = ["testing"] }

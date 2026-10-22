@@ -14,6 +14,8 @@ impl VenturiApp {
         // Keys typed into a text field (e.g. the title) are not shortcuts:
         // "T" would cut the clips, Backspace would delete them.
         let typing = ui.ctx().egui_wants_keyboard_input();
+        // An open menu owns the keyboard: its letters jump to items.
+        let menu_open = egui::Popup::is_any_open(ui.ctx());
         if let Some(timeline_id) = self.timeline_id {
             self.timeline_state
                 .drop_locked(&self.session.project.timelines[timeline_id]);
@@ -36,7 +38,7 @@ impl VenturiApp {
             arrow_input.1 = i.time;
             // Mouse "back" button, as in a web browser.
             exit_compound = i.pointer.button_pressed(egui::PointerButton::Extra1);
-            if typing || capturing_shortcut {
+            if typing || capturing_shortcut || menu_open {
                 return;
             }
             let pressed = |action| keymap.pressed(action, i);
@@ -631,19 +633,19 @@ impl VenturiApp {
         let mut chosen = None;
         ui.add_enabled_ui(!recent.is_empty(), |ui| {
             ui.menu_button(t!("menu.recent_projects"), |ui| {
-                for path in &recent {
-                    let label = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| path.display().to_string());
-                    if ui
-                        .button(label)
-                        .on_hover_text(path.display().to_string())
-                        .clicked()
-                    {
-                        chosen = Some(path.clone());
+                menu_list::menu_list(ui, |ui, type_ahead| {
+                    for path in &recent {
+                        let label = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| path.display().to_string());
+                        let response = ui.button(&label).on_hover_text(path.display().to_string());
+                        type_ahead.item(&response, &label);
+                        if response.clicked() {
+                            chosen = Some(path.clone());
+                        }
                     }
-                }
+                });
             });
         });
         if let Some(path) = chosen {
@@ -706,19 +708,19 @@ impl VenturiApp {
         let mut jump = None;
         ui.add_enabled_ui(!labels.is_empty(), |ui| {
             ui.menu_button(t!("menu.undo_history"), |ui| {
-                egui::ScrollArea::vertical()
-                    .max_height(400.0)
-                    .show(ui, |ui| {
-                        for position in (0..=labels.len()).rev() {
-                            let text = match position {
-                                0 => t!("history.original"),
-                                _ => command_label(labels[position - 1]),
-                            };
-                            if ui.radio(position == current, text).clicked() {
-                                jump = Some(position);
-                            }
+                menu_list::menu_list(ui, |ui, type_ahead| {
+                    for position in (0..=labels.len()).rev() {
+                        let text = match position {
+                            0 => t!("history.original"),
+                            _ => command_label(labels[position - 1]),
+                        };
+                        let response = ui.radio(position == current, text.as_ref());
+                        type_ahead.item(&response, &text);
+                        if response.clicked() {
+                            jump = Some(position);
                         }
-                    });
+                    }
+                });
             });
         });
         if let Some(position) = jump {

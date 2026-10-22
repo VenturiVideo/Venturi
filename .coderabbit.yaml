@@ -1,0 +1,44 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: true
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches: [".*"]
+  path_filters:
+    - "!target/**"
+    - "!Cargo.lock"
+    - "!media/**"
+  path_instructions:
+    - path: "crates/**/*.rs"
+      instructions: |
+        Comments must be short and only explain a non-obvious why; flag
+        comments that restate the code or run to multiple paragraphs.
+        Unit tests must not be inline: they live in
+        crates/<crate>/src/tests/<same path as the source>.rs, pulled in with
+        #[cfg(test)] #[path = "tests/<file>.rs"] mod tests;. Flag any inline
+        `mod tests { ... }` block.
+        Code, comments and messages must be in English.
+    - path: "crates/vv-app/locales/**"
+      instructions: |
+        The `it:` entries are the Italian UI translation and are expected to
+        be in Italian; every other entry must be in English. Check that each
+        key has both `en` and `it` values.
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "CLAUDE.md"
+      - "AGENTS.md"
+      - "docs/BUILDING.md"
+
+chat:
+  auto_reply: true

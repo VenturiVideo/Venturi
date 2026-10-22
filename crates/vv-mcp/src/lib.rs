@@ -10,6 +10,7 @@ mod json;
 mod media_tools;
 mod server;
 mod socket;
+mod stdout_guard;
 mod tools;
 
 pub use dispatch::{Dispatch, Pending, dispatch};
@@ -21,4 +22,5 @@ pub use json::{GuiState, project_json, state_json};
 pub use media_tools::encode_png;
 pub use server::{VenturiServer, serve_headless_stdio, serve_stdio};
 pub use socket::{SocketServer, bridge_stdio, socket_dir};
+pub use stdout_guard::{ProtocolOut, protect_stdout};
 pub use tools::*;

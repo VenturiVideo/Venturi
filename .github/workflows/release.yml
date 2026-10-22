@@ -115,10 +115,22 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
+
       - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
+
+      - name: Prepare installer
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]]
+          sed "s/^DEFAULT_VERSION=latest$/DEFAULT_VERSION=$RELEASE_TAG/" scripts/install.sh > dist/install.sh
+          tar -czf dist/venturi-desktop.tar.gz scripts/linux-desktop.sh packaging/appimage/venturi.desktop packaging/venturi-mime.xml media/icons/linux/hicolor
+          chmod +x dist/install.sh
+          bash -n dist/install.sh
 
       - uses: softprops/action-gh-release@v3
         with:

@@ -1,0 +1,28 @@
+{
+  "Name": "Test Bundle",
+  "Version": "1.2.3",
+  "Factory Info": { "Vendor": "Acme", "URL": "https://acme.example", },
+  "Classes": [
+    {
+      "CID": "56565445535447414E00000000000001",
+      "Category": "Audio Module Class",
+      "Name": "Acme EQ",
+      "Vendor": "Acme Audio",
+      "Version": "1.2.3",
+      "Sub Categories": ["Fx", "EQ"],
+    },
+    {
+      "CID": "56565445535447414E00000000000002",
+      "Category": "Audio Module Class",
+      "Name": "Acme Synth",
+      "Vendor": "Acme Audio",
+      "Version": "1.2.3",
+      "Sub Categories": ["Instrument", "Synth"],
+    },
+    {
+      "CID": "56565445535447414E00000000000003",
+      "Category": "Component Controller Class",
+      "Name": "Acme EQ",
+    },
+  ],
+}

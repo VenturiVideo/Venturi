@@ -1,7 +1,9 @@
 //! Pasting an image from the system clipboard: saved under
 //! `PASTED_IMAGES_DIR` next to the project file and added to the pool.
 
-use std::io::{Read, Write};
+#[cfg(target_os = "linux")]
+use std::io::Read;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
@@ -108,6 +110,7 @@ fn save_image(dir: &Path, name: &str, image: &ClipboardImage) -> std::io::Result
     Ok(path)
 }
 
+#[cfg(target_os = "linux")]
 fn read_pipe(mut pipe: impl Read, extension: &'static str) -> Option<ClipboardImage> {
     let mut bytes = Vec::new();
     pipe.read_to_end(&mut bytes).ok()?;

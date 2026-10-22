@@ -248,6 +248,8 @@ compound mixing worker and the compound budget accounting go away.
 
 ### 3.6 Effects, plugins and routing
 
+The plugin host as built is in [VST3_HOST.md](VST3_HOST.md).
+
 ```rust
 /// Sketch of step 0.
 pub trait Effect: Send {

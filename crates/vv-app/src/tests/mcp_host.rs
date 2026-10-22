@@ -306,3 +306,36 @@ fn turning_mcp_off_gives_the_session_back_to_the_editor() {
     assert!(app.mcp.is_none());
     assert!(app.session.project.timelines.contains_key(timeline));
 }
+
+/// MCP on with a project installed (epoch above zero), the session in the slot between frames.
+fn attached_with_gesture() -> (VenturiApp, vv_core::TimelineId, egui::Context) {
+    let (mut app, id) = crate::tests::app_with_pending_gesture();
+    let ctx = egui::Context::default();
+    let (_handle, inbox) = vv_mcp::channel(|| {});
+    let project = std::mem::take(&mut app.session.project);
+    app.session.install_project(project, None);
+    app.mcp = Some(McpHost::for_test(inbox, &mut app.session, &ctx));
+    app.seen_epoch = app.session.epoch();
+    assert!(app.seen_epoch > 0);
+    app.mcp_checkin(&ctx);
+    (app, id, ctx)
+}
+
+#[test]
+fn editors_are_pumped_by_logic_with_mcp_on_between_frames() {
+    let (mut app, _, ctx) = attached_with_gesture();
+    eframe::App::logic(&mut app, &ctx, &mut eframe::Frame::_new_kittest());
+    let slot = app.mcp.as_ref().unwrap().shared.slot.lock().unwrap();
+    assert!(!slot.in_ui, "the session went back to the slot");
+    assert_eq!(slot.session.history.labels().count(), 1);
+}
+
+#[test]
+fn editors_are_not_pumped_after_the_agent_replaced_the_project() {
+    let (mut app, _, ctx) = attached_with_gesture();
+    app.seen_epoch -= 1;
+    eframe::App::logic(&mut app, &ctx, &mut eframe::Frame::_new_kittest());
+    let slot = app.mcp.as_ref().unwrap().shared.slot.lock().unwrap();
+    assert!(!slot.in_ui);
+    assert_eq!(slot.session.history.labels().count(), 0);
+}

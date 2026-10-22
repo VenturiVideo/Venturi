@@ -848,9 +848,8 @@ impl VenturiApp {
             fps: timeline.fps,
             total_frames,
             marks: (!marks.is_full(total_frames)).then(|| marks.resolve(total_frames)),
-            has_audio: timeline
-                .tracks_of_kind(TrackKind::Audio)
-                .any(|(_, t)| !t.clips.is_empty()),
+            has_audio: timeline.has_audio_clips(),
+            waits_for_scan: self.session.export_waits_for_scan(timeline_id, true),
         };
         match dialog.show(ui.ctx(), &info) {
             export_dialog::ExportDialogAction::None => {}

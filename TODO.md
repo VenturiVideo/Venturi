@@ -9,10 +9,6 @@ mix failed, the per-run test fixture dirs and the unclamped audio budget.
 
 ## Audio: correctness
 
-- **AAC at 44.1 kHz, last ~10 ms**: after a seek it differs from a decode
-  from the start by up to 1e-3, resampled or not, already before the
-  seek rework (48 kHz AAC is exact). Probably the end trimming of the last
-  frames.
 - **Timestamps that overlap** (jump backwards): both readers keep the
   samples written first, so a seek landing inside the overlap keeps the
   other copy. Gaps are exact.

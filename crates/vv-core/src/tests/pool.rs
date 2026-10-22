@@ -1,7 +1,8 @@
 use super::*;
 use crate::{
-    Clip, ClipId, CrossTransition, Ease, FrameIdx, History, InsertClip, MediaMeta, PushDirection,
-    Rational, Track, TrackKind, Transition, TransitionKind,
+    AudioEffect, AudioEffectKind, Clip, ClipId, CrossTransition, Ease, EffectId, FrameIdx, History,
+    InsertClip, MediaMeta, PluginState, PushDirection, Rational, Track, TrackKind, Transition,
+    TransitionKind, Vst3Effect,
 };
 
 fn clip_at(timeline_start: FrameIdx, len: FrameIdx, id: u64) -> Clip {
@@ -105,6 +106,53 @@ fn duplicate_timeline_copies_clips_with_fresh_ids() {
     assert_eq!(dup.crossings[0].right_clip, dup.clips[1].id);
 }
 
+fn vst3_effect(id: EffectId) -> AudioEffect {
+    AudioEffect::new(AudioEffectKind::Vst3(Vst3Effect {
+        id,
+        class_id: "0123456789ABCDEF0123456789ABCDEF".into(),
+        name: "Plugin".into(),
+        vendor: "Vendor".into(),
+        version: "1.0".into(),
+        component_state: PluginState::new(vec![1, 2, 3]),
+        controller_state: PluginState::new(vec![4]),
+    }))
+}
+
+fn effect_id(effect: &AudioEffect) -> EffectId {
+    match &effect.kind {
+        AudioEffectKind::Vst3(v) => v.id,
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn duplicate_timeline_gives_plugin_effects_fresh_ids() {
+    let (mut project, source) = project_with_timeline_item();
+    let timeline = project.media_pool[source].compound.unwrap();
+    let track_effect = vst3_effect(EffectId::fresh());
+    let master_effect = vst3_effect(EffectId::fresh());
+    let tl = &mut project.timelines[timeline];
+    tl.tracks[0].mix.effects.push(track_effect.clone());
+    tl.master.effects.push(master_effect.clone());
+
+    let (copy, add) = duplicate_timeline(&mut project, source, "copy".into()).expect("a timeline");
+    History::default().do_command(&mut project, Box::new(add));
+    let copy_tl = &project.timelines[project.media_pool[copy].compound.unwrap()];
+
+    let ids = |effect: &AudioEffect| match &effect.kind {
+        AudioEffectKind::Vst3(v) => (v.id, v.class_id.clone(), v.component_state.clone()),
+        _ => unreachable!(),
+    };
+    let (src_track, dup_track) = (ids(&track_effect), ids(&copy_tl.tracks[0].mix.effects[0]));
+    let (src_master, dup_master) = (ids(&master_effect), ids(&copy_tl.master.effects[0]));
+    assert_ne!(src_track.0, dup_track.0);
+    assert_ne!(src_master.0, dup_master.0);
+    assert_eq!(src_track.1, dup_track.1);
+    assert_eq!(src_track.2, dup_track.2);
+    assert_eq!(src_master.1, dup_master.1);
+    assert_eq!(src_master.2, dup_master.2);
+}
+
 #[test]
 fn rename_timeline_renames_pool_item_and_timeline() {
     let (mut project, media_id) = project_with_timeline_item();
@@ -204,6 +252,26 @@ fn absorb_reuses_the_mapped_media() {
     );
     let clips = &project.timelines[timelines[0]].tracks[0].clips;
     assert!(matches!(clips[0].source, ClipSource::Media(m) if m == existing));
+}
+
+#[test]
+fn absorb_gives_plugin_effects_fresh_ids_on_every_import() {
+    let (mut payload, ..) = imported_project();
+    let source = EffectId::fresh();
+    let timeline = payload.timelines.values_mut().next().unwrap();
+    timeline.tracks[0].mix.effects.push(vst3_effect(source));
+
+    let (mut project, ..) = project_with_timeline_item();
+    let first = absorb_all(&mut project, payload.clone(), &Default::default(), None);
+    let second = absorb_all(&mut project, payload, &Default::default(), None);
+
+    let id_in = |project: &Project, tl: TimelineId| {
+        effect_id(&project.timelines[tl].tracks[0].mix.effects[0])
+    };
+    let (first, second) = (id_in(&project, first[0]), id_in(&project, second[0]));
+    assert_ne!(first, source);
+    assert_ne!(second, source);
+    assert_ne!(first, second);
 }
 
 #[test]

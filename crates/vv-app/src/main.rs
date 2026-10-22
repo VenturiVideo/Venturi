@@ -24,12 +24,14 @@ mod mask_panel;
 mod mcp_host;
 mod media_pool;
 mod media_pool_ui;
+mod menu_list;
 mod mix_buffers;
 mod mixer_panel;
 mod new_timeline_dialog;
 mod paste_attributes;
 mod paste_image;
 mod pitch_shift_panel;
+mod plugin_editors;
 mod pool_view;
 mod presets;
 mod project_io;
@@ -278,6 +280,7 @@ struct VenturiApp {
     media_pool_state: media_pool::MediaPoolState,
     keyframe_editor: keyframe_editor::KeyframeEditorState,
     mixer_panel: mixer_panel::MixerPanelState,
+    plugin_editors: plugin_editors::PluginEditors,
     take: Option<voiceover::ActiveTake>,
     /// Media or elements not imported, shown in a separate window
     /// until the user closes it.
@@ -421,6 +424,8 @@ struct VenturiApp {
     preset_dialog: Option<presets::PresetDialog>,
     /// A clipboard read for a paste in flight, see `request_clipboard_image`.
     clipboard_image_rx: Option<mpsc::Receiver<Option<paste_image::ClipboardImage>>>,
+    /// A VST3 scan in flight, see `start_plugin_scan`.
+    plugin_scan_rx: Option<mpsc::Receiver<Vec<vv_plugin::PluginInfo>>>,
     paste_image_dialog: Option<paste_image::PasteImageDialog>,
     paste_image_needs_save: bool,
     paste_key_watch: paste_image::PasteKeyWatch,
@@ -509,6 +514,7 @@ impl Default for VenturiApp {
             media_pool_state: media_pool::MediaPoolState::default(),
             keyframe_editor: keyframe_editor::KeyframeEditorState::default(),
             mixer_panel: mixer_panel::MixerPanelState::default(),
+            plugin_editors: Default::default(),
             take: None,
             import_warnings: Vec::new(),
             preview_meta: None,
@@ -569,6 +575,7 @@ impl Default for VenturiApp {
             library_ui: Default::default(),
             preset_dialog: None,
             clipboard_image_rx: None,
+            plugin_scan_rx: None,
             paste_image_dialog: None,
             paste_image_needs_save: false,
             paste_key_watch: Default::default(),
@@ -2433,6 +2440,78 @@ impl VenturiApp {
         }
     }
 
+    /// Scans off the UI thread: loading each bundle can take seconds.
+    fn start_plugin_scan(&mut self, ctx: &egui::Context, manual: bool) {
+        if self.plugin_scan_rx.is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        let ctx = ctx.clone();
+        let marker = self.plugin_scan_marker();
+        self.settings.prepare_plugin_scan(manual, &marker);
+        self.persist_settings();
+        let blocklist = self.settings.blocked_paths();
+        std::thread::spawn(move || {
+            let _ = tx.send(vv_plugin::scan_with_guard(
+                &vv_plugin::default_dirs(),
+                &marker,
+                &blocklist,
+            ));
+            ctx.request_repaint();
+        });
+        self.plugin_scan_rx = Some(rx);
+        // A rescan keeps the complete previous list, so only a first scan gates exports.
+        vv_plugin::set_scanning(self.settings.needs_plugin_scan());
+    }
+
+    /// Only while a scan runs: otherwise the marker is a real crash's, kept
+    /// for the next scan.
+    fn abandon_plugin_scan(&self) {
+        if self.plugin_scan_rx.is_some() {
+            vv_plugin::abandon_scan(&self.plugin_scan_marker());
+        }
+    }
+
+    fn plugin_scan_marker(&self) -> PathBuf {
+        self.settings_path
+            .as_ref()
+            .map(|p| p.with_file_name("vst3-scan.marker"))
+            .unwrap_or_else(|| std::env::temp_dir().join("venturi-vst3-scan.marker"))
+    }
+
+    fn poll_plugin_scan(&mut self) {
+        let Some(rx) = &self.plugin_scan_rx else {
+            return;
+        };
+        let list = match rx.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.plugin_scan_rx = None;
+                vv_plugin::set_scanning(false);
+                return;
+            }
+        };
+        self.plugin_scan_rx = None;
+        let unchanged = apply_scan_result(&mut self.settings, list);
+        vv_plugin::set_scanning(false);
+        let group_open = self.undo_group_open();
+        if let Some(audio) = &mut self.timeline_audio {
+            if unchanged {
+                audio.plugins_rescan_unchanged();
+            } else {
+                let dropped = audio.plugins_rescanned();
+                self.plugin_editors.close_instances(
+                    &mut self.session.project,
+                    &mut self.session.history,
+                    &dropped,
+                    group_open,
+                );
+            }
+        }
+        self.persist_settings();
+    }
+
     /// User settings on disk, including the panel layout: called
     /// from the Settings window and periodically/on close (see
     /// `eframe::App::save`).
@@ -3937,6 +4016,7 @@ fn frame_stride(shown_frames_only: bool, playing: bool, speed: f64) -> FrameIdx 
 }
 
 impl eframe::App for VenturiApp {
+    #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         unstick_wheel_modifiers(raw_input);
         self.paste_key_watch.feed(raw_input);
@@ -3945,6 +4025,16 @@ impl eframe::App for VenturiApp {
         #[cfg(target_os = "linux")]
         if let Some(dnd) = &self.wayland_dnd {
             dnd.feed(raw_input, ctx.zoom_factor());
+        }
+    }
+
+    // The only hook eframe still calls while the window is minimized,
+    // occluded or on another Space, when the open plugin editors need servicing.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.pump_plugin_editors(ctx);
+        self.poll_plugin_scan_hidden();
+        if let Some(audio) = &self.timeline_audio {
+            audio.service_plugin_restarts();
         }
     }
 
@@ -3962,14 +4052,58 @@ impl eframe::App for VenturiApp {
     fn save(&mut self, _storage: &mut dyn eframe::Storage) {
         self.persist_settings();
     }
+
+    // Quitting mid-scan is not a crash: keep the next launch from blaming the
+    // bundle that is still loading.
+    fn on_exit(&mut self) {
+        self.abandon_plugin_scan();
+    }
 }
 
 impl VenturiApp {
+    fn undo_group_open(&self) -> bool {
+        self.edit_drag_group.is_some() || self.timeline_state.holds_undo_group()
+    }
+
+    fn pump_plugin_editors(&mut self, ctx: &egui::Context) {
+        let Some(borrowed) = self.mcp_borrow_session() else {
+            return;
+        };
+        let group_open = self.undo_group_open();
+        self.plugin_editors.update(
+            ctx,
+            &mut self.session.project,
+            &mut self.session.history,
+            self.timeline_id,
+            self.timeline_audio.as_mut(),
+            group_open,
+        );
+        if borrowed {
+            self.mcp_return_session();
+        }
+    }
+
+    // `frame_ui` does not run while the window is hidden; closing dropped
+    // editors needs the real session.
+    fn poll_plugin_scan_hidden(&mut self) {
+        if self.plugin_scan_rx.is_none() {
+            return;
+        }
+        let Some(borrowed) = self.mcp_borrow_session() else {
+            return;
+        };
+        self.poll_plugin_scan();
+        if borrowed {
+            self.mcp_return_session();
+        }
+    }
+
     fn frame_ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.handle_close_request(&ui.ctx().clone());
         self.poll_pending_dialog(&ui.ctx().clone());
         self.poll_dropped_files(&ui.ctx().clone());
         self.poll_clipboard_image();
+        self.poll_plugin_scan();
         self.follow_hw_decode_fallback();
         // What the session applies would land inside the open group.
         if self.edit_drag_group.is_none() && !self.timeline_state.holds_undo_group() {
@@ -4385,6 +4519,7 @@ impl VenturiApp {
                 self.settings.compressor_presets.clone(),
                 self.settings.eq_presets.clone(),
             );
+            let installed = vv_plugin::installed();
             pending_effects.extend(mixer_panel::show_mixer(
                 ui.ctx(),
                 &mut self.settings.panels.mixer_open,
@@ -4396,7 +4531,32 @@ impl VenturiApp {
                     compressor: &mut self.settings.compressor_presets,
                     eq: &mut self.settings.eq_presets,
                 },
+                &mixer_panel::Vst3View {
+                    installed: &installed,
+                    scanning: self.plugin_scan_rx.is_some(),
+                    known: &|effect| {
+                        self.timeline_audio
+                            .as_ref()
+                            .and_then(|audio| audio.plugin_known(effect))
+                            .unwrap_or_else(|| {
+                                installed.iter().any(|i| i.class_id == effect.class_id)
+                            })
+                    },
+                    latency_ms: &|key| {
+                        self.timeline_audio
+                            .as_ref()
+                            .and_then(|audio| audio.plugin_latency_ms(key))
+                    },
+                    failed: &|key| {
+                        self.timeline_audio
+                            .as_ref()
+                            .is_some_and(|audio| audio.plugin_failed(key))
+                    },
+                },
             ));
+            if std::mem::take(&mut self.mixer_panel.rescan_requested) {
+                self.start_plugin_scan(ui.ctx(), true);
+            }
             // Saved at once: a preset must not wait for the periodic save.
             if (&self.settings.compressor_presets, &self.settings.eq_presets)
                 != (&presets_before.0, &presets_before.1)
@@ -4464,6 +4624,15 @@ impl VenturiApp {
         // its changes go into a single undo step, like a drag.
         let holding = ui.input(|i| i.pointer.any_down()) || preview_combo_open(ui.ctx());
         self.apply_effect_changes(pending_effects, holding);
+        if let Some(request) = self.mixer_panel.editor_requested.take() {
+            let current = self.timeline_id;
+            self.timeline_audio();
+            if let Some(audio) = &mut self.timeline_audio {
+                self.plugin_editors
+                    .open(ui.ctx(), &self.session.project, request, current, audio);
+                ui.ctx().request_repaint();
+            }
+        }
 
         let mut transport_action = transport::TransportResponse::default();
         let mut viewer_rect = None;
@@ -4830,6 +4999,8 @@ fn main() -> eframe::Result<()> {
             theme::apply(&cc.egui_ctx);
             let mut app = VenturiApp::default();
             let egui_ctx = cc.egui_ctx.clone();
+            let plugin_ctx = egui_ctx.clone();
+            vv_plugin::set_restart_waker(std::sync::Arc::new(move || plugin_ctx.request_repaint()));
             app.session
                 .set_waker(vv_session::Waker::new(move || egui_ctx.request_repaint()));
             app.settings_path = settings_path;
@@ -4838,6 +5009,11 @@ fn main() -> eframe::Result<()> {
             }
             app.settings = settings;
             app.settings.language.apply();
+            // Seeded even when empty so nothing scans on the UI thread.
+            vv_plugin::set_installed(app.settings.vst3_plugins.clone().unwrap_or_default());
+            if app.settings.needs_plugin_scan() {
+                app.start_plugin_scan(&cc.egui_ctx, false);
+            }
             vv_media::hw::set_budget_bytes(app.settings.hw_decode_budget_bytes());
             hw_decode::start(app.settings.hw_decode);
             app.mcp_forced = mcp_forced;
@@ -4893,7 +5069,36 @@ fn run_mcp_command(args: &[String]) -> ! {
     run_mcp_server(args.first().map(PathBuf::from))
 }
 
+/// Publishes a scan to `installed()` and caches it in the settings; returns
+/// whether it matched the list already installed.
+fn apply_scan_result(settings: &mut settings::Settings, list: Vec<vv_plugin::PluginInfo>) -> bool {
+    let unchanged = vv_plugin::same_plugins(&list, &vv_plugin::installed());
+    if !unchanged {
+        vv_plugin::set_installed(list.clone());
+    }
+    settings.vst3_plugins = Some(list);
+    unchanged
+}
+
+/// Headless processes never scan: they reuse the list the GUI cached, empty
+/// until one GUI scan or rescan has run.
+fn seed_installed_from_settings(path: Option<&Path>) {
+    let plugins = path
+        .map(settings::Settings::load)
+        .and_then(|s| s.vst3_plugins)
+        .unwrap_or_default();
+    vv_plugin::set_installed(plugins);
+}
+
 fn run_mcp_server(project: Option<PathBuf>) -> ! {
+    let protocol_out = match vv_mcp::protect_stdout() {
+        Ok(out) => out,
+        Err(e) => {
+            eprintln!("cannot protect the MCP output stream: {e}");
+            std::process::exit(1);
+        }
+    };
+    seed_installed_from_settings(settings::Settings::default_path().as_deref());
     let mut session = vv_session::Session::default();
     if let Some(path) = project
         && let Err(e) = session.open(&path)
@@ -4901,7 +5106,7 @@ fn run_mcp_server(project: Option<PathBuf>) -> ! {
         eprintln!("cannot open {}: {e}", path.display());
         std::process::exit(1);
     }
-    match vv_mcp::serve_headless_stdio(session) {
+    match vv_mcp::serve_headless_stdio(session, protocol_out) {
         Ok(()) => std::process::exit(0),
         Err(e) => {
             eprintln!("MCP server: {e}");

@@ -58,3 +58,18 @@ jobs:
             --skip fast_playback_ \
             --skip preview_mix_follows_audio_clip_edits \
             --skip space_plays_the_media_pool_preview
+
+  # The macOS loader, the native editor and the fixture bundle: the Linux job
+  # covers the rest of the workspace.
+  vv-plugin-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: brew install ffmpeg pkgconf
+
+      - name: Test
+        run: cargo test -p vv-plugin
