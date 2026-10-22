@@ -467,3 +467,145 @@ fn a_gap_in_the_timestamps_is_kept_by_a_decode_from_the_start_and_by_a_seek() {
         );
     }
 }
+
+/// Removes its directory on drop, even when an assertion panics.
+struct TempDir(std::path::PathBuf);
+
+impl TempDir {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("vv-media-seek-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Each requested stream decoded from `from`, by seeking when `from > 0`,
+/// as `(frames placed, NaN where nothing plays)` over `from..from + len`.
+fn multi_decode(path: &std::path::Path, streams: &[usize], from: u64, len: u64) -> Vec<Vec<f32>> {
+    let mut out = vec![vec![f32::NAN; len as usize * 2]; streams.len()];
+    let mut done = vec![false; streams.len()];
+    decode_audio_streams_from(path, streams, 48_000, from, |slot, channels, at, chunk| {
+        assert_eq!(channels, 2);
+        for (i, frame) in chunk.as_chunks::<2>().0.iter().enumerate() {
+            let pos = at + i as u64;
+            if (from..from + len).contains(&pos) {
+                let o = (pos - from) as usize * 2;
+                out[slot][o..o + 2].copy_from_slice(frame);
+            }
+        }
+        done[slot] |= at >= from + len;
+        if done.iter().all(|&d| d) {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    })
+    .unwrap();
+    out
+}
+
+fn worst_difference(got: &[f32], want: &[f32]) -> f32 {
+    got.iter()
+        .zip(want)
+        .fold(0.0f32, |m, (g, w)| match (g.is_nan(), w.is_nan()) {
+            (true, true) => m,
+            (false, false) => m.max((g - w).abs()),
+            _ => f32::INFINITY,
+        })
+}
+
+/// Two audio streams of different codecs and lengths (20 s AAC at 48 kHz,
+/// 14 s Opus from a different sweep), plus video, in one mkv.
+#[test]
+fn a_seeked_decode_of_several_streams_matches_the_full_decode_of_each() {
+    let dir = TempDir::new("multi");
+    let path = dir.0.join("two_streams.mkv");
+    let second = "aevalsrc=0.5*sin(2*PI*(200+500*t)*t):duration=14:sample_rate=48000";
+    crate::test_support::ffmpeg(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            CHIRP,
+            "-f",
+            "lavfi",
+            "-i",
+            second,
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=duration=20:size=320x240:rate=30",
+            "-map",
+            "2:v",
+            "-map",
+            "0:a",
+            "-map",
+            "1:a",
+            "-c:v",
+            "libx264",
+            "-g",
+            "120",
+            "-ac",
+            "2",
+            "-c:a:0",
+            "aac",
+            "-c:a:1",
+            "libopus",
+        ],
+        &path,
+    );
+    // Indices count audio streams only.
+    let streams = [0, 1];
+    let full_len = 48_000 * 14;
+    let full = multi_decode(&path, &streams, 0, full_len);
+    assert!(
+        full.iter()
+            .all(|f| f.iter().any(|v| *v != 0.0 && !v.is_nan()))
+    );
+    for from in [300, 48_000 * 7 + 123, 48_000 * 13 - 1_000] {
+        let len = 24_000;
+        let got = multi_decode(&path, &streams, from, len);
+        for (slot, (g, f)) in got.iter().zip(&full).enumerate() {
+            let want = &f[from as usize * 2..(from + len) as usize * 2];
+            let worst = worst_difference(g, want);
+            assert!(
+                worst <= 1e-4,
+                "stream slot {slot}: from frame {from} the seeked decode differs by {worst}"
+            );
+        }
+    }
+    // Past the end of the shorter stream the longer one still seeks.
+    let from = 48_000 * 17 + 11;
+    let long = multi_decode(&path, &streams, from, 24_000);
+    let full_long = multi_decode(&path, &[0], 0, 48_000 * 20);
+    let want = &full_long[0][from as usize * 2..(from + 24_000) as usize * 2];
+    assert!(worst_difference(&long[0], want) <= 1e-4);
+}
+
+#[test]
+fn a_seeked_decode_matches_the_full_decode_on_vbr_mp3() {
+    let dir = TempDir::new("vbr");
+    let path = dir.0.join("chirp_vbr.mp3");
+    crate::test_support::ffmpeg(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            CHIRP,
+            "-ac",
+            "2",
+            "-c:a",
+            "libmp3lame",
+            "-q:a",
+            "2",
+        ],
+        &path,
+    );
+    assert_seek_matches_full_decode(&path, 1e-4);
+}
