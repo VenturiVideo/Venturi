@@ -9,8 +9,7 @@ use super::*;
 
 #[test]
 fn encodes_video_only_file_with_correct_dimensions_and_frame_count() {
-    let dir = std::env::temp_dir().join("vv-media-encode-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-media-encode-test");
     let path = dir.join("video_only.mp4");
 
     let fps = vv_core::Rational::new(25, 1);
@@ -41,8 +40,7 @@ fn encodes_video_only_file_with_correct_dimensions_and_frame_count() {
 
 #[test]
 fn encodes_video_and_audio_streams_together() {
-    let dir = std::env::temp_dir().join("vv-media-encode-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-media-encode-test");
     let path = dir.join("video_audio.mp4");
 
     let fps = vv_core::Rational::new(25, 1);
@@ -84,8 +82,7 @@ fn encodes_video_and_audio_streams_together() {
 /// file with both streams.
 #[test]
 fn encodes_with_every_available_codec_and_preset_choice() {
-    let dir = std::env::temp_dir().join("vv-media-encode-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-media-encode-test");
     let fps = vv_core::Rational::new(25, 1);
     let frame = solid_i420(256, 256, [63, 102, 240]);
     let samples = vec![0.1_f32; 48000 * 2];

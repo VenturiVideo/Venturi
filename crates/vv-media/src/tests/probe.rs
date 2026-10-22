@@ -52,8 +52,7 @@ fn too_few_packets_to_measure_a_rate() {
 /// the true last decodable frame, not trust the given value.
 #[test]
 fn verify_last_decodable_frame_corrects_an_inflated_nominal() {
-    let dir = std::env::temp_dir().join("vv-media-probe-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-media-probe-test");
     let path = dir.join("dieci_frame.mp4");
     crate::test_support::ffmpeg(
         &[
@@ -88,8 +87,7 @@ fn verify_last_decodable_frame_corrects_an_inflated_nominal() {
 /// the fps promises many more frames than the video has.
 #[test]
 fn probe_ignores_frames_promised_by_an_audio_track_longer_than_the_video() {
-    let dir = std::env::temp_dir().join("vv-media-probe-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-media-probe-test");
     let path = dir.join("audio_piu_lungo.mp4");
     crate::test_support::ffmpeg(
         &[
@@ -124,8 +122,7 @@ fn probe_ignores_frames_promised_by_an_audio_track_longer_than_the_video() {
 /// stated by the user (compressed x264), not a mock.
 #[test]
 fn probe_reads_x264_metadata() {
-    let dir = std::env::temp_dir().join("vv-media-probe-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-media-probe-test");
     let path = dir.join("sample.mp4");
 
     crate::test_support::ffmpeg(
@@ -161,8 +158,7 @@ fn probe_reads_x264_metadata() {
 
 #[test]
 fn probe_accepts_an_audio_only_file() {
-    let dir = std::env::temp_dir().join("vv-media-probe-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-media-probe-test");
     let path = dir.join("tone.wav");
     crate::test_support::ffmpeg(
         &[
@@ -185,8 +181,7 @@ fn probe_accepts_an_audio_only_file() {
 
 #[test]
 fn probe_takes_an_audio_file_with_cover_art_for_audio_only() {
-    let dir = std::env::temp_dir().join("vv-media-probe-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-media-probe-test");
     let cover = dir.join("cover.jpg");
     crate::test_support::ffmpeg(
         &[
@@ -232,8 +227,7 @@ fn probe_takes_an_audio_file_with_cover_art_for_audio_only() {
 
 #[test]
 fn probe_image_reads_dimensions_and_reports_the_image_sentinel() {
-    let dir = std::env::temp_dir().join("vv-media-probe-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-media-probe-test");
     let path = dir.join("still.png");
     crate::test_support::ffmpeg(
         &[
@@ -262,8 +256,7 @@ fn probe_image_reads_dimensions_and_reports_the_image_sentinel() {
 /// probed as a one-frame video would last a single frame on the timeline.
 #[test]
 fn probe_media_recognizes_an_image_by_its_extension() {
-    let dir = std::env::temp_dir().join("vv-media-probe-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-media-probe-test");
     let path = dir.join("STILL.PNG");
     crate::test_support::ffmpeg(
         &[
@@ -283,8 +276,7 @@ fn probe_media_recognizes_an_image_by_its_extension() {
 
 #[test]
 fn probe_rejects_a_file_without_audio_or_video() {
-    let dir = std::env::temp_dir().join("vv-media-probe-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-media-probe-test");
     let path = dir.join("subtitles.srt");
     std::fs::write(&path, "1\n00:00:00,000 --> 00:00:01,000\nhello\n").unwrap();
     assert!(probe(&path).is_err());
@@ -292,8 +284,7 @@ fn probe_rejects_a_file_without_audio_or_video() {
 
 #[test]
 fn content_fingerprint_is_stable_for_the_same_unchanged_file() {
-    let dir = std::env::temp_dir().join("vv-media-fingerprint-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-media-fingerprint-test");
     let path = dir.join("stable.bin");
     std::fs::write(&path, "test content").unwrap();
 
@@ -304,8 +295,7 @@ fn content_fingerprint_is_stable_for_the_same_unchanged_file() {
 
 #[test]
 fn content_fingerprint_differs_for_different_sized_files() {
-    let dir = std::env::temp_dir().join("vv-media-fingerprint-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-media-fingerprint-test");
     let path_a = dir.join("a.bin");
     let path_b = dir.join("b.bin");
     std::fs::write(&path_a, "short content").unwrap();
@@ -319,8 +309,7 @@ fn content_fingerprint_differs_for_different_sized_files() {
 
 #[test]
 fn content_fingerprint_changes_when_the_file_is_rewritten_with_different_content() {
-    let dir = std::env::temp_dir().join("vv-media-fingerprint-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-media-fingerprint-test");
     let path = dir.join("rewritten.bin");
 
     std::fs::write(&path, "first version").unwrap();
