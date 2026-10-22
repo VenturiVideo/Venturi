@@ -206,6 +206,66 @@ fn pitch_shifted_clips_with_different_keep_pitch_export_independently() {
 }
 
 #[test]
+fn pitch_shifting_an_aac_tone_preserves_its_continuous_phase() {
+    let mut project = Project::default();
+    let path = source(
+        "pitch_continuity.m4a",
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=3",
+        ],
+    );
+    let file = media(&mut project, path, 48_000, 1);
+    let mut shifted = clip(1, file, 0, 75, 0);
+    shifted.effects.pitch_shift.semitones = 12.0;
+    let tl = timeline(vec![audio_track(vec![shifted])]);
+    let output = rendered(&project, &tl, samples(0..75));
+    let mono: Vec<f64> = output
+        .iter()
+        .step_by(PROJECT_CHANNELS as usize)
+        .map(|x| f64::from(*x))
+        .collect();
+    let window_size = PROJECT_SAMPLE_RATE as usize / 10;
+    let omega = std::f64::consts::TAU * 880.0 / f64::from(PROJECT_SAMPLE_RATE);
+    let mut previous_phase: Option<f64> = None;
+    for window in mono[window_size * 2..mono.len() - window_size * 2].chunks_exact(window_size) {
+        let n = window.len() as f64;
+        let a = 2.0
+            * window
+                .iter()
+                .enumerate()
+                .map(|(i, x)| x * (omega * i as f64).cos())
+                .sum::<f64>()
+            / n;
+        let b = 2.0
+            * window
+                .iter()
+                .enumerate()
+                .map(|(i, x)| x * (omega * i as f64).sin())
+                .sum::<f64>()
+            / n;
+        let power = window.iter().map(|x| x * x).sum::<f64>() / n;
+        assert!(power > 0.001, "the shifted tone must stay audible");
+        let residual = ((power - (a * a + b * b) * 0.5).max(0.0) / power).sqrt();
+        assert!(
+            residual < 0.08,
+            "continuous tone distorted: residual {residual}"
+        );
+        let phase = b.atan2(a);
+        if let Some(previous) = previous_phase {
+            let jump = (phase - previous)
+                .sin()
+                .atan2((phase - previous).cos())
+                .abs();
+            assert!(jump < 0.15, "unexpected phase jump of {jump} radians");
+        }
+        previous_phase = Some(phase);
+    }
+}
+
+#[test]
 fn a_pitch_shifted_compound_clip_matches_preview_and_export() {
     let mut project = Project::default();
     let file = media(
@@ -666,6 +726,9 @@ fn measured_parts_survive_the_disk() {
         let bytes = encode_parts(&sources, &part);
         assert_eq!(decode_parts(&bytes), Some((sources.to_vec(), part)));
         assert_eq!(decode_parts(&bytes[..bytes.len() - 1]), None);
+        let mut previous = bytes;
+        previous[4..8].copy_from_slice(&(PARTS_VERSION - 1).to_le_bytes());
+        assert_eq!(decode_parts(&previous), None);
     }
 }
 

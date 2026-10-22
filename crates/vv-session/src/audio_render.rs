@@ -559,7 +559,7 @@ impl LevelCache {
 const PARTS_MAGIC: &[u8; 4] = b"VVLV";
 /// Raised when the format or what a measure computes changes: older files
 /// are measured again.
-const PARTS_VERSION: u32 = 3;
+const PARTS_VERSION: u32 = 4;
 
 fn encode_parts(sources: &[Stamp], part: &LevelParts) -> Vec<u8> {
     let mut bytes = PARTS_MAGIC.to_vec();

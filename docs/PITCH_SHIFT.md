@@ -29,6 +29,8 @@ octave above the source. With **Keep pitch** disabled, the same clip plays
 two octaves above the source: one from speed and one from Pitch Shift.
 
 Preview and export use the same Rubber Band processing through FFmpeg.
+Pitch shifting uses smooth transient handling to avoid phase-reset artifacts
+on sustained tones. This favours continuity and may soften very sharp attacks.
 The preview prepares the processed clip in the background and caches it;
 the clip can be silent while this preparation runs. Changing its source
 range, speed, pitch or formant setting requests a new processed buffer.

@@ -99,7 +99,10 @@ impl Stretcher {
         let pitch_options = if pitch == 1.0 {
             String::new()
         } else {
-            format!(":pitch={pitch}:formant={formant}:pitchq=quality:channels=together")
+            // Phase resets on detected transients can glitch even a sustained tone.
+            format!(
+                ":pitch={pitch}:formant={formant}:pitchq=quality:channels=together:transients=smooth"
+            )
         };
         graph
             .output("in", 0)
