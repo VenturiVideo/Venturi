@@ -4363,7 +4363,7 @@ fn import_otio_from_adds_a_timeline_and_reports_skipped_clips() {
     };
     let otio = serde_json::json!({
         "OTIO_SCHEMA": "Timeline.1",
-        "name": "Importata",
+        "name": "Imported",
         "tracks": { "OTIO_SCHEMA": "Stack.1", "children": [{
             "OTIO_SCHEMA": "Track.1",
             "kind": "Video",
@@ -4701,7 +4701,7 @@ fn an_audio_only_file_imports_and_drops_as_an_audio_clip() {
     let clip = &audio.clips[0];
     assert_eq!(clip.timeline_start, 10);
     assert_eq!(clip.linked_group, None);
-    assert_eq!(clip.timeline_len, 50, "2 s a 25 fps");
+    assert_eq!(clip.timeline_len, 50, "2 s at 25 fps");
 }
 
 fn make_png(name: &str) -> PathBuf {

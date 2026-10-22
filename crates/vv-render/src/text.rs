@@ -356,11 +356,14 @@ fn rounded_rect_masks(
         ..((center.1 + half.1 + 1.0).ceil().clamp(0.0, height as f32) as u32);
     let coverage = |d: f32| (0.5 - d).clamp(0.0, 1.0);
     for y in y_range {
+        let py = (y as f32 + 0.5 - center.1).abs() - (half.1 - radius);
         for x in x_range.clone() {
             let px = (x as f32 + 0.5 - center.0).abs() - (half.0 - radius);
-            let py = (y as f32 + 0.5 - center.1).abs() - (half.1 - radius);
-            let outside = (px.max(0.0).powi(2) + py.max(0.0).powi(2)).sqrt();
-            let d = outside + px.max(py).min(0.0) - radius;
+            let d = if px > 0.0 && py > 0.0 {
+                (px * px + py * py).sqrt() - radius
+            } else {
+                px.max(py) - radius
+            };
             let i = (y * width + x) as usize;
             let inside = coverage(d);
             fill[i] = (inside * 255.0).round() as u8;

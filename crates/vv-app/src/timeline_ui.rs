@@ -6,7 +6,7 @@
 
 use egui::emath::GuiRounding as _;
 use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 use vv_core::{
     Clip, ClipId, ClipSource, FadeEdge, FrameIdx, History, Keyframed, Project, TimelineId, Track,
@@ -2732,7 +2732,7 @@ pub fn show_timeline(
                 let mut pending_crossing_previews: Vec<(usize, ClipId, FadeEdge)> = Vec::new();
 
                 // The moving clips are drawn last: they invade the others.
-                let trimmed_keys: Vec<ClipKey> = state
+                let trimmed_keys: HashSet<ClipKey> = state
                     .trimming()
                     .map(|t| {
                         std::iter::once((t.track_index, t.clip_id))
@@ -2742,16 +2742,18 @@ pub fn show_timeline(
                     .unwrap_or_default();
                 let mut moving_keys = trimmed_keys.clone();
                 if let Some(d) = state.moving() {
-                    moving_keys.push((d.track_index, d.clip_id));
+                    moving_keys.insert((d.track_index, d.clip_id));
                     moving_keys.extend(d.followers.iter().map(|&(id, track, _)| (track, id)));
                 }
-                let draw_order: Vec<&ClipVisual> = visuals
+                let draw_order: Vec<(usize, &ClipVisual)> = visuals
                     .iter()
-                    .filter(|v| !moving_keys.contains(&(v.track_index, v.clip.id)))
+                    .enumerate()
+                    .filter(|(_, v)| !moving_keys.contains(&(v.track_index, v.clip.id)))
                     .chain(
                         visuals
                             .iter()
-                            .filter(|v| moving_keys.contains(&(v.track_index, v.clip.id))),
+                            .enumerate()
+                            .filter(|(_, v)| moving_keys.contains(&(v.track_index, v.clip.id))),
                     )
                     .collect();
                 // When duplicating, the originals stay visible in their place.
@@ -2794,7 +2796,7 @@ pub fn show_timeline(
                         );
                     }
                 }
-                for visual in draw_order {
+                for (visual_idx, visual) in draw_order {
                     let painter = track_painter(visual.track_index);
                     let is_trimming_this =
                         trimmed_keys.contains(&(visual.track_index, visual.clip.id));
@@ -2859,7 +2861,10 @@ pub fn show_timeline(
                     let is_selected = state
                         .selected
                         .contains(&(visual.track_index, visual.clip.id));
-                    paint_clip_box(&painter, clip_rect, visual, is_selected);
+                    let clip_visible = clip_rect.intersects(painter.clip_rect());
+                    if clip_visible {
+                        paint_clip_box(&painter, clip_rect, visual, is_selected);
+                    }
 
                     let retime_bar_shown = state.retime_controls.contains(&visual.clip.id)
                         && matches!(visual.clip.source, ClipSource::Media(_));
@@ -3026,55 +3031,57 @@ pub fn show_timeline(
                         }
                     }
 
-                    // Waveform: maximum of the bins per column, shape independent of the zoom.
-                    if track_kinds[visual.track_index] == TrackKind::Audio
-                        && visual.clip.freeze.is_none()
-                        && let ClipSource::Media(media_id) = &visual.clip.source
-                        && let Some(item) = project.media_pool.get(*media_id)
-                        && let Some(wf) =
-                            waveform_cache.get(&(item.content_hash, visual.clip.audio_stream_index))
-                    {
-                        // During a trim the drawn clip covers another
-                        // band of the source: without remapping it the
-                        // waveform would stretch instead of being cut.
-                        let (wave_start, wave_end) = if is_trimming_this {
-                            (display_start, display_start + display_len)
+                    if clip_visible {
+                        // Waveform: maximum of the bins per column, shape independent of the zoom.
+                        if track_kinds[visual.track_index] == TrackKind::Audio
+                            && visual.clip.freeze.is_none()
+                            && let ClipSource::Media(media_id) = &visual.clip.source
+                            && let Some(item) = project.media_pool.get(*media_id)
+                            && let Some(wf) = waveform_cache
+                                .get(&(item.content_hash, visual.clip.audio_stream_index))
+                        {
+                            // During a trim the drawn clip covers another
+                            // band of the source: without remapping it the
+                            // waveform would stretch instead of being cut.
+                            let (wave_start, wave_end) = if is_trimming_this {
+                                (display_start, display_start + display_len)
+                            } else {
+                                (visual.clip.timeline_start, visual.clip.timeline_end())
+                            };
+                            let fps = timeline_fps.as_f64();
+                            draw_clip_waveform(
+                                &painter,
+                                clip_rect,
+                                &wf.peaks,
+                                visual.clip.media_secs_at(wave_start, fps),
+                                visual.clip.media_secs_at(wave_end, fps),
+                                item.meta.fps.as_f64(),
+                                wf.audio_duration_secs,
+                                painter.clip_rect(),
+                                &visual.clip.effects.gain_db,
+                            );
+                        }
+
+                        if !visual.locked {
+                            paint_silence_preview(
+                                &painter,
+                                clip_rect,
+                                &visual.clip,
+                                px_per_frame,
+                                &state.silence_preview,
+                            );
+                        }
+
+                        let is_proxy_backed = proxy_ranges.iter().any(|&(s, e)| {
+                            s < visual.clip.timeline_end() && e >= visual.clip.timeline_start
+                        });
+                        let top_inset = if retime_bar_shown {
+                            retime_bar_height(clip_rect)
                         } else {
-                            (visual.clip.timeline_start, visual.clip.timeline_end())
+                            0.0
                         };
-                        let fps = timeline_fps.as_f64();
-                        draw_clip_waveform(
-                            &painter,
-                            clip_rect,
-                            &wf.peaks,
-                            visual.clip.media_secs_at(wave_start, fps),
-                            visual.clip.media_secs_at(wave_end, fps),
-                            item.meta.fps.as_f64(),
-                            wf.audio_duration_secs,
-                            painter.clip_rect(),
-                            &visual.clip.effects.gain_db,
-                        );
+                        paint_clip_overlay(&painter, clip_rect, visual, is_proxy_backed, top_inset);
                     }
-
-                    if !visual.locked {
-                        paint_silence_preview(
-                            &painter,
-                            clip_rect,
-                            &visual.clip,
-                            px_per_frame,
-                            &state.silence_preview,
-                        );
-                    }
-
-                    let is_proxy_backed = proxy_ranges.iter().any(|&(s, e)| {
-                        s < visual.clip.timeline_end() && e >= visual.clip.timeline_start
-                    });
-                    let top_inset = if retime_bar_shown {
-                        retime_bar_height(clip_rect)
-                    } else {
-                        0.0
-                    };
-                    paint_clip_overlay(&painter, clip_rect, visual, is_proxy_backed, top_inset);
                     if retime_bar_shown {
                         let group: Vec<ClipKey> = expand_to_linked_groups(
                             &visuals,
@@ -3250,17 +3257,17 @@ pub fn show_timeline(
                     // the whole clip would be "only edges" and it could no longer
                     // be moved (Move) with a normal drag from the center.
                     let adjacent = |at: FrameIdx, edge: TrimEdge| {
-                        visuals
-                            .iter()
-                            .find(|v| {
-                                v.track_index == visual.track_index
-                                    && v.clip.id != visual.clip.id
-                                    && match edge {
-                                        TrimEdge::Start => v.clip.timeline_end() == at,
-                                        TrimEdge::End => v.clip.timeline_start == at,
-                                    }
+                        let neighbor_idx = match edge {
+                            TrimEdge::Start => visual_idx.checked_sub(1)?,
+                            TrimEdge::End => visual_idx + 1,
+                        };
+                        let v = visuals.get(neighbor_idx)?;
+                        (v.track_index == visual.track_index
+                            && match edge {
+                                TrimEdge::Start => v.clip.timeline_end() == at,
+                                TrimEdge::End => v.clip.timeline_start == at,
                             })
-                            .map(|v| (v.track_index, v.clip.id))
+                        .then_some((v.track_index, v.clip.id))
                     };
                     let zones = edge_zones(
                         clip_rect.width(),
@@ -4551,22 +4558,16 @@ fn begin_transition_drag(state: &mut TimelineState, visual: &ClipVisual, edge: F
 /// looks for whoever touches its start, `Out` for whoever touches its end. `None` if
 /// `clip_id` does not exist or has no neighbors on that side.
 fn adjacent_clip(track: &vv_core::Track, clip_id: ClipId, edge: FadeEdge) -> Option<ClipId> {
-    let clip = track.clip(clip_id)?;
-    let at = match edge {
-        FadeEdge::In => clip.timeline_start,
-        FadeEdge::Out => clip.timeline_end(),
+    let pos = track.clips.iter().position(|c| c.id == clip_id)?;
+    let clip = &track.clips[pos];
+    let neighbor = match edge {
+        FadeEdge::In => pos.checked_sub(1).and_then(|i| track.clips.get(i))?,
+        FadeEdge::Out => track.clips.get(pos + 1)?,
     };
-    track
-        .clips
-        .iter()
-        .find(|c| {
-            c.id != clip_id
-                && match edge {
-                    FadeEdge::In => c.timeline_end() == at,
-                    FadeEdge::Out => c.timeline_start == at,
-                }
-        })
-        .map(|c| c.id)
+    match edge {
+        FadeEdge::In => (neighbor.timeline_end() == clip.timeline_start).then_some(neighbor.id),
+        FadeEdge::Out => (neighbor.timeline_start == clip.timeline_end()).then_some(neighbor.id),
+    }
 }
 
 /// Creates (or replaces) the crossing transition between `left_id` and `right_id`,
@@ -4821,21 +4822,21 @@ fn neighbor_visual<'a, 'b>(
     clip_id: ClipId,
     edge: FadeEdge,
 ) -> Option<&'a ClipVisual<'b>> {
-    let visual = visuals
+    let pos = visuals
         .iter()
-        .find(|v| v.track_index == track_index && v.clip.id == clip_id)?;
-    let at = match edge {
-        FadeEdge::In => visual.clip.timeline_start,
-        FadeEdge::Out => visual.clip.timeline_end(),
+        .position(|v| v.track_index == track_index && v.clip.id == clip_id)?;
+    let visual = &visuals[pos];
+    let neighbor_pos = match edge {
+        FadeEdge::In => pos.checked_sub(1)?,
+        FadeEdge::Out => pos + 1,
     };
-    visuals.iter().find(|v| {
-        v.track_index == track_index
-            && v.clip.id != clip_id
-            && match edge {
-                FadeEdge::In => v.clip.timeline_end() == at,
-                FadeEdge::Out => v.clip.timeline_start == at,
-            }
-    })
+    let neighbor = visuals.get(neighbor_pos)?;
+    (neighbor.track_index == track_index
+        && match edge {
+            FadeEdge::In => neighbor.clip.timeline_end() == visual.clip.timeline_start,
+            FadeEdge::Out => neighbor.clip.timeline_start == visual.clip.timeline_end(),
+        })
+    .then_some(neighbor)
 }
 
 /// Neither the clip nor the neighbor it would cross with may be an
@@ -6263,6 +6264,9 @@ pub(crate) fn draw_clip_waveform(
         egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 90, 90, 200));
 
     let width = clip_rect.width();
+    let constant_gain = gain_db
+        .is_constant()
+        .then(|| vv_audio::mixer::db_to_linear(gain_db.default));
     let mut x = vis.min.x;
     while x < vis.max.x {
         let frac = ((x - clip_rect.min.x) / width) as f64;
@@ -6275,9 +6279,12 @@ pub(crate) fn draw_clip_waveform(
         );
         // The gain lives in *source* frames, as in the mixer: the shape
         // drawn is the one that will really be heard, clipping included.
-        let secs = clip_start_secs + frac * (clip_end_secs - clip_start_secs);
-        let source_frame = (secs * media_fps).floor() as FrameIdx;
-        let amplified = peaks[bin] * vv_audio::mixer::db_to_linear(gain_db.value_at(source_frame));
+        let gain = constant_gain.unwrap_or_else(|| {
+            let secs = clip_start_secs + frac * (clip_end_secs - clip_start_secs);
+            let source_frame = (secs * media_fps).floor() as FrameIdx;
+            vv_audio::mixer::db_to_linear(gain_db.value_at(source_frame))
+        });
+        let amplified = peaks[bin] * gain;
         let h = (half_height * amplified.min(1.0)).max(0.5);
         painter.line_segment(
             [egui::pos2(x, center_y - h), egui::pos2(x, center_y + h)],
