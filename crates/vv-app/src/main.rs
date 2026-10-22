@@ -5115,6 +5115,10 @@ fn run_mcp_server(project: Option<PathBuf>) -> ! {
 }
 
 #[cfg(test)]
+#[path = "tests/test_support.rs"]
+mod test_support;
+
+#[cfg(test)]
 #[path = "tests/main.rs"]
 mod tests;
 
