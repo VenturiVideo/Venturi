@@ -1627,6 +1627,8 @@ impl VenturiApp {
     /// Sends `render_ahead` a copy of the project only when the history has
     /// changed.
     fn sync_render_ahead(&mut self) {
+        #[cfg(feature = "performance")]
+        puffin::profile_scope!("sync_render_ahead");
         let Some(timeline_id) = self.timeline_id else {
             return;
         };
@@ -1999,6 +2001,8 @@ impl VenturiApp {
         layers: Vec<frame_provider::OwnedLayer>,
         output: vv_render::OutputFrame,
     ) {
+        #[cfg(feature = "performance")]
+        puffin::profile_scope!("show_composited");
         self.sync_compositor_precision();
         let unchanged = self.video_texture_id.is_some()
             && self
@@ -2062,6 +2066,8 @@ impl VenturiApp {
         &mut self,
         isolation: Option<Isolation>,
     ) -> Option<Vec<frame_provider::OwnedLayer>> {
+        #[cfg(feature = "performance")]
+        puffin::profile_scope!("timeline_video_layers");
         self.sync_compositor_precision();
         let timeline = &self.session.project.timelines[self.timeline_id?];
         // With keyframes standing in, a clip with none inside it has nothing
@@ -4038,6 +4044,8 @@ impl eframe::App for VenturiApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        #[cfg(feature = "performance")]
+        puffin::GlobalProfiler::lock().new_frame();
         // With MCP on, the session lives in a slot shared with the agent's
         // host thread between frames (see `mcp_host`).
         self.mcp_checkout();
@@ -4098,6 +4106,8 @@ impl VenturiApp {
     }
 
     fn frame_ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        #[cfg(feature = "performance")]
+        puffin::profile_function!();
         self.handle_close_request(&ui.ctx().clone());
         self.poll_pending_dialog(&ui.ctx().clone());
         self.poll_dropped_files(&ui.ctx().clone());
@@ -4955,6 +4965,17 @@ fn main() -> eframe::Result<()> {
         // SAFETY: no other thread started yet.
         unsafe { hw_decode::enable_intel_experimental_decode() };
     }
+    #[cfg(feature = "performance")]
+    let _puffin_server = match puffin_http::Server::new("127.0.0.1:8585") {
+        Ok(server) => {
+            puffin::set_scopes_on(true);
+            Some(server)
+        }
+        Err(error) => {
+            eprintln!("Could not start Puffin server: {error}");
+            None
+        }
+    };
     std::thread::spawn(vv_render::text::warm_up);
 
     let mut viewport = egui::ViewportBuilder::default()
