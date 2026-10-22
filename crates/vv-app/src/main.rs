@@ -7,6 +7,7 @@ extern crate rust_i18n;
 rust_i18n::i18n!("locales", fallback = "en");
 
 mod app_menu;
+mod camera_shake_panel;
 mod color_window;
 mod compressor_panel;
 mod eq_panel;
@@ -214,6 +215,7 @@ struct ClipPanelInfo {
 /// A filter of `ClipPanelInfo`, its parameters evaluated at the panel's frame.
 #[derive(Debug, Clone)]
 struct FilterPanelInfo {
+    shake: camera_shake_panel::ShakeInfo,
     kind: vv_core::FilterKind,
     enabled: bool,
     radius: f32,

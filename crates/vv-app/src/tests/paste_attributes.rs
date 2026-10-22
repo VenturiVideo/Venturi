@@ -356,3 +356,31 @@ fn pasted_color_corrections_bring_their_keyframes_into_the_target_clip() {
         .track(vv_core::GradeParam::HighlightsY);
     assert_eq!(track.keyframes()[0].0, 105);
 }
+
+#[test]
+fn pasted_camera_shake_keeps_settings_and_remaps_animated_controls() {
+    let mut source = source_clip();
+    let mut filter = vv_core::ClipFilter::new(vv_core::FilterKind::CameraShake);
+    filter.shake.seed = 123;
+    filter.shake.auto_zoom = false;
+    filter
+        .shake
+        .track_mut(vv_core::ShakeParam::MotionScale)
+        .upsert(5, 0.4, Interpolation::Linear);
+    source.effects.filters.push(filter);
+    let target = clip(2, 100, 120);
+    let pasted = merged_attributes(
+        &source,
+        &target,
+        &HashSet::from([Attribute::Filters]),
+        KeyframeMode::MaintainTiming,
+    );
+    let shake = &pasted.effects.filters[0].shake;
+    assert_eq!(shake.seed, 123);
+    assert!(!shake.auto_zoom);
+    assert_eq!(
+        shake.track(vv_core::ShakeParam::MotionScale).keyframes()[0].0,
+        105
+    );
+    assert_eq!(shake.track(vv_core::ShakeParam::Pan).default, 0.5);
+}
