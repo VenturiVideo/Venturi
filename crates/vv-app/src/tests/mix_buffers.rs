@@ -926,3 +926,23 @@ fn a_rescan_with_one_more_plugin_keeps_the_live_instances() {
     assert!(cache.plugins.as_ref().unwrap().knows(&effect_of("B")));
     assert_eq!(cache.retry.load(Ordering::Relaxed), generation + 1);
 }
+
+#[test]
+fn a_job_without_a_wanted_block_is_cancelled_and_forgotten() {
+    let key: Key = (PathBuf::from("a.wav"), 0);
+    let mut jobs: Vec<Job> = (0..2)
+        .map(|id| Job {
+            id,
+            blocks: id * 4..id * 4 + 2,
+            cancelled: Arc::default(),
+        })
+        .collect();
+    let flags: Vec<_> = jobs.iter().map(|j| j.cancelled.clone()).collect();
+    let mut job_keys: HashMap<u64, Key> = (0..2).map(|id| (id, key.clone())).collect();
+    StreamCache::retain_jobs(&mut jobs, &mut job_keys, |index| index == 5);
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].id, 1);
+    assert!(flags[0].load(Ordering::Relaxed));
+    assert!(!flags[1].load(Ordering::Relaxed));
+    assert!(!job_keys.contains_key(&0) && job_keys.contains_key(&1));
+}
