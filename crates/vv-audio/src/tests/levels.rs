@@ -142,6 +142,21 @@ fn keys(segments: &[LevelSegment]) -> Vec<u64> {
     segments.iter().map(|s| s.key).collect()
 }
 
+#[test]
+fn pitch_and_formant_edits_invalidate_level_measurements() {
+    let (project, media) = project();
+    let mut tl = timeline(vec![track(vec![clip(1, media, 0, 0, 10)])]);
+    let body = |tl: &Timeline| input_clips(&project, tl, RATE)[0].body;
+    let original = body(&tl);
+    tl.tracks[0].clips[0].effects.pitch_shift.semitones = 7.0;
+    let shifted = body(&tl);
+    assert_ne!(shifted, original);
+    tl.tracks[0].clips[0].effects.pitch_shift.preserve_formants = true;
+    assert_ne!(body(&tl), shifted);
+    tl.tracks[0].clips[0].effects.pitch_shift.enabled = false;
+    assert_eq!(body(&tl), original);
+}
+
 fn three_clips(media: vv_core::MediaId, second_start: i64, third_start: i64) -> Track {
     track(vec![
         clip(1, media, 0, 0, 10),

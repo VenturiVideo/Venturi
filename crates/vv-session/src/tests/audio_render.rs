@@ -72,6 +72,226 @@ fn audio_track(clips: Vec<Clip>) -> Track {
     }
 }
 
+#[test]
+fn clip_pitch_shift_preview_and_export_agree_without_changing_placement_or_duration() {
+    let mut project = Project::default();
+    let path = source(
+        "pitch_shift.wav",
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=4",
+        ],
+    );
+    let file = media(&mut project, path, 48_000, 1);
+    let cases = [
+        (Rational::one(), true, 12.0, true, false, 880.0),
+        (Rational::one(), true, -12.0, true, true, 220.0),
+        (Rational::one(), true, 12.0, false, false, 440.0),
+        (Rational::new(2, 1), true, 12.0, true, false, 880.0),
+        (Rational::new(2, 1), false, -12.0, true, false, 440.0),
+        (Rational::new(1, 2), false, 12.0, true, false, 440.0),
+    ];
+    for (speed, correction, semitones, enabled, preserve_formants, expected) in cases {
+        let mut shifted = Clip::new(
+            ClipId(1),
+            ClipSource::Media(file),
+            10,
+            10,
+            25,
+            Rational::one(),
+            speed,
+        );
+        shifted.pitch_correction = correction;
+        shifted.effects.pitch_shift = vv_core::PitchShift {
+            enabled,
+            semitones,
+            preserve_formants,
+            ..Default::default()
+        };
+        let tl = timeline(vec![audio_track(vec![shifted])]);
+        let range = samples(0..45);
+        let preview = mixed_whole(&project, &tl, range.clone());
+        let export = rendered(&project, &tl, range);
+        assert_eq!(
+            preview, export,
+            "speed {speed:?}, correction {correction}, pitch {semitones}"
+        );
+        assert_eq!(
+            export.len(),
+            samples(0..45).end as usize * PROJECT_CHANNELS as usize
+        );
+        assert!(
+            export[..samples(0..10).end as usize * PROJECT_CHANNELS as usize]
+                .iter()
+                .all(|s| *s == 0.0)
+        );
+        assert!(
+            export[samples(0..35).end as usize * PROJECT_CHANNELS as usize..]
+                .iter()
+                .all(|s| *s == 0.0)
+        );
+        let window = &export[samples(0..16).end as usize * PROJECT_CHANNELS as usize
+            ..samples(0..29).end as usize * PROJECT_CHANNELS as usize];
+        let mono: Vec<f32> = window
+            .iter()
+            .step_by(PROJECT_CHANNELS as usize)
+            .copied()
+            .collect();
+        let crossings = mono
+            .windows(2)
+            .filter(|pair| pair[0] <= 0.0 && pair[1] > 0.0)
+            .count();
+        let heard = crossings as f64 * PROJECT_SAMPLE_RATE as f64 / mono.len() as f64;
+        assert!(
+            (heard - expected).abs() < 8.0,
+            "expected {expected}, heard {heard}"
+        );
+        let seek = rendered(&project, &tl, samples(13..30));
+        assert_eq!(
+            seek,
+            export[samples(0..13).end as usize * PROJECT_CHANNELS as usize
+                ..samples(0..30).end as usize * PROJECT_CHANNELS as usize]
+        );
+    }
+}
+
+#[test]
+fn pitch_shifted_clips_with_different_keep_pitch_export_independently() {
+    let mut project = Project::default();
+    let path = source(
+        "keep_pitch_cache.wav",
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=4",
+        ],
+    );
+    let file = media(&mut project, path, 48_000, 1);
+    let mut left = Clip::new(
+        ClipId(1),
+        ClipSource::Media(file),
+        0,
+        0,
+        25,
+        Rational::one(),
+        Rational::new(2, 1),
+    );
+    left.pitch_correction = true;
+    left.effects.pitch_shift.semitones = 12.0;
+    let mut right = left.clone();
+    right.id = ClipId(2);
+    right.timeline_start = 25;
+    right.pitch_correction = false;
+    let isolated = timeline(vec![audio_track(vec![right.clone()])]);
+    let together = timeline(vec![audio_track(vec![left, right])]);
+    let reference = rendered(&project, &isolated, samples(25..50));
+    let full = rendered(&project, &together, samples(0..50));
+    let actual = &full[samples(0..25).end as usize * PROJECT_CHANNELS as usize..];
+    let second_half = 24_000 * PROJECT_CHANNELS as usize;
+    let reference_peak = reference[second_half..]
+        .iter()
+        .fold(0.0_f32, |m, v| m.max(v.abs()));
+    let actual_peak = actual[second_half..]
+        .iter()
+        .fold(0.0_f32, |m, v| m.max(v.abs()));
+    assert!(reference_peak > 0.01);
+    assert!(
+        actual_peak > 0.01,
+        "the second clip becomes silent halfway through when the other clip populated the cache"
+    );
+    assert_eq!(actual, reference);
+}
+
+#[test]
+fn pitch_shifting_an_aac_tone_preserves_its_continuous_phase() {
+    let mut project = Project::default();
+    let path = source(
+        "pitch_continuity.m4a",
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=3",
+        ],
+    );
+    let file = media(&mut project, path, 48_000, 1);
+    let mut shifted = clip(1, file, 0, 75, 0);
+    shifted.effects.pitch_shift.semitones = 12.0;
+    let tl = timeline(vec![audio_track(vec![shifted])]);
+    let output = rendered(&project, &tl, samples(0..75));
+    let mono: Vec<f64> = output
+        .iter()
+        .step_by(PROJECT_CHANNELS as usize)
+        .map(|x| f64::from(*x))
+        .collect();
+    let window_size = PROJECT_SAMPLE_RATE as usize / 10;
+    let omega = std::f64::consts::TAU * 880.0 / f64::from(PROJECT_SAMPLE_RATE);
+    let mut previous_phase: Option<f64> = None;
+    for window in mono[window_size * 2..mono.len() - window_size * 2].chunks_exact(window_size) {
+        let n = window.len() as f64;
+        let a = 2.0
+            * window
+                .iter()
+                .enumerate()
+                .map(|(i, x)| x * (omega * i as f64).cos())
+                .sum::<f64>()
+            / n;
+        let b = 2.0
+            * window
+                .iter()
+                .enumerate()
+                .map(|(i, x)| x * (omega * i as f64).sin())
+                .sum::<f64>()
+            / n;
+        let power = window.iter().map(|x| x * x).sum::<f64>() / n;
+        assert!(power > 0.001, "the shifted tone must stay audible");
+        let residual = ((power - (a * a + b * b) * 0.5).max(0.0) / power).sqrt();
+        assert!(
+            residual < 0.08,
+            "continuous tone distorted: residual {residual}"
+        );
+        let phase = b.atan2(a);
+        if let Some(previous) = previous_phase {
+            let jump = (phase - previous)
+                .sin()
+                .atan2((phase - previous).cos())
+                .abs();
+            assert!(jump < 0.15, "unexpected phase jump of {jump} radians");
+        }
+        previous_phase = Some(phase);
+    }
+}
+
+#[test]
+fn a_pitch_shifted_compound_clip_matches_preview_and_export() {
+    let mut project = Project::default();
+    let file = media(
+        &mut project,
+        chirp("pitch_compound.wav", 48_000, 3),
+        48_000,
+        1,
+    );
+    let mut inner = clip(1, file, 0, 50, 0);
+    inner.effects.pitch_shift.semitones = -7.0;
+    let nested = project
+        .timelines
+        .insert(timeline(vec![audio_track(vec![inner])]));
+    let compound = project.media_pool.insert(MediaItem {
+        compound: Some(nested),
+        ..project.media_pool[file].clone()
+    });
+    let mut outer = clip(2, compound, 0, 50, 0);
+    outer.effects.pitch_shift.semitones = 12.0;
+    let tl = timeline(vec![audio_track(vec![outer])]);
+    let range = samples(0..50);
+    let preview = mixed_whole(&project, &tl, range.clone());
+    assert!(preview.iter().any(|s| s.abs() > 0.01));
+    assert_eq!(rendered(&project, &tl, range), preview);
+}
+
 fn samples(frames: std::ops::Range<u64>) -> Range<u64> {
     frames.start * FRAME_SAMPLES..frames.end * FRAME_SAMPLES
 }
@@ -577,6 +797,9 @@ fn measured_parts_survive_the_disk() {
         let bytes = encode_parts(&sources, &part);
         assert_eq!(decode_parts(&bytes), Some((sources.to_vec(), part)));
         assert_eq!(decode_parts(&bytes[..bytes.len() - 1]), None);
+        let mut previous = bytes;
+        previous[4..8].copy_from_slice(&(PARTS_VERSION - 1).to_le_bytes());
+        assert_eq!(decode_parts(&previous), None);
     }
 }
 

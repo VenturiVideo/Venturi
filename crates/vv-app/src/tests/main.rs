@@ -1,6 +1,129 @@
 use super::*;
 
 #[test]
+fn bypassing_pitch_on_a_selection_preserves_each_clips_settings_and_undoes() {
+    fn enabled_position(shape: &egui::epaint::Shape) -> Option<egui::Pos2> {
+        match shape {
+            egui::epaint::Shape::Text(text)
+                if text.galley.text() == t!("pitch_shift.enabled").as_ref() =>
+            {
+                Some(text.pos + text.galley.size() * 0.5)
+            }
+            egui::epaint::Shape::Vec(shapes) => shapes.iter().find_map(enabled_position),
+            _ => None,
+        }
+    }
+    let mut app = VenturiApp::default();
+    let first = make_timeline_with_clip(&mut app, 1, 0, 20);
+    let second = make_timeline_with_clip(&mut app, 1, 30, 20);
+    let timeline = app.timeline_id.unwrap();
+    app.properties_tab = PropertiesTab::Audio;
+    app.timeline_state.selected = BTreeSet::from([(1, first), (1, second)]);
+    let original = vv_core::PitchShift {
+        semitones: 12.0,
+        cents: 50.0,
+        preserve_formants: true,
+        ..Default::default()
+    };
+    app.session.project.timelines[timeline].tracks[1].clips[1]
+        .effects
+        .pitch_shift = original;
+    let targets = [(first, 0), (second, 30)].map(|(clip_id, timeline_start)| PanelTarget {
+        timeline,
+        track_index: 1,
+        clip_id,
+        source_frame: 0,
+        timeline_start,
+        is_solid_color: false,
+        is_text: false,
+    });
+    let ctx = egui::Context::default();
+    let mut position = None;
+    for frame in 0..5 {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, 900.0),
+                )),
+                time: Some(frame as f64),
+                ..Default::default()
+            },
+            |ui| {
+                app.show_properties_panel(ui, &[], &targets);
+            },
+        );
+        position = output
+            .shapes
+            .iter()
+            .find_map(|s| enabled_position(&s.shape));
+        output.textures_delta.clear();
+    }
+    let pos = position.expect("Pitch Shift Enabled checkbox must be visible");
+    let mut commands = Vec::new();
+    for pressed in [true, false] {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, 900.0),
+                )),
+                time: Some(if pressed { 6.0 } else { 6.01 }),
+                events: vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                ..Default::default()
+            },
+            |ui| {
+                commands.extend(app.show_properties_panel(ui, &[], &targets).0);
+            },
+        );
+        output.textures_delta.clear();
+    }
+    assert_eq!(commands.len(), 2);
+    app.session.history.do_command(
+        &mut app.session.project,
+        Box::new(vv_core::CompositeCommand::new(
+            vv_core::CommandLabel::PitchShift,
+            commands,
+        )),
+    );
+    let actual = app.session.project.timelines[timeline].tracks[1].clips[1]
+        .effects
+        .pitch_shift;
+    assert!(!actual.enabled);
+    assert_eq!(actual.semitones, original.semitones);
+    assert_eq!(actual.cents, original.cents);
+    assert_eq!(actual.preserve_formants, original.preserve_formants);
+    app.session.history.undo(&mut app.session.project);
+    assert_eq!(
+        app.session.project.timelines[timeline].tracks[1].clips[0]
+            .effects
+            .pitch_shift,
+        vv_core::PitchShift::default()
+    );
+    assert_eq!(
+        app.session.project.timelines[timeline].tracks[1].clips[1]
+            .effects
+            .pitch_shift,
+        original
+    );
+    app.session.history.redo(&mut app.session.project);
+    assert_eq!(
+        app.session.project.timelines[timeline].tracks[1].clips[1]
+            .effects
+            .pitch_shift,
+        actual
+    );
+}
+
+#[test]
 fn a_new_timeline_becomes_current_and_shows_up_in_the_media_pool() {
     let mut app = VenturiApp::default();
     let first = app.ensure_timeline();

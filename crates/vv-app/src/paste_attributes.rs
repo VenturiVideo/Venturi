@@ -25,6 +25,7 @@ pub(crate) enum Attribute {
     Masks,
     Transitions,
     Volume,
+    PitchShift,
 }
 
 /// The dialog's sections, in the order and with the names of the
@@ -77,7 +78,7 @@ impl Section {
 }
 
 impl Attribute {
-    pub(crate) const ALL: [Attribute; 16] = [
+    pub(crate) const ALL: [Attribute; 17] = [
         Attribute::Zoom,
         Attribute::Position,
         Attribute::Rotation,
@@ -92,6 +93,7 @@ impl Attribute {
         Attribute::Masks,
         Attribute::Transitions,
         Attribute::Volume,
+        Attribute::PitchShift,
         Attribute::Fades,
         Attribute::Speed,
     ];
@@ -108,7 +110,7 @@ impl Attribute {
             Attribute::Filters => Section::Filters,
             Attribute::Masks => Section::Masks,
             Attribute::Transitions => Section::Transitions,
-            Attribute::Volume => Section::Audio,
+            Attribute::Volume | Attribute::PitchShift => Section::Audio,
             Attribute::Fades | Attribute::Speed => Section::Clip,
         }
     }
@@ -131,6 +133,7 @@ impl Attribute {
             Attribute::Masks => t!("props.masks"),
             Attribute::Transitions => t!("props.transition"),
             Attribute::Volume => t!("props.volume"),
+            Attribute::PitchShift => t!("pitch_shift.title"),
         }
     }
 
@@ -601,6 +604,9 @@ fn merge(
             }
             Attribute::Volume => {
                 attributes.effects.gain_db = remap.apply(&source.effects.gain_db);
+            }
+            Attribute::PitchShift => {
+                attributes.effects.pitch_shift = source.effects.pitch_shift;
             }
             _ => {}
         }
