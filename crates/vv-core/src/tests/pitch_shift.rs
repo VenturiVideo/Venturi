@@ -1,6 +1,24 @@
 use super::*;
 
 #[test]
+fn named_fields_and_legacy_ron_effects_default_safely() {
+    let partial: PitchShift = ron::from_str("(semitones:12.0)").unwrap();
+    assert_eq!(partial.ratio(), 2.0);
+    assert!(partial.enabled);
+    assert!(!partial.preserve_formants);
+    let defaults = crate::EffectStack::default();
+    let saved = ron::to_string(&defaults).unwrap();
+    let field = format!(
+        "pitch_shift:{},",
+        ron::to_string(&defaults.pitch_shift).unwrap()
+    );
+    assert!(saved.contains(&field));
+    let legacy = saved.replace(&field, "");
+    let loaded: crate::EffectStack = ron::from_str(&legacy).unwrap();
+    assert_eq!(loaded.pitch_shift, PitchShift::default());
+}
+
+#[test]
 fn octaves_and_cents_have_the_expected_frequency_ratios() {
     let params = |semitones, cents| PitchShift {
         semitones,

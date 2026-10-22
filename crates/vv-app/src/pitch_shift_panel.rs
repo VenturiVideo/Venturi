@@ -19,15 +19,40 @@ pub(crate) fn builtin_presets() -> [(&'static str, PitchShift); 5] {
     })
 }
 
-pub(crate) fn show(ui: &mut egui::Ui, current: PitchShift) -> Option<PitchShift> {
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum PitchShiftEdit {
+    Enabled(bool),
+    Semitones(f32),
+    Cents(f32),
+    PreserveFormants(bool),
+    Replace(PitchShift),
+}
+
+impl PitchShiftEdit {
+    pub(crate) fn apply_to(self, mut current: PitchShift) -> PitchShift {
+        match self {
+            Self::Enabled(value) => current.enabled = value,
+            Self::Semitones(value) => current.semitones = value,
+            Self::Cents(value) => current.cents = value,
+            Self::PreserveFormants(value) => current.preserve_formants = value,
+            Self::Replace(value) => current = value,
+        }
+        current.sanitized()
+    }
+}
+
+pub(crate) fn show(ui: &mut egui::Ui, current: PitchShift) -> Vec<PitchShiftEdit> {
     let mut params = current;
-    let mut changed = false;
+    let mut edits = Vec::new();
     egui::CollapsingHeader::new(t!("pitch_shift.title"))
         .default_open(true)
         .show(ui, |ui| {
-            changed |= ui
+            if ui
                 .checkbox(&mut params.enabled, t!("pitch_shift.enabled"))
-                .changed();
+                .changed()
+            {
+                edits.push(PitchShiftEdit::Enabled(params.enabled));
+            }
             ui.add_enabled_ui(params.enabled, |ui| {
                 let presets = builtin_presets();
                 let selected = presets
@@ -40,11 +65,11 @@ pub(crate) fn show(ui: &mut egui::Ui, current: PitchShift) -> Option<PitchShift>
                         for (name, preset) in presets {
                             if ui.selectable_label(params == preset, t!(name)).clicked() {
                                 params = preset;
-                                changed = true;
+                                edits.push(PitchShiftEdit::Replace(preset));
                             }
                         }
                     });
-                changed |= ui
+                if ui
                     .add(
                         egui::Slider::new(
                             &mut params.semitones,
@@ -53,8 +78,11 @@ pub(crate) fn show(ui: &mut egui::Ui, current: PitchShift) -> Option<PitchShift>
                         .step_by(1.0)
                         .text(t!("pitch_shift.semitones")),
                     )
-                    .changed();
-                changed |= ui
+                    .changed()
+                {
+                    edits.push(PitchShiftEdit::Semitones(params.semitones));
+                }
+                if ui
                     .add(
                         egui::Slider::new(
                             &mut params.cents,
@@ -63,19 +91,24 @@ pub(crate) fn show(ui: &mut egui::Ui, current: PitchShift) -> Option<PitchShift>
                         .step_by(1.0)
                         .text(t!("pitch_shift.cents")),
                     )
-                    .changed();
-                changed |= ui
+                    .changed()
+                {
+                    edits.push(PitchShiftEdit::Cents(params.cents));
+                }
+                if ui
                     .checkbox(&mut params.preserve_formants, t!("pitch_shift.formants"))
                     .on_hover_text(t!("pitch_shift.formants_hint"))
-                    .changed();
+                    .changed()
+                {
+                    edits.push(PitchShiftEdit::PreserveFormants(params.preserve_formants));
+                }
             });
             if ui.button(t!("pitch_shift.reset")).clicked() {
-                params = PitchShift::default();
-                changed = true;
+                edits.push(PitchShiftEdit::Replace(PitchShift::default()));
             }
             ui.weak(t!("pitch_shift.hint"));
         });
-    changed.then_some(params.sanitized())
+    edits
 }
 
 #[cfg(test)]

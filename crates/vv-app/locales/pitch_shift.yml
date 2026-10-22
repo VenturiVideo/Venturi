@@ -2,7 +2,7 @@ _version: 2
 
 pitch_shift.title:
   en: "Pitch Shift"
-  it: "Pitch Shift"
+  it: "Trasposizione audio"
 
 pitch_shift.enabled:
   en: "Enabled"
@@ -58,4 +58,4 @@ pitch_shift.fifth_up:
 
 history.pitch_shift:
   en: "Pitch Shift"
-  it: "Pitch Shift"
+  it: "Trasposizione audio"

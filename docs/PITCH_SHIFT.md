@@ -3,6 +3,8 @@
 Select an audio clip and open **Properties → Audio → Pitch Shift**. The
 effect changes its pitch without moving it or changing its timeline duration.
 Edits apply to all selected audio clips.
+Changing one control preserves the other settings of each selected clip.
+Presets and reset replace the full pitch configuration on all selected clips.
 
 | Control | Behavior |
 | --- | --- |

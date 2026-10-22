@@ -941,6 +941,7 @@ fn collect_clips(
                     content,
                     (frames.start, frames.end),
                     span.step.to_bits(),
+                    tempo.to_bits(),
                     (pitch.to_bits(), preserve_formants),
                     (sample_rate, channels),
                 ));

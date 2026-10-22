@@ -158,6 +158,54 @@ fn clip_pitch_shift_preview_and_export_agree_without_changing_placement_or_durat
 }
 
 #[test]
+fn pitch_shifted_clips_with_different_keep_pitch_export_independently() {
+    let mut project = Project::default();
+    let path = source(
+        "keep_pitch_cache.wav",
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=4",
+        ],
+    );
+    let file = media(&mut project, path, 48_000, 1);
+    let mut left = Clip::new(
+        ClipId(1),
+        ClipSource::Media(file),
+        0,
+        0,
+        25,
+        Rational::one(),
+        Rational::new(2, 1),
+    );
+    left.pitch_correction = true;
+    left.effects.pitch_shift.semitones = 12.0;
+    let mut right = left.clone();
+    right.id = ClipId(2);
+    right.timeline_start = 25;
+    right.pitch_correction = false;
+    let isolated = timeline(vec![audio_track(vec![right.clone()])]);
+    let together = timeline(vec![audio_track(vec![left, right])]);
+    let reference = rendered(&project, &isolated, samples(25..50));
+    let full = rendered(&project, &together, samples(0..50));
+    let actual = &full[samples(0..25).end as usize * PROJECT_CHANNELS as usize..];
+    let second_half = 24_000 * PROJECT_CHANNELS as usize;
+    let reference_peak = reference[second_half..]
+        .iter()
+        .fold(0.0_f32, |m, v| m.max(v.abs()));
+    let actual_peak = actual[second_half..]
+        .iter()
+        .fold(0.0_f32, |m, v| m.max(v.abs()));
+    assert!(reference_peak > 0.01);
+    assert!(
+        actual_peak > 0.01,
+        "the second clip becomes silent halfway through when the other clip populated the cache"
+    );
+    assert_eq!(actual, reference);
+}
+
+#[test]
 fn a_pitch_shifted_compound_clip_matches_preview_and_export() {
     let mut project = Project::default();
     let file = media(

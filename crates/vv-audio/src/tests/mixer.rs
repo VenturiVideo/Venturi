@@ -832,6 +832,27 @@ fn pitch_edits_invalidate_the_processed_clip_and_bypass_uses_the_original() {
 }
 
 #[test]
+fn keep_pitch_toggle_invalidates_the_pitch_shift_buffer() {
+    let (project, media, _) = project();
+    let mut clip = sped_up_clip(media, Rational::new(2, 1), 10);
+    clip.effects.pitch_shift.semitones = 12.0;
+    let mut tl = timeline(vec![audio_track(vec![clip])]);
+    let mut source = FakeStretch::default();
+    MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    let before_key = source.pitch.last().unwrap().0;
+    let before_tempo = source.asked.last().unwrap().1;
+    tl.tracks[0].clips[0].pitch_correction = true;
+    MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    let after_key = source.pitch.last().unwrap().0;
+    let after_tempo = source.asked.last().unwrap().1;
+    assert_ne!(before_tempo, after_tempo);
+    assert_ne!(
+        before_key, after_key,
+        "different processor tempos must not share a cache key"
+    );
+}
+
+#[test]
 fn varispeed_pitch_shift_keeps_the_pitch_ratio_within_the_processors_range() {
     let (project, media, _) = project();
     for speed in [Rational::new(1, 100), Rational::new(100, 1)] {
