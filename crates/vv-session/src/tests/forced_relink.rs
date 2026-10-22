@@ -1,10 +1,8 @@
 use super::*;
+use crate::test_support::TempDir;
 
-fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("vv-forced-relink-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn temp_dir(name: &str) -> TempDir {
+    TempDir::new(&format!("vv-forced-relink-{name}"))
 }
 
 fn meta(duration_frames: i64, width: u32, height: u32) -> MediaMeta {
@@ -151,7 +149,13 @@ fn search_finds_a_renamed_file_by_length_and_frame_count() {
     criteria.duration_tolerance_ms = 50;
     criteria.frames_tolerance = 1;
 
-    let found = search(&references, &dir, &criteria, &SearchProgress::default()).unwrap();
+    let found = search(
+        &references,
+        dir.path(),
+        &criteria,
+        &SearchProgress::default(),
+    )
+    .unwrap();
 
     assert_eq!(found[0].len(), 1, "{:?}", found[0]);
     assert_eq!(found[0][0].path, renamed);
@@ -172,7 +176,7 @@ fn search_puts_the_same_name_first_among_several_matches() {
 
     let found = search(
         &references,
-        &dir,
+        dir.path(),
         &only(&[Criterion::Extension]),
         &SearchProgress::default(),
     )
@@ -182,7 +186,7 @@ fn search_puts_the_same_name_first_among_several_matches() {
     let references = vec![reference("/old/rana.mp4", meta(10, 64, 48))];
     let found = search(
         &references,
-        &dir,
+        dir.path(),
         &only(&[Criterion::Extension]),
         &SearchProgress::default(),
     )
@@ -244,5 +248,13 @@ fn a_cancelled_search_returns_nothing() {
     let progress = SearchProgress::default();
     progress.cancel.store(true, Ordering::Relaxed);
     let references = vec![reference("/old/rana.mov", meta(10, 64, 48))];
-    assert!(search(&references, &dir, &only(&[Criterion::Name]), &progress).is_none());
+    assert!(
+        search(
+            &references,
+            dir.path(),
+            &only(&[Criterion::Name]),
+            &progress
+        )
+        .is_none()
+    );
 }
