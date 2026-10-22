@@ -34,9 +34,6 @@ mix failed, the per-run test fixture dirs and the unclamped audio budget.
 
 ## Audio: performance
 
-- **Fast forward windows are not cancelled**: one superseded by an edit
-  or a seek still mixes and stretches its 8 s to the end before the next
-  starts (one at a time since the drag fix).
 - **Previewing a media** from the pool drops every decoded block of the
   timeline (`begin(true)` clears `asked`), despite the `begin_media_pass`
   doc.

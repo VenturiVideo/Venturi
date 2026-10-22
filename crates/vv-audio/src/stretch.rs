@@ -16,7 +16,7 @@ fn ensure_init() {
     });
 }
 
-const CHUNK_FRAMES: usize = 4096;
+pub const STRETCH_CHUNK_FRAMES: usize = 4096;
 
 /// Duration multiplied by `1/tempo`, same rate and channels, pitch
 /// preserved.
@@ -95,7 +95,7 @@ impl Stretcher {
     /// Interleaved; appends to `out` what is stretched so far.
     pub fn push(&mut self, samples: &[f32], out: &mut Vec<f32>) -> Result<(), String> {
         let ch = self.channels;
-        for chunk in samples.chunks(CHUNK_FRAMES * ch) {
+        for chunk in samples.chunks(STRETCH_CHUNK_FRAMES * ch) {
             let n = chunk.len() / ch;
             let mut frame = ffmpeg::frame::Audio::new(FORMAT, n, self.layout);
             frame.set_rate(self.sample_rate);

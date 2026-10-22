@@ -1,4 +1,5 @@
 use super::*;
+use vv_audio::mixer::mix_range_without_plugins;
 
 const FPS: f64 = 25.0;
 const RATE: f64 = PROJECT_SAMPLE_RATE as f64;
@@ -401,7 +402,7 @@ fn a_failed_stretch_is_not_retried_every_frame() {
         .send(StretchResult {
             id: failed.id,
             _mix: audio.mix.clone(),
-            samples: Err("failed".into()),
+            samples: Some(Err("failed".into())),
         })
         .unwrap();
     let before = audio.next_request_id;
@@ -416,7 +417,7 @@ fn stretch_result(mix: &Arc<MixSnapshot>) -> StretchResult {
     StretchResult {
         id: 0,
         _mix: mix.clone(),
-        samples: Ok(Vec::new()),
+        samples: Some(Ok(Vec::new())),
     }
 }
 
@@ -467,4 +468,99 @@ fn a_rescan_forces_a_timeline_rebuild_and_keeps_a_media_preview() {
     after_a_rescan(|audio| {
         audio.plugins_rescanned();
     });
+}
+
+fn loaded_audio(name: &str) -> TimelineAudio {
+    let mut project = vv_core::Project::default();
+    let timeline = tone_timeline(&mut project, name, 0.8);
+    let mut audio = TimelineAudio::new();
+    while {
+        audio.sync(&project, timeline, 1);
+        audio.has_pending_buffers()
+    } {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    audio
+}
+
+#[test]
+fn a_window_mixed_in_pieces_equals_one_mixed_whole() {
+    let audio = loaded_audio("pieces.wav");
+    let frames = 3 * PROJECT_SAMPLE_RATE as u64 + 1234;
+    let start = 777;
+    let mut whole = vec![0.0; frames as usize * audio.mix.channels as usize];
+    mix_range_without_plugins(&audio.mix, start, &mut whole);
+    assert!(whole.iter().any(|&s| s != 0.0));
+    let mut pieces = Vec::new();
+    let done = mix_pieces(&audio.mix, start, frames, &|| false, &mut |piece| {
+        pieces.extend_from_slice(piece);
+        Ok(())
+    });
+    assert_eq!(done, Some(Ok(())));
+    assert_eq!(pieces, whole);
+}
+
+#[test]
+fn a_cancelled_window_stops_mixing_between_pieces() {
+    let audio = loaded_audio("cancel_mix.wav");
+    let polls = std::cell::Cell::new(0);
+    let cancelled = || {
+        polls.set(polls.get() + 1);
+        polls.get() > 2
+    };
+    // Without a stretcher, so it runs without rubberband.
+    let mixed = mix_pieces(&audio.mix, 0, WINDOW_FRAMES, &cancelled, &mut |_| Ok(()));
+    assert!(mixed.is_none());
+    assert_eq!(polls.get(), 3, "no piece mixed after the cancel");
+}
+
+#[test]
+fn replacing_a_request_cancels_the_one_in_flight() {
+    let mut audio = TimelineAudio::new();
+    audio.request_window(2, 0, true);
+    let first = audio.stretch_cancel.clone();
+    assert!(!first.load(Ordering::Relaxed));
+    audio.request_window(2, 48_000, true);
+    assert!(first.load(Ordering::Relaxed));
+    assert!(!audio.stretch_cancel.load(Ordering::Relaxed));
+}
+
+#[test]
+fn a_seek_outside_the_first_window_in_flight_cancels_it() {
+    let mut audio = TimelineAudio::new();
+    audio.request_window(2, 0, true);
+    let flag = audio.stretch_cancel.clone();
+    audio.seek_sample(FIRST_WINDOW_FRAMES / 2);
+    assert!(!flag.load(Ordering::Relaxed), "a seek inside keeps it");
+    audio.seek_sample(FIRST_WINDOW_FRAMES * 5);
+    assert!(flag.load(Ordering::Relaxed));
+}
+
+#[test]
+fn dropping_the_audio_cancels_the_render() {
+    let mut audio = TimelineAudio::new();
+    audio.request_window(2, 0, true);
+    let flag = audio.stretch_cancel.clone();
+    drop(audio);
+    assert!(flag.load(Ordering::Relaxed));
+}
+
+#[test]
+fn a_window_rendered_in_pieces_equals_the_whole_stretch() {
+    if Stretcher::new(PROJECT_SAMPLE_RATE, 1, 2.0).is_err() {
+        return; // FFmpeg without rubberband
+    }
+    let audio = loaded_audio("render_equal.wav");
+    let frames = 4 * RENDER_PIECE_FRAMES + 1000;
+    let frames = frames / 2 * 2;
+    let ch = audio.mix.channels as usize;
+    let mut whole = vec![0.0; frames as usize * ch];
+    mix_range_without_plugins(&audio.mix, 0, &mut whole);
+    let mut expected =
+        vv_audio::stretch_samples(&whole, audio.mix.sample_rate, audio.mix.channels, 2.0).unwrap();
+    expected.resize((frames / 2) as usize * ch, 0.0);
+    let pieces = render_window(&audio.mix, 0, frames, 2, &|| false)
+        .unwrap()
+        .unwrap();
+    assert_eq!(pieces, expected);
 }

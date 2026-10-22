@@ -23,5 +23,5 @@ pub use mixer::{
     MixSnapshot, Mixer, MixerState, StretchedWindow, StripKeys, mix_range_without_plugins,
     plugin_key, plugin_key_in, plugin_keys_in,
 };
-pub use stretch::{Stretcher, stretch_samples};
+pub use stretch::{STRETCH_CHUNK_FRAMES, Stretcher, stretch_samples};
 pub use stretched::{StretchInput, StretchRequest};
