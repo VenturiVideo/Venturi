@@ -1077,7 +1077,10 @@ fn collect_clips(
             let nested_placement = placement + span.start as i64 - span.source_offset as i64;
             let input = if pitch_corrected {
                 let nested = item.compound.and_then(|id| project.timelines.get(id));
-                if nested.is_some() && depth + 1 >= vv_core::MAX_COMPOUND_DEPTH {
+                let is_cycle = item
+                    .compound
+                    .is_some_and(|id| nested_timeline_reaches_itself(project, id, sample_rate));
+                if is_cycle || (nested.is_some() && depth + 1 >= vv_core::MAX_COMPOUND_DEPTH) {
                     cyclic = true;
                     continue;
                 }
@@ -1635,6 +1638,47 @@ fn normalize_gain(target_db: f32, reading: LevelReading) -> Option<f32> {
     level
         .filter(|level| *level > 1e-6)
         .map(|level| (db_to_linear(target_db) / level).min(db_to_linear(vv_core::GAIN_DB_MAX)))
+}
+
+/// `true` if `start` reaches itself through the compound clips `collect_clips`
+/// mixes: caught before a stretch is requested for each depth of the cycle.
+fn nested_timeline_reaches_itself(project: &Project, start: TimelineId, sample_rate: u32) -> bool {
+    let mut visited = std::collections::HashSet::new();
+    let mut stack = vec![start];
+    while let Some(current) = stack.pop() {
+        if !visited.insert(current) {
+            continue;
+        }
+        let Some(timeline) = project.timelines.get(current) else {
+            continue;
+        };
+        let fps = timeline.fps.as_f64().max(1e-9);
+        for (_, track) in timeline.audible_tracks() {
+            for clip in track
+                .clips
+                .iter()
+                .filter(|c| !c.disabled && c.freeze.is_none())
+            {
+                let ClipSource::Media(id) = &clip.source else {
+                    continue;
+                };
+                if ClipSpan::new(clip, fps, sample_rate)
+                    .media_frames(None)
+                    .is_none()
+                {
+                    continue;
+                }
+                let Some(nested) = project.media_pool.get(*id).and_then(|m| m.compound) else {
+                    continue;
+                };
+                if nested == start {
+                    return true;
+                }
+                stack.push(nested);
+            }
+        }
+    }
+    false
 }
 
 /// The nested timeline of compound clip `media_id`, ready to be mixed in

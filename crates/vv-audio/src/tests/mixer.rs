@@ -260,6 +260,68 @@ fn a_compound_containing_itself_is_silent() {
     assert!(snap.clips.is_empty());
 }
 
+/// Same safety net for the pitch-corrected path: a stretch must never be
+/// requested for a compound that contains itself, rather than one per
+/// depth up to `MAX_COMPOUND_DEPTH`.
+#[test]
+fn a_pitch_corrected_compound_containing_itself_is_silent_and_never_stretched() {
+    let (mut project, compound) = project_with_compound();
+    let nested = project.media_pool[compound].compound.unwrap();
+    project.timelines[nested]
+        .tracks
+        .push(audio_track(vec![clip_at(compound, 0, 0, 5)]));
+    let mut clip = sped_up_clip(compound, Rational::new(2, 1), 5);
+    // From the start of the compound's own audio: without the cycle guard,
+    // `frames` would not be empty and a stretch would really be requested.
+    clip.source_offset = 0;
+    clip.pitch_correction = true;
+    let tl = timeline(vec![audio_track(vec![clip])]);
+    let mut source = FakeStretch::default();
+    let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+    assert!(snap.clips.is_empty());
+    assert!(
+        source.asked.is_empty(),
+        "a self-referencing clip is never stretched"
+    );
+}
+
+/// A self-reference `collect_clips` never mixes must not silence a playable
+/// pitch-corrected compound: it still plays and asks for its stretch.
+#[test]
+fn a_self_reference_that_is_never_mixed_does_not_silence_a_pitch_corrected_compound() {
+    type Skipped = fn(&mut Track, vv_core::MediaId);
+    let skipped: [(&str, Skipped); 3] = [
+        ("disabled clip", |track, compound| {
+            let mut clip = clip_at(compound, 0, 0, 5);
+            clip.disabled = true;
+            track.clips.push(clip);
+        }),
+        ("muted track", |track, compound| {
+            track.muted = true;
+            track.clips.push(clip_at(compound, 0, 0, 5));
+        }),
+        ("zero-length clip", |track, compound| {
+            let mut clip = clip_at(compound, 0, 0, 5);
+            clip.timeline_len = 0;
+            track.clips.push(clip);
+        }),
+    ];
+    for (what, add) in skipped {
+        let (mut project, compound) = project_with_compound();
+        let nested = project.media_pool[compound].compound.unwrap();
+        let mut track = audio_track(Vec::new());
+        add(&mut track, compound);
+        project.timelines[nested].tracks.push(track);
+        let mut clip = sped_up_clip(compound, Rational::new(2, 1), 5);
+        clip.source_offset = 0;
+        clip.pitch_correction = true;
+        let tl = timeline(vec![audio_track(vec![clip])]);
+        let mut source = FakeStretch::default();
+        MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut source);
+        assert!(!source.asked.is_empty(), "{what}: the stretch is requested");
+    }
+}
+
 /// The bug case: media at 9.99 fps (10000/1001, the small-scale analogue
 /// of 59.94 on 60) on a 10 fps timeline. Conformed, the clip
 /// lasts on the timeline as long as its audio does, and the mix at the end of the clip is
