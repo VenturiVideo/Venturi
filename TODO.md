@@ -47,8 +47,8 @@ mix failed, the per-run test fixture dirs and the unclamped audio budget.
 
 ## Audio: budget
 
-- `rebalance` counts wanted blocks, not bytes held: a job kept for one
-  block inserts all 8. Stretched clips are not counted.
+- [x] `rebalance` accounts for allocated sample bytes in cached blocks and
+  stretched audio, evicting the furthest buffers across both caches first.
 
 ## Audio: cleanup
 

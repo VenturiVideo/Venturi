@@ -1,6 +1,6 @@
 //! Audio buffers already in the mixer's format, per `(path, audio_stream_index)`,
 //! in blocks of `BLOCK_FRAMES` holding only what the timeline reads, within
-//! a memory budget that keeps the blocks closest to the playhead. Decode +
+//! a memory budget that keeps the audio closest to the playhead. Decode +
 //! resample on a dedicated thread, seeking to each job and taking the one
 //! closest to the playhead first; every block plays as soon as it is decoded.
 
@@ -15,7 +15,9 @@ use std::time::{Duration, Instant};
 use vv_audio::{
     AnalysisSlot, AudioSource, BLOCK_FRAMES, ClipAudio, LevelAnalysis, LevelReading, SampleBlocks,
 };
-use vv_audio::{LevelSegment, Measured, PluginHandle, PluginRequest, StretchInput, StretchRequest};
+use vv_audio::{
+    LevelSegment, Measured, MixSnapshot, PluginHandle, PluginRequest, StretchInput, StretchRequest,
+};
 use vv_core::{NormalizeMode, Project, Timeline};
 use vv_session::audio_render::{LevelCache, measure_level, stretch_offline};
 use vv_session::export::ExportError;
@@ -32,6 +34,7 @@ struct OwnedStretch {
     cancelled: Arc<AtomicBool>,
     input: OwnedInput,
     frames: Range<u64>,
+    plays: Range<u64>,
     tempo: f64,
     format: (u32, u16),
 }
@@ -42,6 +45,7 @@ enum OwnedInput {
 }
 
 impl OwnedStretch {
+    /// Borrows the stored stretch inputs to build a worker request.
     fn request<'a>(&'a self, project: &'a Project) -> StretchRequest<'a> {
         StretchRequest {
             project,
@@ -57,6 +61,7 @@ impl OwnedStretch {
                 },
             },
             frames: self.frames.clone(),
+            plays: self.plays.clone(),
             tempo: self.tempo,
             sample_rate: self.format.0,
             channels: self.format.1,
@@ -71,8 +76,16 @@ struct StretchJob {
 }
 
 enum Stretch {
-    Pending(Arc<AtomicBool>),
+    Pending {
+        cancelled: Arc<AtomicBool>,
+        bytes: usize,
+    },
     Ready(SampleBlocks),
+    /// The buffer did not fit the current budget. Keep its admission size so
+    /// repeated timeline syncs do not render and evict it over and over.
+    Rejected {
+        bytes: usize,
+    },
     Failed,
 }
 
@@ -147,8 +160,12 @@ struct StreamCache {
     asked: bool,
     /// Blocks read since the pass began, with when they play.
     wanted: HashMap<u64, u64>,
-    /// Read by the last timeline pass: a media preview keeps its blocks,
-    /// outside the budget, for when the timeline plays again.
+    /// Last known play positions, including blocks completed by retained jobs.
+    block_plays: HashMap<u64, u64>,
+    /// Output frame lengths for blocks read through a retimed nested clip.
+    block_play_lengths: HashMap<u64, u64>,
+    /// Read by the last timeline pass: a media preview may keep these blocks
+    /// for when the timeline plays again, within the shared budget.
     timeline: bool,
 }
 
@@ -174,14 +191,169 @@ struct DecodeJob {
     cancelled: Arc<AtomicBool>,
 }
 
+#[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+enum BudgetBuffer {
+    Block(Key, u64),
+    Stretch(u64),
+}
+
+struct BudgetCandidate {
+    buffer: BudgetBuffer,
+    distance: u64,
+    bytes: usize,
+    wanted: bool,
+    critical: bool,
+}
+
 /// 0 while `plays` holds the playhead: a job ranked by its first block
 /// would lose to the next one, whose start is closer.
 fn distance(plays: &Range<u64>, playhead: u64) -> u64 {
-    if playhead < plays.start {
+    if plays.is_empty() {
+        playhead.abs_diff(plays.start)
+    } else if playhead < plays.start {
         plays.start - playhead
     } else {
         playhead.saturating_sub(plays.end - 1)
     }
+}
+
+/// Uses a finite positive rate for sizing and mapping fallback windows.
+fn valid_tempo(tempo: f64) -> f64 {
+    if tempo.is_finite() && tempo > 0.0 {
+        tempo
+    } else {
+        1.0
+    }
+}
+
+/// Output playback frames covered by one source block.
+fn block_play_range(plays_at: u64, needed_start: u64, index: u64, scale: f64) -> Range<u64> {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let source_start = index.saturating_mul(BLOCK_FRAMES) as i128;
+    let source_delta = source_start - needed_start as i128;
+    let mapped = plays_at as f64 + source_delta as f64 * scale;
+    let start = if mapped.is_finite() && mapped > 0.0 {
+        mapped.min(u64::MAX as f64) as u64
+    } else {
+        0
+    };
+    let frames = ((BLOCK_FRAMES as f64 * scale).ceil() as u64).max(1);
+    start..start.saturating_add(frames)
+}
+
+/// Estimates the contiguous output allocation required by a stretch request.
+fn estimated_stretch_bytes(request: &StretchRequest<'_>) -> usize {
+    let input_frames = request.frames.end.saturating_sub(request.frames.start);
+    let output_frames = ((input_frames as f64 / valid_tempo(request.tempo)).ceil() as u64)
+        .max(request.plays.end.saturating_sub(request.plays.start));
+    let bytes = output_frames
+        .saturating_mul(request.channels.max(1) as u64)
+        .saturating_mul(std::mem::size_of::<f32>() as u64);
+    usize::try_from(bytes).unwrap_or(usize::MAX)
+}
+
+/// Output playback frames per source frame in a stretch request.
+fn stretch_playback_scale(request: &StretchRequest<'_>) -> f64 {
+    let source_frames = request.frames.end.saturating_sub(request.frames.start);
+    let plays = request.plays.end.saturating_sub(request.plays.start);
+    if source_frames > 0 && plays > 0 {
+        plays as f64 / source_frames as f64
+    } else {
+        1.0 / valid_tempo(request.tempo)
+    }
+}
+
+/// Maps a source frame in a stretch request to its output timeline frame.
+fn play_frame_for_source(request: &StretchRequest<'_>, frame: u64, scale: f64) -> u64 {
+    let offset = (frame.saturating_sub(request.frames.start) as f64 * scale).floor() as u64;
+    request.plays.start.saturating_add(offset)
+}
+
+/// The bounded source read and its next playhead-driven refresh point.
+struct StretchFallbackWindow {
+    frames: Range<u64>,
+    refresh_at: Option<u64>,
+}
+
+/// Bounds fallback reads to a moving three-block window and schedules its refresh.
+fn stretch_fallback_window(request: &StretchRequest<'_>, playhead: u64) -> StretchFallbackWindow {
+    let frames = &request.frames;
+    if frames.is_empty() {
+        return StretchFallbackWindow {
+            frames: frames.clone(),
+            refresh_at: None,
+        };
+    }
+    let scale = stretch_playback_scale(request);
+    let plays_len = request.plays.end.saturating_sub(request.plays.start);
+    let played = playhead.saturating_sub(request.plays.start).min(plays_len);
+    let source_offset =
+        ((played as f64 / scale).floor() as u64).min(frames.end.saturating_sub(frames.start));
+    let center = frames.start.saturating_add(source_offset).min(frames.end);
+    let start = center.saturating_sub(BLOCK_FRAMES).max(frames.start);
+    let end = center
+        .saturating_add(BLOCK_FRAMES.saturating_mul(2))
+        .min(frames.end);
+    let plays_start = play_frame_for_source(request, start, scale);
+    let plays_end = play_frame_for_source(request, end, scale).min(request.plays.end);
+    let refresh_at = (playhead < plays_end).then(|| {
+        plays_start
+            .saturating_add(plays_end.saturating_sub(plays_start) / 2)
+            .max(playhead)
+    });
+    StretchFallbackWindow {
+        frames: start..end,
+        refresh_at,
+    }
+}
+
+/// Estimates the timeline position for a cached block from its nearest known block.
+fn block_plays(stream: &StreamCache, index: u64) -> u64 {
+    if let Some(&plays) = stream.wanted.get(&index) {
+        return plays;
+    }
+    if let Some(&plays) = stream.block_plays.get(&index) {
+        return plays;
+    }
+
+    let mut nearest = None;
+    for (&known_index, &plays) in stream.wanted.iter().chain(stream.block_plays.iter()) {
+        let delta = index.abs_diff(known_index);
+        if nearest.is_none_or(|(best, _, _)| delta < best) {
+            nearest = Some((delta, known_index, plays));
+        }
+    }
+    match nearest {
+        Some((_, known_index, plays)) => {
+            let block_length = stream
+                .block_play_lengths
+                .get(&known_index)
+                .copied()
+                .unwrap_or(BLOCK_FRAMES);
+            let frames = index.abs_diff(known_index).saturating_mul(block_length);
+            if index >= known_index {
+                plays.saturating_add(frames)
+            } else {
+                plays.saturating_sub(frames)
+            }
+        }
+        None => index.saturating_mul(BLOCK_FRAMES),
+    }
+}
+
+/// Returns a cached block's mapped output interval for playhead-distance checks.
+fn block_play_span(stream: &StreamCache, index: u64) -> Range<u64> {
+    let plays = block_plays(stream, index);
+    let length = stream
+        .block_play_lengths
+        .get(&index)
+        .copied()
+        .unwrap_or(BLOCK_FRAMES);
+    plays..plays.saturating_add(length)
 }
 
 enum Decoded {
@@ -211,9 +383,14 @@ pub struct MixBufferCache {
     playhead: Arc<AtomicU64>,
     /// Between `begin_*pass` and `sweep_unused`, which plans what was asked.
     in_pass: bool,
+    /// Lazily computed budget projection, updated as this pass adds reservations.
+    projected_bytes: Option<usize>,
     /// Blocks asked for outside a pass, or a playhead move over budget:
     /// `poll` runs `rebalance`.
     unplanned: bool,
+    /// The active varispeed fallback window must be rebuilt from a new position.
+    fallback_refresh_at: Option<u64>,
+    fallback_refresh_pending: bool,
     /// The last `rebalance` left blocks out, and where the playhead was.
     over_budget: bool,
     rebalanced_at: u64,
@@ -227,8 +404,12 @@ pub struct MixBufferCache {
     last_block_report: Option<Instant>,
     /// Pitch-corrected clip audio by `StretchRequest::key`.
     stretched: HashMap<u64, Stretch>,
-    /// Keys asked for since the last `sweep_unused`.
+    /// Where each stretched buffer plays in the outer timeline.
+    stretched_plays: HashMap<u64, Range<u64>>,
+    /// Keys asked for in the current pass.
     stretch_used: HashSet<u64>,
+    /// Stretches retained for the current timeline pass, including pending jobs.
+    stretch_wanted: HashSet<u64>,
     queued_stretches: Vec<OwnedStretch>,
     /// Jobs sent and not done: the queued ones wait until it is 0, so a
     /// drag clones the project as often as the worker takes a job, not
@@ -261,6 +442,7 @@ pub struct MixBufferCache {
 }
 
 impl MixBufferCache {
+    /// Starts the audio cache workers for the given sample format.
     pub fn spawn(sample_rate: u32, channels: u16) -> Self {
         let (decoded_tx, decoded_rx) = mpsc::channel::<Decoded>();
         let playhead = Arc::new(AtomicU64::new(0));
@@ -409,7 +591,10 @@ impl MixBufferCache {
             next_id: 0,
             playhead,
             in_pass: false,
+            projected_bytes: None,
             unplanned: false,
+            fallback_refresh_at: None,
+            fallback_refresh_pending: false,
             over_budget: false,
             rebalanced_at: 0,
             media_pass: false,
@@ -418,7 +603,9 @@ impl MixBufferCache {
             unreported_blocks: false,
             last_block_report: None,
             stretched: HashMap::new(),
+            stretched_plays: HashMap::new(),
             stretch_used: HashSet::new(),
+            stretch_wanted: HashSet::new(),
             queued_stretches: Vec::new(),
             stretch_busy,
             stretch_worker,
@@ -449,6 +636,10 @@ impl MixBufferCache {
     /// Where the mix plays now, in samples of what is mixed.
     pub fn set_playhead(&mut self, sample: u64) {
         self.playhead.store(sample, Ordering::Relaxed);
+        if self.fallback_refresh_at.is_some_and(|at| sample >= at) {
+            self.fallback_refresh_pending = true;
+            self.unplanned = true;
+        }
         if self.over_budget && sample.abs_diff(self.rebalanced_at) > REBALANCE_FRAMES {
             self.unplanned = true;
         }
@@ -466,22 +657,28 @@ impl MixBufferCache {
         self.begin(true);
     }
 
+    /// Resets per-pass usage and marks whether timeline buffers may be parked.
     fn begin(&mut self, media_pass: bool) {
         self.in_pass = true;
+        self.projected_bytes = None;
         self.media_pass = media_pass;
+        self.fallback_refresh_at = None;
         if let (false, Some(plugins)) = (media_pass, &mut self.plugins) {
             plugins.begin_pass();
         }
+        self.stretch_used.clear();
+        self.stretch_wanted.clear();
         for stream in self.streams.values_mut() {
             stream.asked = false;
             stream.wanted.clear();
         }
     }
 
-    /// Drops the blocks, mixdowns, stretches and levels the pass did not
-    /// ask for, cancels the decodes no longer wanted and plans the others.
+    /// Drops buffers the pass did not ask for, cancels stale jobs, then rebalances
+    /// retained audio against the shared byte budget.
     pub fn sweep_unused(&mut self) {
         self.in_pass = false;
+        self.projected_bytes = None;
         let media_pass = self.media_pass;
         let job_keys = &mut self.job_keys;
         self.streams.retain(|_, stream| {
@@ -510,8 +707,8 @@ impl MixBufferCache {
             });
             *asked || parked
         });
-        self.rebalance();
         if self.media_pass {
+            self.rebalance();
             return;
         }
         // The instances die here, on the UI thread: the mixer thread only
@@ -522,11 +719,14 @@ impl MixBufferCache {
         let used = std::mem::take(&mut self.stretch_used);
         self.stretched.retain(|key, stretch| {
             let keep = used.contains(key);
-            if let (false, Stretch::Pending(cancelled)) = (keep, stretch) {
+            if let (false, Stretch::Pending { cancelled, .. }) = (keep, stretch) {
                 cancelled.store(true, Ordering::Relaxed);
             }
             keep
         });
+        self.stretched_plays
+            .retain(|key, _| self.stretched.contains_key(key));
+        self.stretch_wanted = used;
         self.queued_stretches
             .retain(|stretch| !stretch.cancelled.load(Ordering::Relaxed));
         let used = std::mem::take(&mut self.level_used);
@@ -536,6 +736,7 @@ impl MixBufferCache {
         let levels = &self.levels;
         self.queued_levels
             .retain(|analysis| levels.contains_key(&analysis.key));
+        self.rebalance();
     }
 
     /// Adopts the installed list in the live pool: see `Instances::refresh`.
@@ -563,18 +764,23 @@ impl MixBufferCache {
         self.remeasure_degraded();
     }
 
-    /// Drops what the workers rendered while a plugin was not made; the
-    /// next pass asks for it again (`last_level` plays meanwhile). Once per
-    /// rescan, so a plugin that keeps failing cannot loop.
+    /// Drops buffers rendered while a plugin was unavailable so they can be
+    /// measured or stretched again after a rescan.
     fn remeasure_degraded(&mut self) {
         for key in std::mem::take(&mut self.degraded) {
             self.levels.remove(&key);
-            if let Some(Stretch::Ready(_) | Stretch::Failed) = self.stretched.get(&key) {
+            if matches!(
+                self.stretched.get(&key),
+                Some(Stretch::Ready(_) | Stretch::Rejected { .. } | Stretch::Failed)
+            ) {
                 self.stretched.remove(&key);
+                self.stretched_plays.remove(&key);
             }
         }
+        self.projected_bytes = None;
     }
 
+    /// Lazily creates the live VST3 instance pool.
     fn plugins(&mut self) -> &mut vv_plugin::Instances {
         self.plugins
             .get_or_insert_with(|| vv_plugin::Instances::realtime(vv_plugin::installed()))
@@ -609,23 +815,31 @@ impl MixBufferCache {
         }
     }
 
+    /// Services restart requests queued by hosted plugin editor windows.
     pub fn service_plugin_restarts(&self) {
         if let Some(plugins) = &self.plugins {
             plugins.service_restarts();
         }
     }
 
+    /// Returns the latency of a live plugin instance, if it exists.
     pub fn plugin_latency(&self, key: u64) -> Option<u32> {
-        self.plugins.as_ref()?.instance(key).map(|p| p.latency())
+        self.plugins
+            .as_ref()?
+            .instance(key)
+            .map(|plugin| plugin.latency())
     }
 
     /// Whether the pool has scanned `effect`'s plugin; `None` without a pool.
     pub fn plugin_known(&self, effect: &vv_core::Vst3Effect) -> Option<bool> {
-        self.plugins.as_ref().map(|p| p.knows(effect))
+        self.plugins.as_ref().map(|plugins| plugins.knows(effect))
     }
 
+    /// Reports whether the live pool marked the keyed plugin instance failed.
     pub fn plugin_failed(&self, key: u64) -> bool {
-        self.plugins.as_ref().is_some_and(|p| p.failed(key))
+        self.plugins
+            .as_ref()
+            .is_some_and(|plugins| plugins.failed(key))
     }
 
     /// Frames `frames` of `stream` of `path`, as far as decoded; for the
@@ -639,7 +853,55 @@ impl MixBufferCache {
         let plays_at = frames.start;
         match self.lookup(path, stream, frames, plays_at) {
             ClipAudio::Ready(buffer) | ClipAudio::Partial(buffer) => Some(buffer),
-            ClipAudio::Pending | ClipAudio::Missing => None,
+            ClipAudio::Pending | ClipAudio::Missing | ClipAudio::Nested(_) => None,
+        }
+    }
+
+    /// Reads a small source window at varispeed when the full stretch cannot fit.
+    fn stretch_fallback(&mut self, request: StretchRequest<'_>) -> ClipAudio {
+        let window = stretch_fallback_window(&request, self.playhead.load(Ordering::Relaxed));
+        if let Some(refresh_at) = window.refresh_at {
+            self.fallback_refresh_at = Some(
+                self.fallback_refresh_at
+                    .map_or(refresh_at, |current| current.min(refresh_at)),
+            );
+        }
+        let scale = stretch_playback_scale(&request);
+        let plays_at = play_frame_for_source(&request, window.frames.start, scale);
+        let frames = window.frames;
+        if frames.is_empty() {
+            return ClipAudio::Missing;
+        }
+        match request.input {
+            StretchInput::File { path, stream } => {
+                match self.lookup_scaled(path, stream, frames, plays_at, scale) {
+                    ClipAudio::Ready(samples) | ClipAudio::Partial(samples) => {
+                        ClipAudio::Partial(samples)
+                    }
+                    ClipAudio::Pending | ClipAudio::Missing | ClipAudio::Nested(_) => {
+                        ClipAudio::Missing
+                    }
+                }
+            }
+            StretchInput::Nested {
+                timeline,
+                depth,
+                scope,
+            } => {
+                let snapshot = MixSnapshot::nested_range_for_playback(
+                    request.project,
+                    timeline,
+                    depth,
+                    scope,
+                    request.sample_rate,
+                    request.channels,
+                    self,
+                    frames.clone(),
+                    plays_at,
+                    scale,
+                );
+                ClipAudio::Nested(Box::new(snapshot))
+            }
         }
     }
 
@@ -653,7 +915,28 @@ impl MixBufferCache {
         needed: Range<u64>,
         plays_at: u64,
     ) -> ClipAudio {
+        self.lookup_scaled(path, stream, needed, plays_at, 1.0)
+    }
+
+    /// Looks up media frames while preserving their retimed playback distance.
+    fn lookup_scaled(
+        &mut self,
+        path: &Path,
+        stream: usize,
+        needed: Range<u64>,
+        plays_at: u64,
+        plays_per_media_frame: f64,
+    ) -> ClipAudio {
         let playhead = self.playhead.load(Ordering::Relaxed);
+        let block_bytes = (BLOCK_FRAMES as usize)
+            .saturating_mul(self.channels.max(1) as usize)
+            .saturating_mul(std::mem::size_of::<f32>());
+        let mut added_reservations = 0usize;
+        let scale = if plays_per_media_frame.is_finite() && plays_per_media_frame > 0.0 {
+            plays_per_media_frame
+        } else {
+            1.0
+        };
         let entry = self
             .streams
             .entry((path.to_path_buf(), stream))
@@ -673,14 +956,38 @@ impl MixBufferCache {
         let wanted = first_block.saturating_sub(MARGIN_BLOCKS)
             ..(last_block + MARGIN_BLOCKS).min(blocks_end).max(last_block);
         for index in wanted {
-            let plays = (plays_at + index * BLOCK_FRAMES).saturating_sub(needed.start);
-            let closest = entry.wanted.get(&index).is_none_or(|&other| {
-                distance(&(plays..plays + BLOCK_FRAMES), playhead)
-                    < distance(&(other..other + BLOCK_FRAMES), playhead)
+            let plays = block_play_range(plays_at, needed.start, index, scale);
+            if !entry.wanted.contains_key(&index) && !entry.blocks.contains_key(&index) {
+                added_reservations = added_reservations.saturating_add(block_bytes);
+            }
+            let current = entry
+                .wanted
+                .get(&index)
+                .or_else(|| entry.block_plays.get(&index))
+                .copied();
+            let current_len = entry
+                .block_play_lengths
+                .get(&index)
+                .copied()
+                .unwrap_or(BLOCK_FRAMES);
+            let closest = current.is_none_or(|other| {
+                distance(&plays, playhead)
+                    < distance(&(other..other.saturating_add(current_len)), playhead)
             });
             if closest {
-                entry.wanted.insert(index, plays);
+                entry.wanted.insert(index, plays.start);
+                entry
+                    .block_play_lengths
+                    .insert(index, plays.end.saturating_sub(plays.start));
             }
+            let selected_plays = entry
+                .wanted
+                .get(&index)
+                .copied()
+                .or(current)
+                .unwrap_or(plays.start);
+            entry.wanted.insert(index, selected_plays);
+            entry.block_plays.insert(index, selected_plays);
             if !self.in_pass && !entry.blocks.contains_key(&index) && !entry.in_flight(index) {
                 self.unplanned = true;
             }
@@ -699,6 +1006,9 @@ impl MixBufferCache {
             blocks,
             view_end,
         );
+        if let Some(projected_bytes) = &mut self.projected_bytes {
+            *projected_bytes = projected_bytes.saturating_add(added_reservations);
+        }
         // Even with no block yet: the clip stays in the snapshot, silent,
         // and `MixSnapshot::is_ready` sees what it misses.
         if complete {
@@ -708,36 +1018,145 @@ impl MixBufferCache {
         }
     }
 
-    /// Keeps the wanted blocks closest to the playhead that fit the
-    /// budget: drops the others, plans the missing ones, cancels the jobs
-    /// left without one. `true` if it dropped blocks.
+    /// Counts resident audio and reservations for unfinished decodes and stretches.
+    fn projected_audio_bytes(&mut self) -> usize {
+        if let Some(projected_bytes) = self.projected_bytes {
+            return projected_bytes;
+        }
+        let block_bytes = (BLOCK_FRAMES as usize)
+            .saturating_mul(self.channels.max(1) as usize)
+            .saturating_mul(std::mem::size_of::<f32>());
+        let mut projected_bytes = 0usize;
+        for stream in self.streams.values() {
+            for samples in stream.blocks.values() {
+                projected_bytes = projected_bytes.saturating_add(
+                    samples
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<f32>()),
+                );
+            }
+            for &index in stream.wanted.keys() {
+                if !stream.blocks.contains_key(&index) {
+                    projected_bytes = projected_bytes.saturating_add(block_bytes);
+                }
+            }
+        }
+        for stretch in self.stretched.values() {
+            let bytes = match stretch {
+                Stretch::Ready(samples) => samples.allocated_bytes(),
+                Stretch::Pending { bytes, .. } => *bytes,
+                Stretch::Rejected { .. } => 0,
+                Stretch::Failed => 0,
+            };
+            projected_bytes = projected_bytes.saturating_add(bytes);
+        }
+        self.projected_bytes = Some(projected_bytes);
+        projected_bytes
+    }
+
+    /// Keeps the buffers closest to the playhead that fit and cancels work outside the budget.
     fn rebalance(&mut self) -> bool {
         self.unplanned = false;
         let playhead = self.playhead.load(Ordering::Relaxed);
         self.rebalanced_at = playhead;
-        let mut wanted: Vec<(u64, &Key, u64)> = self
-            .streams
-            .iter()
-            .flat_map(|(key, stream)| {
-                stream
-                    .wanted
-                    .iter()
-                    .map(move |(&index, &plays)| (plays, key, index))
-            })
-            .collect();
-        wanted.sort_unstable_by_key(|&(plays, key, index)| {
-            (
-                distance(&(plays..plays + BLOCK_FRAMES), playhead),
-                key,
-                index,
-            )
-        });
-        let block_bytes = BLOCK_FRAMES as usize * self.channels.max(1) as usize * 4;
-        let fit = (self.budget_bytes / block_bytes).min(wanted.len());
-        self.over_budget = fit < wanted.len();
+        let block_bytes = (BLOCK_FRAMES as usize)
+            .saturating_mul(self.channels.max(1) as usize)
+            .saturating_mul(std::mem::size_of::<f32>());
+        // Most polls arrive within budget, so they avoid sorting candidates.
+        let projected_bytes = self.projected_audio_bytes();
+
+        let all_fit = projected_bytes <= self.budget_bytes;
+        let mut candidates = Vec::new();
+        if !all_fit {
+            for (key, stream) in &self.streams {
+                for (&index, samples) in &stream.blocks {
+                    let plays = block_play_span(stream, index);
+                    let buffer_distance = distance(&plays, playhead);
+                    let wanted = stream.wanted.contains_key(&index);
+                    candidates.push(BudgetCandidate {
+                        buffer: BudgetBuffer::Block(key.clone(), index),
+                        distance: buffer_distance,
+                        bytes: samples
+                            .capacity()
+                            .saturating_mul(std::mem::size_of::<f32>()),
+                        wanted,
+                        critical: wanted && buffer_distance == 0,
+                    });
+                }
+                for (&index, &plays) in &stream.wanted {
+                    if !stream.blocks.contains_key(&index) {
+                        let length = stream
+                            .block_play_lengths
+                            .get(&index)
+                            .copied()
+                            .unwrap_or(BLOCK_FRAMES);
+                        let buffer_distance =
+                            distance(&(plays..plays.saturating_add(length)), playhead);
+                        candidates.push(BudgetCandidate {
+                            buffer: BudgetBuffer::Block(key.clone(), index),
+                            distance: buffer_distance,
+                            bytes: block_bytes,
+                            wanted: true,
+                            critical: buffer_distance == 0,
+                        });
+                    }
+                }
+            }
+            for (&key, stretch) in &self.stretched {
+                let (bytes, fallback_plays) = match stretch {
+                    Stretch::Ready(samples) => {
+                        (samples.allocated_bytes(), samples.start()..samples.end())
+                    }
+                    Stretch::Pending { bytes, .. } => (*bytes, 0..0),
+                    Stretch::Rejected { .. } | Stretch::Failed => continue,
+                };
+                let plays = self
+                    .stretched_plays
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or(fallback_plays);
+                candidates.push(BudgetCandidate {
+                    buffer: BudgetBuffer::Stretch(key),
+                    distance: distance(&plays, playhead),
+                    bytes,
+                    wanted: self.stretch_wanted.contains(&key),
+                    critical: false,
+                });
+            }
+            candidates.sort_unstable_by(|a, b| {
+                b.critical
+                    .cmp(&a.critical)
+                    .then_with(|| a.distance.cmp(&b.distance))
+                    .then_with(|| a.buffer.cmp(&b.buffer))
+            });
+        }
+
+        let mut selected = HashSet::new();
+        let mut selected_bytes = 0usize;
+        if all_fit {
+            selected_bytes = projected_bytes;
+        } else {
+            for candidate in &candidates {
+                let next_bytes = selected_bytes.saturating_add(candidate.bytes);
+                if next_bytes > self.budget_bytes {
+                    continue;
+                }
+                selected_bytes = next_bytes;
+                selected.insert(candidate.buffer.clone());
+            }
+        }
+        self.over_budget = selected_bytes > self.budget_bytes
+            || candidates
+                .iter()
+                .any(|candidate| candidate.wanted && !selected.contains(&candidate.buffer));
+
         let mut kept: HashMap<Key, Vec<(u64, u64)>> = HashMap::new();
-        for &(plays, key, index) in &wanted[..fit] {
-            kept.entry(key.clone()).or_default().push((index, plays));
+        for (key, stream) in &self.streams {
+            for (&index, &plays) in &stream.wanted {
+                if all_fit || selected.contains(&BudgetBuffer::Block(key.clone(), index)) {
+                    kept.entry(key.clone()).or_default().push((index, plays));
+                }
+            }
         }
 
         let mut dropped = false;
@@ -745,12 +1164,28 @@ impl MixBufferCache {
         for (key, stream) in &mut self.streams {
             let keep = kept.remove(key).unwrap_or_default();
             let keep_set: HashSet<u64> = keep.iter().map(|&(index, _)| index).collect();
-            let before = stream.blocks.len();
-            let wanted = &stream.wanted;
-            stream
-                .blocks
-                .retain(|index, _| keep_set.contains(index) || !wanted.contains_key(index));
-            dropped |= stream.blocks.len() < before;
+            if !all_fit {
+                let before = stream.blocks.len();
+                stream.blocks.retain(|index, _| {
+                    selected.contains(&BudgetBuffer::Block(key.clone(), *index))
+                });
+                dropped |= stream.blocks.len() < before;
+            }
+            let in_flight: HashSet<u64> = stream
+                .jobs
+                .iter()
+                .flat_map(|job| job.blocks.clone())
+                .collect();
+            stream.block_plays.retain(|index, _| {
+                stream.blocks.contains_key(index)
+                    || stream.wanted.contains_key(index)
+                    || in_flight.contains(index)
+            });
+            stream.block_play_lengths.retain(|index, _| {
+                stream.blocks.contains_key(index)
+                    || stream.wanted.contains_key(index)
+                    || in_flight.contains(index)
+            });
             let job_keys = &mut self.job_keys;
             stream.jobs.retain(|job| {
                 let keep = job.blocks.clone().any(|index| keep_set.contains(&index));
@@ -768,18 +1203,76 @@ impl MixBufferCache {
                 .collect();
             missing.sort_unstable();
             for (index, plays) in missing {
+                let length = stream
+                    .block_play_lengths
+                    .get(&index)
+                    .copied()
+                    .unwrap_or(BLOCK_FRAMES);
                 match plans.last_mut() {
                     Some((k, run, run_plays))
                         if k == key && run.end == index && run.end - run.start < JOB_BLOCKS =>
                     {
                         run.end += 1;
                         run_plays.start = run_plays.start.min(plays);
-                        run_plays.end = run_plays.end.max(plays + BLOCK_FRAMES);
+                        run_plays.end = run_plays.end.max(plays.saturating_add(length));
                     }
-                    _ => plans.push((key.clone(), index..index + 1, plays..plays + BLOCK_FRAMES)),
+                    _ => plans.push((
+                        key.clone(),
+                        index..index + 1,
+                        plays..plays.saturating_add(length),
+                    )),
                 }
             }
         }
+        self.stretched.retain(|key, stretch| match stretch {
+            Stretch::Ready(samples) => {
+                if all_fit || selected.contains(&BudgetBuffer::Stretch(*key)) {
+                    true
+                } else {
+                    *stretch = Stretch::Rejected {
+                        bytes: samples.allocated_bytes(),
+                    };
+                    dropped = true;
+                    true
+                }
+            }
+            Stretch::Rejected { .. } => true,
+            Stretch::Pending { cancelled, bytes } => {
+                if all_fit || selected.contains(&BudgetBuffer::Stretch(*key)) {
+                    true
+                } else {
+                    cancelled.store(true, Ordering::Relaxed);
+                    *stretch = Stretch::Rejected { bytes: *bytes };
+                    dropped = true;
+                    true
+                }
+            }
+            Stretch::Failed => true,
+        });
+        self.stretched_plays
+            .retain(|key, _| self.stretched.contains_key(key));
+
+        let available_bytes = self.budget_bytes.saturating_sub(selected_bytes);
+        let retry_key = self
+            .stretched
+            .iter()
+            .find_map(|(&key, stretch)| match stretch {
+                Stretch::Rejected { bytes }
+                    if self.stretch_wanted.contains(&key) && *bytes <= available_bytes =>
+                {
+                    Some(key)
+                }
+                Stretch::Pending { .. }
+                | Stretch::Ready(_)
+                | Stretch::Rejected { .. }
+                | Stretch::Failed => None,
+            });
+        if let Some(key) = retry_key {
+            self.stretched.remove(&key);
+            self.stretched_plays.remove(&key);
+            dropped = true;
+        }
+
         // The worker may start on the first before the others arrive.
         plans.sort_by_key(|(_, _, plays)| distance(plays, playhead));
         for (key, blocks, plays) in plans {
@@ -803,13 +1296,19 @@ impl MixBufferCache {
                 });
             }
         }
+        self.projected_bytes = None;
         dropped
     }
 
     /// Collects the decoded blocks; `true` when the mixer snapshot must be
     /// rebuilt.
     pub fn poll(&mut self) -> bool {
-        let mut changed = self.unplanned && self.rebalance();
+        let fallback_changed = std::mem::replace(&mut self.fallback_refresh_pending, false);
+        let needs_rebalance = self.unplanned;
+        let mut changed = fallback_changed;
+        if needs_rebalance {
+            changed |= self.rebalance() || fallback_changed;
+        }
         while let Ok(decoded) = self.decoded_rx.try_recv() {
             match decoded {
                 Decoded::Block {
@@ -817,15 +1316,36 @@ impl MixBufferCache {
                     index,
                     samples,
                 } => {
-                    let Some(stream) = self
-                        .job_keys
-                        .get(&job)
-                        .and_then(|k| self.streams.get_mut(k))
-                    else {
+                    let Some(key) = self.job_keys.get(&job).cloned() else {
                         continue;
                     };
+                    let Some(stream) = self.streams.get_mut(&key) else {
+                        continue;
+                    };
+                    let was_cached = stream.blocks.contains_key(&index);
+                    let wanted = stream.wanted.contains_key(&index);
+                    let sample_bytes = samples
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<f32>());
+                    let block_bytes = (BLOCK_FRAMES as usize)
+                        .saturating_mul(self.channels.max(1) as usize)
+                        .saturating_mul(std::mem::size_of::<f32>());
+                    let plays = block_plays(stream, index);
+                    stream.block_plays.entry(index).or_insert(plays);
+                    stream
+                        .block_play_lengths
+                        .entry(index)
+                        .or_insert(BLOCK_FRAMES);
                     stream.blocks.entry(index).or_insert(samples);
+                    if !was_cached {
+                        self.projected_bytes = None;
+                    }
                     self.unreported_blocks = true;
+                    // A wanted decode replaces its already budgeted reservation;
+                    // only surplus or oversized blocks can newly exceed the budget.
+                    if !was_cached && (!wanted || sample_bytes > block_bytes) {
+                        changed |= self.rebalance();
+                    }
                 }
                 Decoded::Done {
                     job,
@@ -858,7 +1378,11 @@ impl MixBufferCache {
             self.unreported_blocks = false;
             self.last_block_report = Some(now);
         }
+        let mut stretch_changed = false;
         while let Ok((key, result, degraded)) = self.stretch_rx.try_recv() {
+            if !matches!(self.stretched.get(&key), Some(Stretch::Pending { .. })) {
+                continue;
+            }
             if let Some(entry) = self.stretched.get_mut(&key) {
                 if let Some(started) = degraded {
                     if started != self.retry.load(Ordering::Relaxed) {
@@ -877,7 +1401,12 @@ impl MixBufferCache {
                     }
                 };
                 changed = true;
+                stretch_changed = true;
             }
+        }
+        if stretch_changed {
+            self.projected_bytes = None;
+            changed |= self.rebalance();
         }
         while let Ok((key, slot, level, degraded)) = self.level_rx.try_recv() {
             match level {
@@ -910,6 +1439,8 @@ impl MixBufferCache {
     /// a worker becoming idle takes the jobs waiting.
     pub fn send_jobs(&mut self, project: &Project) {
         self.abort_outdated_level();
+        self.queued_stretches
+            .retain(|stretch| !stretch.cancelled.load(Ordering::Relaxed));
         let idle = |busy: &AtomicUsize| busy.load(Ordering::Relaxed) == 0;
         let levels = !self.queued_levels.is_empty() && idle(&self.level_busy);
         let stretches = !self.queued_stretches.is_empty() && idle(&self.stretch_busy);
@@ -960,7 +1491,7 @@ impl MixBufferCache {
             || self
                 .stretched
                 .values()
-                .any(|stretch| matches!(stretch, Stretch::Pending(_)))
+                .any(|stretch| matches!(stretch, Stretch::Pending { .. }))
     }
 }
 
@@ -988,7 +1519,7 @@ impl Drop for MixBufferCache {
             job.cancelled.store(true, Ordering::Relaxed);
         }
         for stretch in self.stretched.values() {
-            if let Stretch::Pending(cancelled) = stretch {
+            if let Stretch::Pending { cancelled, .. } = stretch {
                 cancelled.store(true, Ordering::Relaxed);
             }
         }
@@ -1022,14 +1553,47 @@ impl AudioSource for MixBufferCache {
         self.lookup(path, stream, frames, plays_at)
     }
 
+    fn file_frames_scaled(
+        &mut self,
+        path: &Path,
+        stream: usize,
+        frames: Range<u64>,
+        plays_at: u64,
+        plays_per_media_frame: f64,
+    ) -> ClipAudio {
+        self.lookup_scaled(path, stream, frames, plays_at, plays_per_media_frame)
+    }
+
+    /// Reuses or queues a pitch-corrected buffer and records its playhead range.
     fn stretched(&mut self, request: StretchRequest) -> ClipAudio {
         self.stretch_used.insert(request.key);
-        if let Some(entry) = self.stretched.get(&request.key) {
-            return match entry {
-                Stretch::Pending(_) => ClipAudio::Pending,
-                Stretch::Ready(samples) => ClipAudio::Ready(samples.clone()),
-                Stretch::Failed => ClipAudio::Missing,
-            };
+        let first_use = self.stretch_wanted.insert(request.key);
+        let playhead = self.playhead.load(Ordering::Relaxed);
+        self.stretched_plays
+            .entry(request.key)
+            .and_modify(|plays| {
+                if first_use || distance(&request.plays, playhead) < distance(plays, playhead) {
+                    *plays = request.plays.clone();
+                }
+            })
+            .or_insert_with(|| request.plays.clone());
+        match self.stretched.get(&request.key) {
+            Some(Stretch::Pending { .. }) => return ClipAudio::Pending,
+            Some(Stretch::Ready(samples)) => return ClipAudio::Ready(samples.clone()),
+            Some(Stretch::Rejected { .. } | Stretch::Failed) => {
+                return self.stretch_fallback(request);
+            }
+            None => {}
+        }
+        let estimated_bytes = estimated_stretch_bytes(&request);
+        if estimated_bytes > self.budget_bytes {
+            return self.stretch_fallback(request);
+        }
+        let available_bytes = self
+            .budget_bytes
+            .saturating_sub(self.projected_audio_bytes());
+        if estimated_bytes > available_bytes {
+            return self.stretch_fallback(request);
         }
         let cancelled = Arc::new(AtomicBool::new(false));
         self.queued_stretches.push(OwnedStretch {
@@ -1044,11 +1608,20 @@ impl AudioSource for MixBufferCache {
                 } => OwnedInput::Nested(timeline.clone(), depth, scope),
             },
             frames: request.frames,
+            plays: request.plays,
             tempo: request.tempo,
             format: (request.sample_rate, request.channels),
         });
-        self.stretched
-            .insert(request.key, Stretch::Pending(cancelled));
+        self.stretched.insert(
+            request.key,
+            Stretch::Pending {
+                cancelled,
+                bytes: estimated_bytes,
+            },
+        );
+        if let Some(projected_bytes) = &mut self.projected_bytes {
+            *projected_bytes = projected_bytes.saturating_add(estimated_bytes);
+        }
         ClipAudio::Pending
     }
 
