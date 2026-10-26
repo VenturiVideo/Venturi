@@ -4086,6 +4086,7 @@ fn preview_plays_the_media_audio_and_leaving_it_restores_the_timeline_mix() {
     );
 }
 
+/// Verify that preview mark clearing updates the source range used for trimming.
 #[test]
 fn in_out_marks_on_the_preview_trim_the_clip_dropped_on_the_timeline() {
     let (_dir, mut app, media_id) = browse_fixture("marks.mp4");
@@ -4095,6 +4096,18 @@ fn in_out_marks_on_the_preview_trim_the_clip_dropped_on_the_timeline() {
     app.mark_at_playhead(false);
     let (source_in, source_out) = app.browse_marks.resolve(app.browse_total_frames());
     assert_eq!((source_in, source_out), (10, 30));
+
+    let total = app.browse_total_frames();
+    app.clear_in_point();
+    assert_eq!(app.browse_marks.resolve(total), (0, 30));
+    app.seek_browse(10);
+    app.mark_at_playhead(true);
+    app.clear_out_point();
+    assert_eq!(app.browse_marks.resolve(total), (10, total));
+    app.seek_browse(29);
+    app.mark_at_playhead(false);
+    app.clear_in_and_out();
+    assert_eq!(app.browse_marks.resolve(total), (0, total));
 
     app.add_media_to_timeline_at(
         timeline_ui::MediaDrag {
@@ -4152,6 +4165,30 @@ fn in_out_keys_on_the_timeline_set_the_export_range() {
     app.timeline_state.playhead = 59;
     app.mark_at_playhead(false);
     assert_eq!(app.timeline_state.export_marks.resolve(100), (20, 60));
+}
+
+/// Verify that independent and combined clearing restores timeline range edges.
+#[test]
+fn clearing_in_out_actions_restore_the_timeline_export_range() {
+    let mut app = VenturiApp::default();
+    make_timeline_with_clip(&mut app, 0, 0, 100);
+    app.timeline_state.playhead = 20;
+    app.mark_at_playhead(true);
+    app.timeline_state.playhead = 59;
+    app.mark_at_playhead(false);
+
+    app.clear_in_point();
+    assert_eq!(app.timeline_state.export_marks.resolve(100), (0, 60));
+
+    app.timeline_state.playhead = 40;
+    app.mark_at_playhead(true);
+    app.clear_out_point();
+    assert_eq!(app.timeline_state.export_marks.resolve(100), (40, 100));
+
+    app.timeline_state.playhead = 59;
+    app.mark_at_playhead(false);
+    app.clear_in_and_out();
+    assert_eq!(app.timeline_state.export_marks.resolve(100), (0, 100));
 }
 
 /// End-to-end test of the reported bug ("the buffer always stops at the

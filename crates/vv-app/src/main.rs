@@ -1008,6 +1008,59 @@ impl VenturiApp {
         }
     }
 
+    /// Returns marks for the active preview or timeline, if either is active.
+    ///
+    /// An active media preview takes priority over the timeline's export range.
+    fn current_mark_range(&self) -> Option<transport::MarkRange> {
+        if self.browsing.is_some() {
+            Some(self.browse_marks)
+        } else if self.timeline_id.is_some() {
+            Some(self.timeline_state.export_marks)
+        } else {
+            None
+        }
+    }
+
+    /// Returns mutable marks for the active preview or timeline, if either is active.
+    ///
+    /// An active media preview takes priority over the timeline's export range.
+    fn current_mark_range_mut(&mut self) -> Option<&mut transport::MarkRange> {
+        if self.browsing.is_some() {
+            Some(&mut self.browse_marks)
+        } else if self.timeline_id.is_some() {
+            Some(&mut self.timeline_state.export_marks)
+        } else {
+            None
+        }
+    }
+
+    /// Clears In on the active preview or timeline range.
+    ///
+    /// The unset endpoint resolves to frame zero; Out remains unchanged.
+    fn clear_in_point(&mut self) {
+        if let Some(marks) = self.current_mark_range_mut() {
+            marks.clear_in();
+        }
+    }
+
+    /// Clears Out on the active preview or timeline range.
+    ///
+    /// The unset endpoint resolves to the content end; In remains unchanged.
+    fn clear_out_point(&mut self) {
+        if let Some(marks) = self.current_mark_range_mut() {
+            marks.clear_out();
+        }
+    }
+
+    /// Clears both endpoints on the active preview or timeline range.
+    ///
+    /// Both unset endpoints resolve to the full content range.
+    fn clear_in_and_out(&mut self) {
+        if let Some(marks) = self.current_mark_range_mut() {
+            marks.clear_all();
+        }
+    }
+
     /// Left/right arrows: one frame back/forward, holding them down
     /// scrolls at `ARROW_HOLD_SPEED`. It pauses if playing.
     /// Returns `true` while an arrow is held.
