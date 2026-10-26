@@ -180,6 +180,13 @@ libvorbis): the target machine needs neither FFmpeg nor RPM Fusion.
 glibc, ALSA, Vulkan and the NVIDIA driver, if any (NVENC requires >= 550),
 stay the system ones.
 
+Each AppImage also includes update information for its architecture and produces
+a `Venturi-<arch>.AppImage.zsync` sidecar. Release artifacts retain both files so
+AppImageUpdate-compatible clients can download only changed blocks from the
+latest official release. This does not add an in-application updater. The first
+release carrying this metadata is the baseline for subsequent delta updates;
+older AppImages without update information still need a full download.
+
 The script re-runs itself inside a Debian 13 container
 (`container/Containerfile.appimage`, built on first use): a glibc binary only
 runs on a glibc >= the build one, so the release must not be compiled on
