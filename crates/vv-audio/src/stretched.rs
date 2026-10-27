@@ -28,11 +28,14 @@ pub enum StretchInput<'a> {
     },
 }
 
+/// Describes the source, timeline placement, tempo, and format for a stretch.
 pub struct StretchRequest<'a> {
     pub project: &'a Project,
     pub input: StretchInput<'a>,
     /// Of the input: the clip's, from its first frame.
     pub frames: Range<u64>,
+    /// Where the stretched audio plays in the outer timeline.
+    pub plays: Range<u64>,
     pub tempo: f64,
     pub sample_rate: u32,
     pub channels: u16,
@@ -79,7 +82,7 @@ impl StretchRequest<'_> {
                 match source.file_frames(path, stream, self.frames.clone(), 0) {
                     ClipAudio::Ready(buffer) => buffer,
                     ClipAudio::Partial(_) | ClipAudio::Pending => return ClipAudio::Pending,
-                    ClipAudio::Missing => return ClipAudio::Missing,
+                    ClipAudio::Missing | ClipAudio::Nested(_) => return ClipAudio::Missing,
                 }
             }
             StretchInput::Nested { .. } => {

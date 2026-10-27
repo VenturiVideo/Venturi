@@ -63,6 +63,20 @@ impl SampleBlocks {
         self.end == self.start
     }
 
+    /// Bytes allocated by the sample vectors held in this buffer.
+    pub fn allocated_bytes(&self) -> usize {
+        self.blocks
+            .iter()
+            .filter_map(Option::as_ref)
+            .fold(0, |total, samples| {
+                total.saturating_add(
+                    samples
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<f32>()),
+                )
+            })
+    }
+
     /// The samples from `frame` to the end of its block.
     pub fn run(&self, frame: u64) -> Run<'_> {
         if frame < self.start || frame >= self.end {

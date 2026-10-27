@@ -399,7 +399,7 @@ impl MixSnapshot {
             source,
             None,
             0,
-            0,
+            PlaybackMap::identity(),
             0,
             None,
         )
@@ -425,7 +425,7 @@ impl MixSnapshot {
             source,
             Some(range),
             0,
-            0,
+            PlaybackMap::identity(),
             0,
             None,
         )
@@ -452,7 +452,36 @@ impl MixSnapshot {
             source,
             Some(range),
             depth,
-            0,
+            PlaybackMap::identity(),
+            scope,
+            None,
+        )
+        .0
+    }
+
+    /// Mixes a nested range while mapping its cache requests to the outer playhead.
+    pub fn nested_range_for_playback(
+        project: &Project,
+        timeline: &Timeline,
+        depth: u32,
+        scope: u64,
+        sample_rate: u32,
+        channels: u16,
+        source: &mut impl AudioSource,
+        range: std::ops::Range<u64>,
+        plays_at: u64,
+        plays_per_frame: f64,
+    ) -> Self {
+        let playback = PlaybackMap::anchored(range.start, plays_at, plays_per_frame);
+        collect_clips(
+            project,
+            timeline,
+            sample_rate,
+            channels,
+            source,
+            Some(range),
+            depth,
+            playback,
             scope,
             None,
         )
@@ -470,7 +499,9 @@ impl MixSnapshot {
     ) -> Self {
         let buffer = match source.file_frames(path, stream, range.clone(), range.start) {
             ClipAudio::Ready(buffer) | ClipAudio::Partial(buffer) => buffer,
-            ClipAudio::Pending | ClipAudio::Missing => return Self::empty(sample_rate, channels),
+            ClipAudio::Pending | ClipAudio::Missing | ClipAudio::Nested(_) => {
+                return Self::empty(sample_rate, channels);
+            }
         };
         let clip = MixClip {
             clip: ClipId(0),
@@ -516,7 +547,7 @@ impl MixSnapshot {
             source,
             range,
             0,
-            0,
+            PlaybackMap::identity(),
             scope,
             Some(measured),
         )
@@ -944,8 +975,10 @@ pub enum LevelReading {
 pub enum ClipAudio {
     /// Already at the snapshot's `sample_rate`/`channels`.
     Ready(SampleBlocks),
-    /// Like `Ready`, but with blocks still decoding: they play as silence.
+    /// Some frames may be missing; for stretches it may be source audio at varispeed.
     Partial(SampleBlocks),
+    /// A bounded nested mix used as a varispeed fallback for a stretch.
+    Nested(Box<MixSnapshot>),
     /// Still decoding, nothing yet: silent for now.
     Pending,
     /// No audio there (e.g. a stream index past the file's streams).
@@ -971,7 +1004,21 @@ pub trait AudioSource {
         self.file(path, stream)
     }
 
+    /// Like `file_frames`, with the outer playback duration of each media frame.
+    fn file_frames_scaled(
+        &mut self,
+        path: &Path,
+        stream: usize,
+        frames: std::ops::Range<u64>,
+        plays_at: u64,
+        _plays_per_media_frame: f64,
+    ) -> ClipAudio {
+        self.file_frames(path, stream, frames, plays_at)
+    }
+
     /// The audio a pitch-corrected clip plays, from its first frame.
+    /// `Partial` and `Nested` may supply source audio at varispeed when a
+    /// complete stretched buffer cannot be cached.
     /// Synchronous here, whole and from this source; the preview and the
     /// export render it from the files.
     fn stretched(&mut self, request: StretchRequest<'_>) -> ClipAudio
@@ -1024,10 +1071,63 @@ impl<F: FnMut(&Path, usize) -> Option<SampleBlocks>> AudioSource for F {
     }
 }
 
-/// The mix clips of `timeline`, and whether it contains itself through a
-/// compound clip: the whole cycle stays silent instead of layering itself
-/// `MAX_COMPOUND_DEPTH` times. `placement`: where its sample 0 plays in the
-/// outermost timeline, for `plays_at`.
+/// Maps local timeline positions to the outer playback clock for cache priority.
+#[derive(Clone, Copy)]
+struct PlaybackMap {
+    offset: f64,
+    scale: f64,
+}
+
+impl PlaybackMap {
+    /// Maps timeline frames to themselves for the outermost timeline.
+    fn identity() -> Self {
+        Self {
+            offset: 0.0,
+            scale: 1.0,
+        }
+    }
+
+    /// Anchors a local frame at its position on the outer playback clock.
+    fn anchored(local_frame: u64, plays_at: u64, scale: f64) -> Self {
+        let scale = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
+        Self {
+            offset: plays_at as f64 - local_frame as f64 * scale,
+            scale,
+        }
+    }
+
+    /// Converts a local timeline position to an outer playback sample.
+    fn outer_frame(self, local_frame: f64) -> u64 {
+        let frame = self.offset + self.scale * local_frame;
+        if !frame.is_finite() || frame <= 0.0 {
+            0
+        } else if frame >= u64::MAX as f64 {
+            u64::MAX
+        } else {
+            frame.floor() as u64
+        }
+    }
+
+    /// Composes the mapping with a clip's source offset and playback speed.
+    fn through_clip(self, span: &ClipSpan) -> Self {
+        let step = if span.step.is_finite() && span.step > 0.0 {
+            span.step
+        } else {
+            1.0
+        };
+        Self {
+            offset: self.offset
+                + self.scale * (span.start as f64 - span.source_offset as f64 / step),
+            scale: self.scale / step,
+        }
+    }
+}
+
+/// Collects audible clips and requests their source audio.
 #[allow(clippy::too_many_arguments)]
 fn collect_clips(
     project: &Project,
@@ -1037,7 +1137,7 @@ fn collect_clips(
     source: &mut impl AudioSource,
     range: Option<std::ops::Range<u64>>,
     depth: u32,
-    placement: i64,
+    playback: PlaybackMap,
     scope: u64,
     measuring: Option<Measured>,
 ) -> (MixSnapshot, bool) {
@@ -1073,8 +1173,8 @@ fn collect_clips(
                 continue;
             };
             let into_clip = needed.start.saturating_sub(span.source_offset) as f64 / span.step;
-            let plays_at = (placement + span.start as i64 + into_clip as i64).max(0) as u64;
-            let nested_placement = placement + span.start as i64 - span.source_offset as i64;
+            let plays_at = playback.outer_frame(span.start as f64 + into_clip);
+            let mut stretch_applied = false;
             let input = if pitch_corrected {
                 let nested = item.compound.and_then(|id| project.timelines.get(id));
                 if nested.is_some() && depth + 1 >= vv_core::MAX_COMPOUND_DEPTH {
@@ -1122,14 +1222,27 @@ fn collect_clips(
                     project,
                     input,
                     frames,
+                    plays: plays_at
+                        ..playback
+                            .outer_frame((span.start + span.len) as f64)
+                            .max(plays_at),
                     tempo: span.step,
                     sample_rate,
                     channels,
                     key,
                 };
                 match source.stretched(request) {
-                    ClipAudio::Ready(stretched) => ClipInput::Blocks(stretched),
-                    ClipAudio::Pending | ClipAudio::Partial(_) | ClipAudio::Missing => continue,
+                    ClipAudio::Ready(stretched) => {
+                        stretch_applied = true;
+                        ClipInput::Blocks(stretched)
+                    }
+                    // A partial response is the source audio at varispeed while
+                    // a full pitch-corrected buffer is outside the cache budget.
+                    ClipAudio::Partial(source) => ClipInput::Blocks(source),
+                    ClipAudio::Nested(source) => ClipInput::Nested(NestedMix {
+                        mix: Arc::from(source),
+                    }),
+                    ClipAudio::Pending | ClipAudio::Missing => continue,
                 }
             } else if item.compound.is_some() {
                 let Some((mix, nested_cyclic)) = nested_mix(
@@ -1139,7 +1252,7 @@ fn collect_clips(
                     source,
                     range.is_some().then(|| needed.clone()),
                     depth,
-                    nested_placement,
+                    playback.through_clip(&span),
                     stable_hash((scope, clip.id)),
                 ) else {
                     continue;
@@ -1150,16 +1263,17 @@ fn collect_clips(
                 }
                 ClipInput::Nested(NestedMix { mix: Arc::new(mix) })
             } else {
-                match source.file_frames(
+                match source.file_frames_scaled(
                     &item.path,
                     clip.audio_stream_index,
                     needed.clone(),
                     plays_at,
+                    playback.scale / span.step,
                 ) {
                     ClipAudio::Ready(buffer) | ClipAudio::Partial(buffer) => {
                         ClipInput::Blocks(buffer)
                     }
-                    ClipAudio::Pending | ClipAudio::Missing => continue,
+                    ClipAudio::Pending | ClipAudio::Missing | ClipAudio::Nested(_) => continue,
                 }
             };
             let clip_fps = item.meta.fps.as_f64().max(1e-9);
@@ -1180,7 +1294,7 @@ fn collect_clips(
                 continue;
             };
             mix_clip.track = track_index;
-            if pitch_corrected && let ClipInput::Blocks(stretched) = &mix_clip.input {
+            if stretch_applied && let ClipInput::Blocks(stretched) = &mix_clip.input {
                 // Already at the clip's speed, from its first frame.
                 mix_clip.len = mix_clip.len.min(stretched.end());
                 mix_clip.source_offset = 0;
@@ -1647,7 +1761,7 @@ fn nested_mix(
     source: &mut impl AudioSource,
     frames: Option<std::ops::Range<u64>>,
     depth: u32,
-    placement: i64,
+    playback: PlaybackMap,
     scope: u64,
 ) -> Option<(MixSnapshot, bool)> {
     if depth >= vv_core::MAX_COMPOUND_DEPTH {
@@ -1663,7 +1777,7 @@ fn nested_mix(
         source,
         frames,
         depth + 1,
-        placement,
+        playback,
         scope,
         None,
     ))

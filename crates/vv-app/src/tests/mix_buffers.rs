@@ -92,6 +92,57 @@ fn compound_project(path: &Path, secs: u32) -> (Project, MediaId, vv_core::Timel
     (project, compound_media, parent)
 }
 
+/// Builds a file clip whose pitch-corrected duration is half its source duration.
+fn pitch_corrected_file_project(path: &Path, source_secs: u32) -> (Project, vv_core::Timeline) {
+    let mut project = Project::default();
+    let media = project.media_pool.insert(vv_core::MediaItem {
+        path: path.to_path_buf(),
+        meta: vv_core::MediaMeta {
+            duration_frames: 25 * source_secs as i64,
+            fps: vv_core::Rational::new(25, 1),
+            width: 0,
+            height: 0,
+            has_video: false,
+            has_audio: true,
+            sample_rate: 48_000,
+            channels: 1,
+            audio_streams: 1,
+            file: Default::default(),
+        },
+        content_hash: 1,
+        compound: None,
+        folder: None,
+    });
+    let mut clip = vv_core::Clip::new(
+        vv_core::ClipId(1),
+        vv_core::ClipSource::Media(media),
+        0,
+        0,
+        25 * source_secs as i64 / 2,
+        vv_core::Rational::one(),
+        vv_core::Rational::new(2, 1),
+    );
+    clip.pitch_correction = true;
+    let timeline = vv_core::Timeline {
+        name: "sliding fallback".into(),
+        fps: vv_core::Rational::new(25, 1),
+        resolution: (1, 1),
+        tracks: vec![vv_core::Track {
+            kind: vv_core::TrackKind::Audio,
+            clips: vec![clip],
+            muted: false,
+            solo: false,
+            locked: false,
+            crossings: Vec::new(),
+            mix: Default::default(),
+            armed: Default::default(),
+        }],
+        markers: Vec::new(),
+        master: Default::default(),
+    };
+    (project, timeline)
+}
+
 fn sine_wav(name: &str, secs: u32) -> PathBuf {
     let dir = std::env::temp_dir().join("vv-app-mix-buffers-test");
     std::fs::create_dir_all(&dir).unwrap();
@@ -252,6 +303,514 @@ fn over_budget_the_blocks_closest_to_the_playhead_are_kept() {
     assert_eq!(blocks_held(&cache, &path), [35, 36, 37, 38]);
 }
 
+const MONO_BLOCK_BYTES: usize = BLOCK_FRAMES as usize * std::mem::size_of::<f32>();
+
+/// Totals the sample-vector capacity resident in both audio caches.
+fn resident_audio_bytes(cache: &MixBufferCache) -> usize {
+    let block_bytes = cache
+        .streams
+        .values()
+        .flat_map(|stream| stream.blocks.values())
+        .map(|samples| samples.capacity() * std::mem::size_of::<f32>())
+        .sum::<usize>();
+    let stretch_bytes = cache
+        .stretched
+        .values()
+        .filter_map(|stretch| match stretch {
+            Stretch::Ready(samples) => Some(samples.allocated_bytes()),
+            Stretch::Pending { .. } | Stretch::Rejected { .. } | Stretch::Failed => None,
+        })
+        .sum::<usize>();
+    block_bytes + stretch_bytes
+}
+
+/// Seeds a cached mono block at a known timeline position for eviction tests.
+fn seed_block(cache: &mut MixBufferCache, path: &str, index: u64, plays: u64) {
+    let stream = cache.streams.entry((PathBuf::from(path), 0)).or_default();
+    stream
+        .blocks
+        .insert(index, Arc::new(vec![0.0; BLOCK_FRAMES as usize]));
+    stream.wanted.insert(index, plays);
+}
+
+/// Seeds a ready stretch buffer and its outer-timeline range for budget tests.
+fn seed_ready_stretch(cache: &mut MixBufferCache, key: u64, frames: u64, plays: Range<u64>) {
+    cache.stretched.insert(
+        key,
+        Stretch::Ready(SampleBlocks::contiguous(
+            Arc::new(vec![0.0; frames as usize]),
+            0,
+            cache.channels,
+        )),
+    );
+    cache.stretched_plays.insert(key, plays);
+}
+
+#[test]
+/// Surplus blocks from a completed decode job must be evicted to the byte budget.
+fn rebalance_evicts_surplus_blocks_left_by_a_completed_decode_job() {
+    let mut cache = MixBufferCache::spawn(48_000, 1);
+    cache.set_budget_bytes(MONO_BLOCK_BYTES);
+    cache.set_playhead(0);
+    let stream = cache
+        .streams
+        .entry((PathBuf::from("completed-job.wav"), 0))
+        .or_default();
+    stream.wanted.insert(0, 0);
+    for index in 0..8 {
+        stream
+            .blocks
+            .insert(index, Arc::new(vec![0.0; BLOCK_FRAMES as usize]));
+    }
+
+    cache.rebalance();
+
+    assert_eq!(resident_audio_bytes(&cache), MONO_BLOCK_BYTES);
+}
+
+#[test]
+/// Stretched buffers count toward the budget and compete with standard blocks.
+fn rebalance_counts_stretched_audio_and_evicts_it_across_maps() {
+    let mut cache = MixBufferCache::spawn(48_000, 1);
+    cache.set_budget_bytes(2 * MONO_BLOCK_BYTES);
+    cache.set_playhead(10 * BLOCK_FRAMES);
+    seed_block(&mut cache, "near.wav", 0, 10 * BLOCK_FRAMES);
+    let key = 42;
+    seed_ready_stretch(
+        &mut cache,
+        key,
+        2 * BLOCK_FRAMES,
+        20 * BLOCK_FRAMES..22 * BLOCK_FRAMES,
+    );
+
+    cache.rebalance();
+
+    assert!(matches!(
+        cache.stretched.get(&key),
+        Some(Stretch::Rejected { .. })
+    ));
+    assert_eq!(resident_audio_bytes(&cache), MONO_BLOCK_BYTES);
+    assert_eq!(blocks_held(&cache, Path::new("near.wav")), [0]);
+}
+
+/// An oversized stretch leaves the active source blocks available as fallback audio.
+#[test]
+fn an_oversized_stretch_cannot_evict_active_playhead_blocks() {
+    let mut cache = MixBufferCache::spawn(48_000, 1);
+    cache.set_budget_bytes(2 * MONO_BLOCK_BYTES);
+    let playhead = BLOCK_FRAMES / 2;
+    cache.set_playhead(playhead);
+    seed_block(&mut cache, "active.wav", 0, 0);
+    seed_block(&mut cache, "active.wav", 1, BLOCK_FRAMES);
+    let stream = cache
+        .streams
+        .get_mut(&(PathBuf::from("active.wav"), 0))
+        .unwrap();
+    for samples in stream.blocks.values_mut() {
+        *samples = Arc::new(vec![0.5; BLOCK_FRAMES as usize]);
+    }
+    let key = 45;
+    seed_ready_stretch(
+        &mut cache,
+        key,
+        8 * BLOCK_FRAMES,
+        playhead..playhead + 8 * BLOCK_FRAMES,
+    );
+    cache.stretch_wanted.insert(key);
+
+    cache.rebalance();
+
+    assert_eq!(blocks_held(&cache, Path::new("active.wav")), [0, 1]);
+    assert!(matches!(
+        cache.stretched.get(&key),
+        Some(Stretch::Rejected { .. })
+    ));
+    let project = Project::default();
+    let fallback = match cache.stretched(StretchRequest {
+        project: &project,
+        input: vv_audio::StretchInput::File {
+            path: Path::new("active.wav"),
+            stream: 0,
+        },
+        frames: 0..2 * BLOCK_FRAMES,
+        plays: 0..2 * BLOCK_FRAMES,
+        tempo: 1.0,
+        sample_rate: 48_000,
+        channels: 1,
+        key,
+    }) {
+        ClipAudio::Partial(audio) => audio,
+        _ => panic!("an oversized stretch should fall back to source audio"),
+    };
+    assert_eq!(fallback.frame(0), Some(&[0.5][..]));
+    assert_eq!(fallback.frame(BLOCK_FRAMES), Some(&[0.5][..]));
+    let audio = ready(&mut cache, Path::new("active.wav"), 0..2 * BLOCK_FRAMES);
+    assert_eq!(audio.frame(0), Some(&[0.5][..]));
+    assert_eq!(audio.frame(BLOCK_FRAMES), Some(&[0.5][..]));
+}
+
+/// A stretch using most of the budget remains cached and audible when it fits.
+#[test]
+fn a_long_stretch_larger_than_half_the_budget_remains_playable() {
+    let mut cache = MixBufferCache::spawn(48_000, 1);
+    cache.set_budget_bytes(4 * MONO_BLOCK_BYTES);
+    let key = 46;
+    let frames = 3 * BLOCK_FRAMES;
+    cache.stretched.insert(
+        key,
+        Stretch::Ready(SampleBlocks::contiguous(
+            Arc::new(vec![0.25; frames as usize]),
+            0,
+            1,
+        )),
+    );
+    cache.stretched_plays.insert(key, 0..frames);
+    cache.stretch_wanted.insert(key);
+
+    cache.rebalance();
+
+    assert!(matches!(cache.stretched.get(&key), Some(Stretch::Ready(_))));
+    assert_eq!(resident_audio_bytes(&cache), 3 * MONO_BLOCK_BYTES);
+    let project = Project::default();
+    let audio = match cache.stretched(StretchRequest {
+        project: &project,
+        input: vv_audio::StretchInput::File {
+            path: Path::new("long-stretch.wav"),
+            stream: 0,
+        },
+        frames: 0..frames,
+        plays: 0..frames,
+        tempo: 1.0,
+        sample_rate: 48_000,
+        channels: 1,
+        key,
+    }) {
+        ClipAudio::Ready(audio) => audio,
+        _ => panic!("a stretch that fits the budget should remain available"),
+    };
+    assert_eq!(audio.frame(0), Some(&[0.25][..]));
+    assert_eq!(audio.frame(frames - 1), Some(&[0.25][..]));
+}
+
+/// An over-budget stretch uses bounded varispeed source reads instead of muting the clip.
+#[test]
+fn an_over_budget_pitch_stretch_falls_back_to_audible_varispeed_audio() {
+    let path = PathBuf::from("fallback-stretch.wav");
+    let mut project = Project::default();
+    let media = project.media_pool.insert(vv_core::MediaItem {
+        path: path.clone(),
+        meta: vv_core::MediaMeta {
+            duration_frames: 100,
+            fps: vv_core::Rational::new(25, 1),
+            width: 0,
+            height: 0,
+            has_video: false,
+            has_audio: true,
+            sample_rate: 48_000,
+            channels: 1,
+            audio_streams: 1,
+            file: Default::default(),
+        },
+        content_hash: 1,
+        compound: None,
+        folder: None,
+    });
+    let mut clip = vv_core::Clip::new(
+        vv_core::ClipId(1),
+        vv_core::ClipSource::Media(media),
+        0,
+        0,
+        50,
+        vv_core::Rational::one(),
+        vv_core::Rational::new(2, 1),
+    );
+    clip.pitch_correction = true;
+    let timeline = vv_core::Timeline {
+        name: "over-budget stretch".into(),
+        fps: vv_core::Rational::new(25, 1),
+        resolution: (1, 1),
+        tracks: vec![vv_core::Track {
+            kind: vv_core::TrackKind::Audio,
+            clips: vec![clip],
+            muted: false,
+            solo: false,
+            locked: false,
+            crossings: Vec::new(),
+            mix: Default::default(),
+            armed: Default::default(),
+        }],
+        markers: Vec::new(),
+        master: Default::default(),
+    };
+    let mut cache = MixBufferCache::spawn(48_000, 1);
+    cache.set_budget_bytes(MONO_BLOCK_BYTES);
+    cache.set_playhead(24_000);
+    let stream = cache.streams.entry((path.clone(), 0)).or_default();
+    stream
+        .blocks
+        .insert(0, Arc::new(vec![0.5; BLOCK_FRAMES as usize]));
+
+    let snapshot = MixSnapshot::from_timeline(&project, &timeline, 48_000, 1, &mut cache);
+    let mut output = vec![0.0; 1024];
+    vv_audio::mixer::mix_range(&snapshot, 24_000, &mut output);
+
+    assert!(
+        output.iter().any(|&sample| sample > 0.4),
+        "output peak {:?}, cached blocks {:?}",
+        output.iter().copied().fold(0.0_f32, f32::max),
+        cache.streams.get(&(path.clone(), 0)).map(|stream| stream
+            .blocks
+            .keys()
+            .copied()
+            .collect::<Vec<_>>())
+    );
+    assert!(cache.queued_stretches.is_empty());
+    assert!(cache.stretched.is_empty());
+}
+
+/// Rebuilds a long fallback at each refresh point while playback advances.
+#[test]
+fn an_over_budget_fallback_window_slides_with_the_playhead() {
+    let path = PathBuf::from("sliding-fallback.wav");
+    let (project, timeline) = pitch_corrected_file_project(&path, 30);
+    let mut cache = MixBufferCache::spawn(48_000, 1);
+    cache.set_budget_bytes(MONO_BLOCK_BYTES);
+
+    for playhead in [0, 2, 4, 6].map(|blocks| blocks * BLOCK_FRAMES) {
+        let source_block = (playhead * 2) / BLOCK_FRAMES;
+        cache.set_playhead(playhead);
+        let refreshed = cache.poll();
+        if playhead > 0 {
+            assert!(refreshed, "fallback refresh was missed at {playhead}");
+        }
+        cache.begin_pass();
+        let stream = cache.streams.entry((path.clone(), 0)).or_default();
+        stream
+            .blocks
+            .insert(source_block, Arc::new(vec![0.5; BLOCK_FRAMES as usize]));
+
+        let snapshot = MixSnapshot::from_timeline(&project, &timeline, 48_000, 1, &mut cache);
+        let mut output = vec![0.0; 512];
+        vv_audio::mixer::mix_range(&snapshot, playhead, &mut output);
+        assert!(
+            output.iter().any(|&sample| sample > 0.4),
+            "fallback went silent at playhead {playhead}"
+        );
+        cache.sweep_unused();
+        assert!(
+            blocks_held(&cache, &path).contains(&source_block),
+            "active source block {source_block} was not retained at {playhead}"
+        );
+    }
+    assert!(cache.queued_stretches.is_empty());
+}
+
+/// Stretch reservations in one pass prevent later jobs from oversubscribing the budget.
+#[test]
+fn stretch_admission_accounts_for_pending_jobs_without_rendering_them() {
+    let project = Project::default();
+    let request = |key, name: &'static str| StretchRequest {
+        project: &project,
+        input: vv_audio::StretchInput::File {
+            path: Path::new(name),
+            stream: 0,
+        },
+        frames: 0..BLOCK_FRAMES,
+        plays: 0..BLOCK_FRAMES,
+        tempo: 1.0,
+        sample_rate: 48_000,
+        channels: 1,
+        key,
+    };
+    let mut cache = MixBufferCache::spawn(48_000, 1);
+    cache.set_budget_bytes(MONO_BLOCK_BYTES);
+    cache.begin_pass();
+
+    assert!(matches!(
+        cache.stretched(request(50, "first.wav")),
+        ClipAudio::Pending
+    ));
+    assert!(matches!(
+        cache.stretched(request(51, "second.wav")),
+        ClipAudio::Partial(_)
+    ));
+    assert_eq!(cache.queued_stretches.len(), 1);
+}
+
+/// A compound stretch falls back to a bounded nested mix under the same budget.
+#[test]
+fn an_over_budget_compound_stretch_falls_back_to_nested_audio() {
+    let path = PathBuf::from("nested-fallback.wav");
+    let (project, _, mut timeline) = compound_project(&path, 4);
+    let clip = &mut timeline.tracks[0].clips[0];
+    clip.set_speed(vv_core::Rational::new(2, 1), vv_core::Rational::one());
+    clip.pitch_correction = true;
+    let mut cache = MixBufferCache::spawn(48_000, 1);
+    cache.set_budget_bytes(MONO_BLOCK_BYTES);
+    cache
+        .streams
+        .entry((path, 0))
+        .or_default()
+        .blocks
+        .insert(0, Arc::new(vec![0.5; BLOCK_FRAMES as usize]));
+
+    let snapshot = MixSnapshot::from_timeline(&project, &timeline, 48_000, 1, &mut cache);
+    let mut output = vec![0.0; 1024];
+    vv_audio::mixer::mix_range(&snapshot, 0, &mut output);
+
+    assert!(output.iter().any(|&sample| sample > 0.4));
+    assert!(cache.stretched.is_empty());
+}
+
+/// Nested fallback requests and eviction priorities use the outer playhead clock.
+#[test]
+fn a_nested_fallback_retains_the_block_under_the_moving_playhead() {
+    let path = PathBuf::from("nested-sliding-fallback.wav");
+    let (project, _, mut timeline) = compound_project(&path, 30);
+    let clip = &mut timeline.tracks[0].clips[0];
+    clip.set_speed(vv_core::Rational::new(2, 1), vv_core::Rational::one());
+    clip.pitch_correction = true;
+    let mut cache = MixBufferCache::spawn(48_000, 1);
+    cache.set_budget_bytes(MONO_BLOCK_BYTES);
+
+    for playhead in [0, 2, 4, 6].map(|blocks| blocks * BLOCK_FRAMES) {
+        let source_block = (playhead * 2) / BLOCK_FRAMES;
+        cache.set_playhead(playhead);
+        let refreshed = cache.poll();
+        if playhead > 0 {
+            assert!(
+                refreshed,
+                "nested fallback refresh was missed at {playhead}"
+            );
+        }
+        cache.begin_pass();
+        let stream = cache.streams.entry((path.clone(), 0)).or_default();
+        stream
+            .blocks
+            .insert(source_block, Arc::new(vec![0.5; BLOCK_FRAMES as usize]));
+
+        let snapshot = MixSnapshot::from_timeline(&project, &timeline, 48_000, 1, &mut cache);
+        let mut output = vec![0.0; 512];
+        vv_audio::mixer::mix_range(&snapshot, playhead, &mut output);
+        assert!(
+            output.iter().any(|&sample| sample > 0.4),
+            "nested fallback went silent at playhead {playhead}"
+        );
+        cache.sweep_unused();
+        let stream = &cache.streams[&(path.clone(), 0)];
+        assert_eq!(
+            stream.wanted.get(&source_block),
+            Some(&playhead),
+            "nested source block was not mapped onto the outer playback clock"
+        );
+        assert!(
+            stream.blocks.contains_key(&source_block),
+            "active nested source block {source_block} was evicted at {playhead}"
+        );
+    }
+    assert!(cache.queued_stretches.is_empty());
+}
+
+/// Simultaneous blocks at the playhead remain subject to the shared byte limit.
+#[test]
+fn overlapping_playhead_blocks_cannot_exceed_the_shared_budget() {
+    let mut cache = MixBufferCache::spawn(48_000, 1);
+    let budget = 3 * MONO_BLOCK_BYTES;
+    cache.set_budget_bytes(budget);
+    let playhead = 100 * BLOCK_FRAMES + BLOCK_FRAMES / 2;
+    cache.set_playhead(playhead);
+    let plays = playhead - BLOCK_FRAMES / 2;
+    let path = PathBuf::from("overlapping-streams.wav");
+    for stream_index in 0..128 {
+        let stream = cache
+            .streams
+            .entry((path.clone(), stream_index))
+            .or_default();
+        stream
+            .blocks
+            .insert(0, Arc::new(vec![0.0; BLOCK_FRAMES as usize]));
+        stream.wanted.insert(0, plays);
+    }
+
+    cache.rebalance();
+
+    assert!(cache.over_budget);
+    assert!(resident_audio_bytes(&cache) <= budget);
+    assert_eq!(
+        cache
+            .streams
+            .values()
+            .map(|stream| stream.blocks.len())
+            .sum::<usize>(),
+        3,
+        "only the three blocks that fit the budget remain cached"
+    );
+}
+
+#[test]
+/// Cross-cache eviction preserves nearer audio and removes the farthest buffer.
+fn cross_map_eviction_keeps_nearer_audio_and_drops_the_farthest_candidate() {
+    let mut cache = MixBufferCache::spawn(48_000, 1);
+    cache.set_budget_bytes(2 * MONO_BLOCK_BYTES);
+    let playhead = 100 * BLOCK_FRAMES;
+    cache.set_playhead(playhead);
+    seed_block(&mut cache, "timeline.wav", 0, playhead);
+    seed_block(&mut cache, "timeline.wav", 1, 130 * BLOCK_FRAMES);
+    let key = 43;
+    seed_ready_stretch(
+        &mut cache,
+        key,
+        BLOCK_FRAMES,
+        110 * BLOCK_FRAMES..111 * BLOCK_FRAMES,
+    );
+
+    cache.rebalance();
+
+    assert_eq!(blocks_held(&cache, Path::new("timeline.wav")), [0]);
+    assert!(cache.stretched.contains_key(&key));
+    assert_eq!(resident_audio_bytes(&cache), 2 * MONO_BLOCK_BYTES);
+}
+
+#[test]
+/// A rejected stretch is retried only after the budget can admit it.
+fn rejected_stretch_is_not_queued_again_until_it_fits_the_budget() {
+    let project = Project::default();
+    let path = PathBuf::from("rejected-stretch.wav");
+    let request = || StretchRequest {
+        project: &project,
+        input: vv_audio::StretchInput::File {
+            path: &path,
+            stream: 0,
+        },
+        frames: 0..BLOCK_FRAMES,
+        plays: 0..BLOCK_FRAMES,
+        tempo: 1.0,
+        sample_rate: 48_000,
+        channels: 1,
+        key: 44,
+    };
+    let mut cache = MixBufferCache::spawn(48_000, 1);
+    cache.set_budget_bytes(0);
+    seed_ready_stretch(&mut cache, 44, BLOCK_FRAMES, 0..BLOCK_FRAMES);
+
+    cache.rebalance();
+    assert!(matches!(
+        cache.stretched.get(&44),
+        Some(Stretch::Rejected { .. })
+    ));
+    assert!(matches!(cache.stretched(request()), ClipAudio::Partial(_)));
+    assert!(cache.queued_stretches.is_empty());
+
+    cache.set_budget_bytes(3 * MONO_BLOCK_BYTES);
+    assert!(
+        cache.rebalance(),
+        "admitting the stretch must rebuild the mix"
+    );
+    assert!(!cache.stretched.contains_key(&44));
+    assert!(matches!(cache.stretched(request()), ClipAudio::Pending));
+    assert_eq!(cache.queued_stretches.len(), 1);
+}
+
 #[test]
 fn every_stream_of_a_file_starts_playing_before_any_of_them_is_fully_decoded() {
     let dir = std::env::temp_dir().join("vv-app-mix-buffers-test");
@@ -319,8 +878,10 @@ fn every_stream_of_a_file_starts_playing_before_any_of_them_is_fully_decoded() {
 }
 
 #[test]
+/// A ready stretch is computed on a worker and released after it is unused.
 fn a_stretch_is_computed_in_background_and_dropped_once_unused() {
-    let path = sine_wav("stretched.wav", 2);
+    let path = sine_wav("stretched.wav", 3);
+    let budget = 5 * MONO_BLOCK_BYTES / 2;
     let project = Project::default();
     let request = || StretchRequest {
         project: &project,
@@ -328,13 +889,15 @@ fn a_stretch_is_computed_in_background_and_dropped_once_unused() {
             path: &path,
             stream: 0,
         },
-        frames: 0..48_000,
-        tempo: 2.0,
+        frames: 0..2 * SEC,
+        plays: 0..2 * SEC,
+        tempo: 1.0,
         sample_rate: 48_000,
         channels: 1,
         key: 1,
     };
     let mut cache = MixBufferCache::spawn(48_000, 1);
+    cache.set_budget_bytes(budget);
     let ask = |cache: &mut MixBufferCache| cache.stretched(request());
     assert!(matches!(ask(&mut cache), ClipAudio::Pending));
     cache.send_jobs(&project);
@@ -354,7 +917,8 @@ fn a_stretch_is_computed_in_background_and_dropped_once_unused() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     };
     let secs = stretched.end() as f64 / 48_000.0;
-    assert!((secs - 0.5).abs() < 0.05, "1 s at 2x lasts {secs} s");
+    assert!((secs - 2.0).abs() < 0.05, "the stretch lasts {secs} s");
+    assert!(resident_audio_bytes(&cache) <= budget);
     assert!(
         blocks_held(&cache, &path).is_empty(),
         "read from the file, not the preview's blocks"
@@ -610,11 +1174,13 @@ fn a_resampled_file_read_in_distant_places_matches_its_whole_decode() {
 }
 
 /// Ten minutes at 2x: a stretch that takes far longer than the tests wait.
+/// Builds a long file-backed stretch request for worker lifecycle tests.
 fn long_stretch<'a>(project: &'a Project, path: &'a Path, key: u64) -> StretchRequest<'a> {
     StretchRequest {
         project,
         input: vv_audio::StretchInput::File { path, stream: 0 },
         frames: 0..600 * SEC,
+        plays: 0..300 * SEC,
         tempo: 2.0,
         sample_rate: 48_000,
         channels: 1,
@@ -764,7 +1330,13 @@ fn a_rescan_measures_again_what_was_rendered_while_a_plugin_was_not_made() {
     let blocks = SampleBlocks::contiguous(Arc::new(Vec::new()), 0, 1);
     cache.stretched.insert(10, Stretch::Ready(blocks.clone()));
     cache.stretched.insert(11, Stretch::Ready(blocks));
-    cache.stretched.insert(12, Stretch::Pending(Arc::default()));
+    cache.stretched.insert(
+        12,
+        Stretch::Pending {
+            cancelled: Arc::default(),
+            bytes: 0,
+        },
+    );
     cache.degraded.extend([bad_key, 10, 12]);
 
     cache.clear_plugin_failures();
@@ -773,7 +1345,7 @@ fn a_rescan_measures_again_what_was_rendered_while_a_plugin_was_not_made() {
     assert_eq!(cache.levels[&good_key], Some(2.0));
     assert!(!cache.stretched.contains_key(&10));
     assert!(cache.stretched.contains_key(&11));
-    assert!(matches!(cache.stretched[&12], Stretch::Pending(_)));
+    assert!(matches!(cache.stretched[&12], Stretch::Pending { .. }));
     assert!(cache.degraded.is_empty());
     assert!(matches!(cache.level(bad), LevelReading::Pending(None)));
     assert_eq!(cache.queued_levels.len(), 1);
@@ -795,8 +1367,20 @@ fn a_degraded_result_from_before_a_rescan_is_asked_again() {
     for key in [1, 2] {
         cache.levels.insert(key, None);
     }
-    cache.stretched.insert(3, Stretch::Pending(Arc::default()));
-    cache.stretched.insert(4, Stretch::Pending(Arc::default()));
+    cache.stretched.insert(
+        3,
+        Stretch::Pending {
+            cancelled: Arc::default(),
+            bytes: 0,
+        },
+    );
+    cache.stretched.insert(
+        4,
+        Stretch::Pending {
+            cancelled: Arc::default(),
+            bytes: 0,
+        },
+    );
     let blocks = SampleBlocks::contiguous(Arc::new(Vec::new()), 0, 1);
     level_tx
         .send((1, None, Some(1.0), Some(generation - 1)))
