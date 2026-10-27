@@ -54,7 +54,6 @@ pub struct Scopes {
     queue: Arc<wgpu::Queue>,
     accumulate: wgpu::ComputePipeline,
     histogram_max: wgpu::ComputePipeline,
-    histogram_max_bg: wgpu::BindGroup,
     draw: wgpu::ComputePipeline,
     bins: wgpu::Buffer,
     params: wgpu::Buffer,
@@ -103,20 +102,11 @@ impl Scopes {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let histogram_max_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("vv-render scopes histogram_max bind group"),
-            layout: &histogram_max.get_bind_group_layout(0),
-            entries: &[wgpu::BindGroupEntry {
-                binding: 1,
-                resource: bins.as_entire_binding(),
-            }],
-        });
         Self {
             device,
             queue,
             accumulate,
             histogram_max,
-            histogram_max_bg,
             draw,
             bins,
             params,
@@ -169,42 +159,38 @@ impl Scopes {
 
         let source_view = source.create_view(&wgpu::TextureViewDescriptor::default());
         let output_view = output.create_view(&wgpu::TextureViewDescriptor::default());
-        let accumulate = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("vv-render scopes accumulate bind group"),
-            layout: &self.accumulate.get_bind_group_layout(0),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&source_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.bins.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.params.as_entire_binding(),
-                },
+        let bind_group = |pipeline: &wgpu::ComputePipeline,
+                          entries: &[(u32, wgpu::BindingResource)]| {
+            let entries: Vec<_> = entries
+                .iter()
+                .map(|(binding, resource)| wgpu::BindGroupEntry {
+                    binding: *binding,
+                    resource: resource.clone(),
+                })
+                .collect();
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("vv-render scopes bind group"),
+                layout: &pipeline.get_bind_group_layout(0),
+                entries: &entries,
+            })
+        };
+        let accumulate = bind_group(
+            &self.accumulate,
+            &[
+                (0, wgpu::BindingResource::TextureView(&source_view)),
+                (1, self.bins.as_entire_binding()),
+                (2, self.params.as_entire_binding()),
             ],
-        });
-        let draw = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("vv-render scopes draw bind group"),
-            layout: &self.draw.get_bind_group_layout(0),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.bins.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.params.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&output_view),
-                },
+        );
+        let histogram_max = bind_group(&self.histogram_max, &[(1, self.bins.as_entire_binding())]);
+        let draw = bind_group(
+            &self.draw,
+            &[
+                (1, self.bins.as_entire_binding()),
+                (2, self.params.as_entire_binding()),
+                (3, wgpu::BindingResource::TextureView(&output_view)),
             ],
-        });
+        );
 
         let mut encoder = self
             .device
@@ -222,7 +208,7 @@ impl Scopes {
             pass.dispatch_workgroups(samples_w.div_ceil(16), samples_h.div_ceil(16), 1);
             if kind == ScopeKind::Histogram {
                 pass.set_pipeline(&self.histogram_max);
-                pass.set_bind_group(0, &self.histogram_max_bg, &[]);
+                pass.set_bind_group(0, &histogram_max, &[]);
                 pass.dispatch_workgroups(1, 1, 1);
             }
             pass.set_pipeline(&self.draw);

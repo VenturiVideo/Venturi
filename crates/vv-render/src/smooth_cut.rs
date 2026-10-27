@@ -261,11 +261,8 @@ impl SmoothCut {
         pipeline
     }
 
-    fn flow_texture(
-        pool: &mut Vec<wgpu::Texture>,
-        device: &wgpu::Device,
-        size: (u32, u32),
-    ) -> wgpu::Texture {
+    fn flow_texture(&self, device: &wgpu::Device, size: (u32, u32)) -> wgpu::Texture {
+        let mut pool = self.pool.lock().unwrap();
         if let Some(i) = pool
             .iter()
             .position(|t| t.width() == size.0 && t.height() == size.1)
@@ -305,14 +302,19 @@ impl SmoothCut {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("vv-render smooth cut encoder"),
         });
-        let mut local_pool = std::mem::take(&mut *self.pool.lock().unwrap());
+        let mut used = Vec::new();
+        let take = |size: (u32, u32), used: &mut Vec<wgpu::Texture>| {
+            let texture = self.flow_texture(device, size);
+            used.push(texture.clone());
+            texture
+        };
 
         let pyramid = |image: &wgpu::Texture,
                        encoder: &mut wgpu::CommandEncoder,
-                       pool: &mut Vec<wgpu::Texture>| {
+                       used: &mut Vec<wgpu::Texture>| {
             let mut levels: Vec<wgpu::Texture> = Vec::with_capacity(sizes.len());
             for (i, &size) in sizes.iter().enumerate() {
-                let level = Self::flow_texture(pool, device, size);
+                let level = take(size, used);
                 let mut params = Params::new(size);
                 params.weights = if i == 0 { LUMA } else { [1.0, 0.0, 0.0, 0.0] };
                 let source = if i == 0 { image } else { &levels[i - 1] };
@@ -328,18 +330,18 @@ impl SmoothCut {
             }
             levels
         };
-        let pyramid_a = pyramid(a, &mut encoder, &mut local_pool);
-        let pyramid_b = pyramid(b, &mut encoder, &mut local_pool);
+        let pyramid_a = pyramid(a, &mut encoder, &mut used);
+        let pyramid_b = pyramid(b, &mut encoder, &mut used);
 
         let flow = |from: &[wgpu::Texture],
                     to: &[wgpu::Texture],
                     encoder: &mut wgpu::CommandEncoder,
-                    pool: &mut Vec<wgpu::Texture>| {
+                    used: &mut Vec<wgpu::Texture>| {
             let mut current: Option<wgpu::Texture> = None;
             for level in (0..sizes.len()).rev() {
                 let size = sizes[level];
                 if let Some(coarse) = current.take() {
-                    let up = Self::flow_texture(pool, device, size);
+                    let up = take(size, used);
                     self.dispatch(
                         device,
                         encoder,
@@ -348,7 +350,6 @@ impl SmoothCut {
                         &up,
                         Params::new(size),
                     );
-                    pool.push(coarse);
                     current = Some(up);
                 }
                 let iterations = if level + 2 >= sizes.len() {
@@ -357,7 +358,7 @@ impl SmoothCut {
                     LK_ITERATIONS
                 };
                 for _ in 0..iterations {
-                    let next = Self::flow_texture(pool, device, size);
+                    let next = take(size, used);
                     let mut params = Params::new(size);
                     params.use_flow = u32::from(current.is_some());
                     params.radius = LK_RADIUS;
@@ -373,11 +374,9 @@ impl SmoothCut {
                         &next,
                         params,
                     );
-                    if let Some(prev) = current.replace(next) {
-                        pool.push(prev);
-                    }
+                    current = Some(next);
                 }
-                let smoothed = Self::flow_texture(pool, device, size);
+                let smoothed = take(size, used);
                 let mut params = Params::new(size);
                 params.radius = 2;
                 params.sigma = 1.5;
@@ -390,14 +389,12 @@ impl SmoothCut {
                     &smoothed,
                     params,
                 );
-                if let Some(prev) = current.replace(smoothed) {
-                    pool.push(prev);
-                }
+                current = Some(smoothed);
             }
             current.expect("at least one level")
         };
-        let flow_ab = flow(&pyramid_a, &pyramid_b, &mut encoder, &mut local_pool);
-        let flow_ba = flow(&pyramid_b, &pyramid_a, &mut encoder, &mut local_pool);
+        let flow_ab = flow(&pyramid_a, &pyramid_b, &mut encoder, &mut used);
+        let flow_ba = flow(&pyramid_b, &pyramid_a, &mut encoder, &mut used);
 
         let params = MorphParams {
             out_size: [output.0 as f32, output.1 as f32],
@@ -469,12 +466,8 @@ impl SmoothCut {
         }
         queue.submit(Some(encoder.finish()));
         // Safe to reuse right away: later work goes on the same queue.
-        local_pool.extend(pyramid_a);
-        local_pool.extend(pyramid_b);
-        local_pool.push(flow_ab);
-        local_pool.push(flow_ba);
         let mut pool = self.pool.lock().unwrap();
-        pool.extend(local_pool);
+        pool.extend(used);
         let excess = pool.len().saturating_sub(64);
         pool.drain(..excess);
     }

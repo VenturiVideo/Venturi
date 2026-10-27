@@ -247,6 +247,10 @@ struct Recording {
     encoder: wgpu::CommandEncoder,
     planes: Vec<wgpu::Texture>,
     scratch: Vec<Option<wgpu::Texture>>,
+    /// Placeholder for the backdrop slot of the Normal layers, which do not
+    /// sample it (see `backdrop_tex` in the shader).
+    no_backdrop: wgpu::Texture,
+    no_backdrop_view: wgpu::TextureView,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -583,19 +587,13 @@ impl MaskUniform {
             output.timeline_size.0 as f32,
             output.timeline_size.1 as f32,
         ];
-        let mut point_len = 0usize;
+        let mut points = Vec::new();
         for (data, mask) in uniform.masks.iter_mut().zip(masks.iter().take(MAX_MASKS)) {
-            let first = point_len;
+            let first = points.len();
             let budget = MAX_MASK_POINTS - first;
             // Decimated evenly rather than cut, so the shape stays closed.
             let step = mask.polygon.len().div_ceil(budget.max(1)).max(1);
-            for &pt in mask.polygon.iter().step_by(step).take(budget) {
-                let slot = &mut uniform.points[point_len / 2];
-                let base = (point_len % 2) * 2;
-                slot[base] = pt[0];
-                slot[base + 1] = pt[1];
-                point_len += 1;
-            }
+            points.extend(mask.polygon.iter().step_by(step).take(budget));
             data.shape_mode = [
                 match mask.shape {
                     vv_core::MaskShape::Rectangle => 0.0,
@@ -622,7 +620,11 @@ impl MaskUniform {
                 mask.feather,
                 mask.expansion,
             ];
-            data.points = [first as f32, (point_len - first) as f32, 0.0, 0.0];
+            data.points = [first as f32, (points.len() - first) as f32, 0.0, 0.0];
+        }
+        for (slot, pair) in uniform.points.iter_mut().zip(points.chunks(2)) {
+            let second: [f32; 2] = pair.get(1).copied().unwrap_or_default();
+            *slot = [pair[0][0], pair[0][1], second[0], second[1]];
         }
         uniform
     }
@@ -849,11 +851,6 @@ pub struct Compositor {
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     i420_pipeline: wgpu::ComputePipeline,
-    zero_view: wgpu::TextureView,
-    neutral_view: wgpu::TextureView,
-    opaque_view: wgpu::TextureView,
-    empty_mask_buffer: wgpu::Buffer,
-    neutral_grade_buffer: wgpu::Buffer,
     /// Textures reused from one frame to the next, by size: allocating new
     /// ones on every frame costs more than the drawing itself.
     pool: Mutex<TexturePool>,
@@ -1108,42 +1105,6 @@ impl Compositor {
             cache: None,
         });
 
-        let const_plane = |label, byte: u8| {
-            let texture = device.create_texture_with_data(
-                &queue,
-                &wgpu::TextureDescriptor {
-                    label: Some(label),
-                    size: wgpu::Extent3d {
-                        width: 1,
-                        height: 1,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: PLANE_FORMAT,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                    view_formats: &[],
-                },
-                wgpu::util::TextureDataOrder::LayerMajor,
-                &[byte],
-            );
-            texture.create_view(&wgpu::TextureViewDescriptor::default())
-        };
-        let zero_view = const_plane("vv-render zero plane", 0);
-        let neutral_view = const_plane("vv-render neutral plane", 128);
-        let opaque_view = const_plane("vv-render opaque plane", 255);
-        let empty_mask_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("vv-render empty mask uniform"),
-            contents: bytemuck::bytes_of(&<MaskUniform as bytemuck::Zeroable>::zeroed()),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
-        let neutral_grade_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("vv-render neutral grade uniform"),
-            contents: bytemuck::bytes_of(&GradeUniform::new(&[])),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
-
         let compositor = Self {
             device,
             queue,
@@ -1154,11 +1115,6 @@ impl Compositor {
             bind_group_layout,
             sampler,
             i420_pipeline,
-            zero_view,
-            neutral_view,
-            opaque_view,
-            empty_mask_buffer,
-            neutral_grade_buffer,
             pool: Mutex::default(),
             scratch: Arc::default(),
             adapter_name,
@@ -1276,14 +1232,9 @@ impl Compositor {
         let params: [u32; 8] = [w, h, cw, ch, groups_x * WORKGROUP, total_words, 0, 0];
 
         let buffer_size = total_words as wgpu::BufferAddress * 4;
-        let i420 = self
-            .pool
-            .lock()
-            .unwrap()
-            .i420
-            .take()
-            .filter(|b| b.size == buffer_size)
-            .unwrap_or_else(|| I420Buffers {
+        let mut pool = self.pool.lock().unwrap();
+        if pool.i420.as_ref().is_none_or(|b| b.size != buffer_size) {
+            pool.i420 = Some(I420Buffers {
                 size: buffer_size,
                 storage: self.device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("vv-render i420 storage"),
@@ -1304,8 +1255,15 @@ impl Compositor {
                     mapped_at_creation: false,
                 }),
             });
+        }
+        let I420Buffers {
+            storage,
+            params: params_buffer,
+            readback,
+            ..
+        } = pool.i420.as_ref().unwrap();
         self.queue
-            .write_buffer(&i420.params, 0, bytemuck::cast_slice(&params));
+            .write_buffer(params_buffer, 0, bytemuck::cast_slice(&params));
         let texture_view = work.create_view(&wgpu::TextureViewDescriptor::default());
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("vv-render i420 bind group"),
@@ -1317,11 +1275,11 @@ impl Compositor {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: i420.storage.as_entire_binding(),
+                    resource: storage.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: i420.params.as_entire_binding(),
+                    resource: params_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -1340,13 +1298,11 @@ impl Compositor {
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(groups_x, groups_y, 1);
         }
-        encoder.copy_buffer_to_buffer(&i420.storage, 0, &i420.readback, 0, buffer_size);
+        encoder.copy_buffer_to_buffer(storage, 0, readback, 0, buffer_size);
         self.queue.submit(Some(encoder.finish()));
         give_back(&mut self.scratch.lock().unwrap(), [work]);
 
-        let out = self.map_read(&i420.readback, |data| data[..len].to_vec());
-        self.pool.lock().unwrap().i420 = Some(i420);
-        out
+        self.map_read(readback, |data| data[..len].to_vec())
     }
 
     /// Like `render_layers_i420`, but RGBA8 with a transparent background
@@ -1630,6 +1586,7 @@ impl Compositor {
     }
 
     fn recording(&self) -> Recording {
+        let no_backdrop = self.plane_texture(OPAQUE, 1, 1);
         Recording {
             encoder: self
                 .device
@@ -1638,6 +1595,8 @@ impl Compositor {
                 }),
             planes: Vec::new(),
             scratch: Vec::new(),
+            no_backdrop_view: no_backdrop.create_view(&wgpu::TextureViewDescriptor::default()),
+            no_backdrop,
         }
     }
 
@@ -1647,7 +1606,9 @@ impl Compositor {
             &mut self.scratch.lock().unwrap(),
             rec.scratch.into_iter().flatten(),
         );
-        give_back(&mut self.pool.lock().unwrap().planes, rec.planes);
+        let mut planes = rec.planes;
+        planes.push(rec.no_backdrop);
+        give_back(&mut self.pool.lock().unwrap().planes, planes);
     }
 
     /// Composes `layer` onto `target`, cleared to `clear` by the first pass
@@ -1672,7 +1633,7 @@ impl Compositor {
         } = layer;
         let blend = *blend;
         let is_adjustment = matches!(content, LayerContent::Adjustment);
-        let no_backdrop_view = self.opaque_view.clone();
+        let no_backdrop_view = rec.no_backdrop_view.clone();
         let backdrop_view = |backdrops: &mut Vec<Option<wgpu::Texture>>| {
             let texture = (blend != BlendMode::Normal || is_adjustment)
                 .then(|| self.scratch_texture(output.width, output.height));
@@ -1894,14 +1855,29 @@ impl Compositor {
                     output.timeline_size,
                     (output.width, output.height),
                 );
-                let layers = self.title_views(&render, &mut rec.planes);
-                let mut groups = Vec::with_capacity(layers.len());
-                for (mask_view, color) in &layers {
+                let mut groups = Vec::with_capacity(render.layers.len());
+                for (mask, color) in &render.layers {
+                    let frame = YuvFrame {
+                        y: &mask.data,
+                        width: mask.width,
+                        height: mask.height,
+                        ..SOLID_PLACEHOLDER
+                    };
                     // Shadow, background and text are distinct passes: each one
                     // composes onto the earlier ones, backdrop included.
                     let view = backdrop_view(&mut rec.scratch);
-                    groups.push(self.title_bind_group(
-                        mask_view, *color, transform, output, *opacity, filters, blend, &view,
+                    groups.push(self.layer_bind_group(
+                        &mut rec.planes,
+                        &frame,
+                        transform,
+                        output,
+                        output.timeline_size,
+                        output.timeline_size,
+                        Fill::Mask(*color),
+                        *opacity,
+                        filters,
+                        blend,
+                        &view,
                         masks,
                     ));
                 }
@@ -1969,7 +1945,7 @@ impl Compositor {
         };
         let mut space = WorkSpace::of_source(texture_size, transform, output);
         let size = (space.size[0], space.size[1]);
-        let no_backdrop = self.opaque_view.clone();
+        let no_backdrop = rec.no_backdrop_view.clone();
         let frame = OutputFrame::exact(size.0, size.1);
         let identity = Transform::default();
         let leading = &chain.leading;
@@ -2037,14 +2013,24 @@ impl Compositor {
                     output.timeline_size,
                     (output.width, output.height),
                 );
-                self.title_views(&render, planes)
+                render
+                    .layers
                     .iter()
-                    .map(|(mask_view, color)| {
-                        self.title_bind_group(
-                            mask_view,
-                            *color,
+                    .map(|(mask, color)| {
+                        let mask = YuvFrame {
+                            y: &mask.data,
+                            width: mask.width,
+                            height: mask.height,
+                            ..SOLID_PLACEHOLDER
+                        };
+                        self.layer_bind_group(
+                            planes,
+                            &mask,
                             &identity,
                             frame,
+                            size,
+                            size,
+                            Fill::Mask(*color),
                             1.0,
                             leading,
                             BlendMode::Normal,
@@ -2394,70 +2380,6 @@ impl Compositor {
         out
     }
 
-    fn title_views(
-        &self,
-        render: &crate::text::TitleRender,
-        planes: &mut Vec<wgpu::Texture>,
-    ) -> Vec<(wgpu::TextureView, vv_core::Rgba)> {
-        render
-            .layers
-            .iter()
-            .map(|(mask, color)| {
-                let texture = self.plane_texture(&mask.data, mask.width, mask.height);
-                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-                planes.push(texture);
-                (view, *color)
-            })
-            .collect()
-    }
-
-    fn title_bind_group(
-        &self,
-        mask_view: &wgpu::TextureView,
-        color: vv_core::Rgba,
-        transform: &Transform,
-        output: OutputFrame,
-        opacity: f32,
-        filters: &[vv_core::FilterValue],
-        blend: BlendMode,
-        backdrop: &wgpu::TextureView,
-        masks: &[vv_core::MaskValue],
-    ) -> wgpu::BindGroup {
-        let size = output.timeline_size;
-        let uniform = TransformUniform::new(
-            transform,
-            ColorMatrix::Bt601,
-            true,
-            fit_factors(
-                (size.0.max(1) as f32, size.1.max(1) as f32),
-                (output.width as f32, output.height as f32),
-            ),
-            output,
-            size,
-            Fill::Mask(color),
-            opacity,
-            filters,
-            blend,
-        );
-        let mask_uniform = (!masks.is_empty()).then(|| MaskUniform::new(masks, transform, output));
-        let grade_uniform = filters
-            .iter()
-            .any(|f| f.kind == vv_core::FilterKind::ColorCorrection)
-            .then(|| GradeUniform::new(filters));
-        self.bind_group_for(
-            [
-                mask_view,
-                &self.neutral_view,
-                &self.neutral_view,
-                &self.opaque_view,
-                backdrop,
-            ],
-            &uniform,
-            mask_uniform.as_ref(),
-            grade_uniform.as_ref(),
-        )
-    }
-
     /// Uploads the three planes of the layer and the bind group ready for the pass:
     /// crop/zoom, letterbox and YUV→RGB conversion are all in the
     /// shader, here only its inputs are prepared.
@@ -2476,60 +2398,30 @@ impl Compositor {
         backdrop: &wgpu::TextureView,
         masks: &[vv_core::MaskValue],
     ) -> wgpu::BindGroup {
-        let y_owned = !(frame.width == 1 && frame.height == 1 && frame.y == [0]);
-        let y_view_owned = y_owned.then(|| {
-            let t = self.plane_texture(frame.y, frame.width, frame.height);
-            let v = t.create_view(&wgpu::TextureViewDescriptor::default());
-            planes.push(t);
-            v
-        });
-        let y_view = y_view_owned.as_ref().unwrap_or(&self.zero_view);
-
-        let mut u_view_owned = None;
-        let mut v_view_owned = None;
-        let (u_view, v_view) = match frame.chroma {
-            YuvChroma::Planar { u, v }
-                if frame.chroma_width == 1
-                    && frame.chroma_height == 1
-                    && u == [128]
-                    && v == [128] =>
-            {
-                (&self.neutral_view, &self.neutral_view)
-            }
-            YuvChroma::Planar { u, v } => {
-                let ut = self.plane_texture(u, frame.chroma_width, frame.chroma_height);
-                let vt = self.plane_texture(v, frame.chroma_width, frame.chroma_height);
-                let uv =
-                    u_view_owned.insert(ut.create_view(&wgpu::TextureViewDescriptor::default()));
-                let vv =
-                    v_view_owned.insert(vt.create_view(&wgpu::TextureViewDescriptor::default()));
-                planes.extend([ut, vt]);
-                (&*uv, &*vv)
-            }
-            YuvChroma::Interleaved(uv) => {
-                let ut =
-                    self.texture_with(uv, frame.chroma_width, frame.chroma_height, UV_PLANE_FORMAT);
-                let uv_view =
-                    u_view_owned.insert(ut.create_view(&wgpu::TextureViewDescriptor::default()));
-                planes.push(ut);
-                (&*uv_view, &self.neutral_view)
-            }
+        let y_texture = self.plane_texture(frame.y, frame.width, frame.height);
+        let (u_texture, v_texture) = match frame.chroma {
+            YuvChroma::Planar { u, v } => (
+                self.plane_texture(u, frame.chroma_width, frame.chroma_height),
+                self.plane_texture(v, frame.chroma_width, frame.chroma_height),
+            ),
+            YuvChroma::Interleaved(uv) => (
+                self.texture_with(uv, frame.chroma_width, frame.chroma_height, UV_PLANE_FORMAT),
+                self.plane_texture(&[128], 1, 1),
+            ),
         };
-
-        // A single `[255]` byte = "opaque everywhere" placeholder: bind the
-        // permanent 1x1 opaque texture view without touching the pool.
-        let a_view_owned = (frame.alpha != OPAQUE).then(|| {
-            let (alpha_w, alpha_h) = if frame.alpha.len() == 1 {
-                (1, 1)
-            } else {
-                (frame.width, frame.height)
-            };
-            let t = self.plane_texture(frame.alpha, alpha_w, alpha_h);
-            let v = t.create_view(&wgpu::TextureViewDescriptor::default());
-            planes.push(t);
-            v
-        });
-        let a_view = a_view_owned.as_ref().unwrap_or(&self.opaque_view);
+        // A single byte = "opaque everywhere" placeholder (see the docs of
+        // `YuvFrame::alpha`): the texture stays 1x1, sampled everywhere
+        // by the `ClampToEdge` as Y/U/V already are for Solid/Text.
+        let (alpha_w, alpha_h) = if frame.alpha.len() == 1 {
+            (1, 1)
+        } else {
+            (frame.width, frame.height)
+        };
+        let a_texture = self.plane_texture(frame.alpha, alpha_w, alpha_h);
+        let y_view = y_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let u_view = u_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let v_view = v_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let a_view = a_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let mut uniform = TransformUniform::new(
             transform,
@@ -2549,17 +2441,14 @@ impl Compositor {
         if matches!(frame.chroma, YuvChroma::Interleaved(_)) {
             uniform.planes[0] = 1.0;
         }
-        let mask_uniform = (!masks.is_empty()).then(|| MaskUniform::new(masks, transform, output));
-        let grade_uniform = filters
-            .iter()
-            .any(|f| f.kind == vv_core::FilterKind::ColorCorrection)
-            .then(|| GradeUniform::new(filters));
-        self.bind_group_for(
-            [y_view, u_view, v_view, a_view, backdrop],
+        let bind_group = self.bind_group_for(
+            [&y_view, &u_view, &v_view, &a_view, backdrop],
             &uniform,
-            mask_uniform.as_ref(),
-            grade_uniform.as_ref(),
-        )
+            &MaskUniform::new(masks, transform, output),
+            &GradeUniform::new(filters),
+        );
+        planes.extend([y_texture, u_texture, v_texture, a_texture]);
+        bind_group
     }
 
     /// Like `layer_bind_group`, but the source is an already composed RGBA
@@ -2571,7 +2460,7 @@ impl Compositor {
     /// layer (`LayerContent::Adjustment`) over a timeline with that clear.
     fn texture_bind_group(
         &self,
-        _planes: &mut Vec<wgpu::Texture>,
+        planes: &mut Vec<wgpu::Texture>,
         rgba_view: &wgpu::TextureView,
         fit_size: (u32, u32),
         transform: &Transform,
@@ -2584,6 +2473,13 @@ impl Compositor {
         adjustment_clear: Option<wgpu::Color>,
         masks: &[vv_core::MaskValue],
     ) -> wgpu::BindGroup {
+        let u_texture = self.plane_texture(&[128], 1, 1);
+        let v_texture = self.plane_texture(&[128], 1, 1);
+        let a_texture = self.plane_texture(OPAQUE, 1, 1);
+        let u_view = u_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let v_view = v_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let a_view = a_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
         let mut uniform = TransformUniform::new(
             transform,
             ColorMatrix::Bt709,
@@ -2609,23 +2505,14 @@ impl Compositor {
                 clear.a as f32,
             ];
         }
-        let mask_uniform = (!masks.is_empty()).then(|| MaskUniform::new(masks, transform, output));
-        let grade_uniform = filters
-            .iter()
-            .any(|f| f.kind == vv_core::FilterKind::ColorCorrection)
-            .then(|| GradeUniform::new(filters));
-        self.bind_group_for(
-            [
-                rgba_view,
-                &self.neutral_view,
-                &self.neutral_view,
-                &self.opaque_view,
-                backdrop,
-            ],
+        let bind_group = self.bind_group_for(
+            [rgba_view, &u_view, &v_view, &a_view, backdrop],
             &uniform,
-            mask_uniform.as_ref(),
-            grade_uniform.as_ref(),
-        )
+            &MaskUniform::new(masks, transform, output),
+            &GradeUniform::new(filters),
+        );
+        planes.extend([u_texture, v_texture, a_texture]);
+        bind_group
     }
 
     /// The bind group of the pass: the views in the order `[source, U, V, alpha,
@@ -2634,8 +2521,8 @@ impl Compositor {
         &self,
         views: [&wgpu::TextureView; 5],
         uniform: &TransformUniform,
-        masks: Option<&MaskUniform>,
-        grade: Option<&GradeUniform>,
+        masks: &MaskUniform,
+        grade: &GradeUniform,
     ) -> wgpu::BindGroup {
         let uniform_buffer = self
             .device
@@ -2644,28 +2531,20 @@ impl Compositor {
                 contents: bytemuck::bytes_of(uniform),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
-        let mask_buffer_owned = masks.map(|masks| {
-            self.device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("vv-render mask uniform"),
-                    contents: bytemuck::bytes_of(masks),
-                    usage: wgpu::BufferUsages::UNIFORM,
-                })
-        });
-        let mask_buffer = mask_buffer_owned
-            .as_ref()
-            .unwrap_or(&self.empty_mask_buffer);
-        let grade_buffer_owned = grade.map(|grade| {
-            self.device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("vv-render grade uniform"),
-                    contents: bytemuck::bytes_of(grade),
-                    usage: wgpu::BufferUsages::UNIFORM,
-                })
-        });
-        let grade_buffer = grade_buffer_owned
-            .as_ref()
-            .unwrap_or(&self.neutral_grade_buffer);
+        let mask_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("vv-render mask uniform"),
+                contents: bytemuck::bytes_of(masks),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let grade_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("vv-render grade uniform"),
+                contents: bytemuck::bytes_of(grade),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("vv-render transform bind group"),
             layout: &self.bind_group_layout,
