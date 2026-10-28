@@ -935,7 +935,7 @@ fn a_rescan_with_one_more_plugin_keeps_the_live_instances() {
 }
 
 fn elapse(backoff: &mut Backoff) {
-    backoff.since -= MISSING_RETRY;
+    backoff.since -= backoff.delay;
 }
 
 fn missing_path() -> PathBuf {
@@ -977,7 +977,13 @@ fn an_idle_missing_stream_is_retried_once_its_backoff_elapsed() {
     cache.sweep_unused();
     wait_done(&mut cache);
 
-    assert!(stream_backoff(&mut cache, &path).since.elapsed() < MISSING_RETRY);
+    let backoff = stream_backoff(&mut cache, &path);
+    assert!(!backoff.elapsed());
+    assert_eq!(
+        backoff.delay,
+        2 * RETRY_BACKOFF,
+        "failed again: waits longer"
+    );
     assert!(matches!(
         read(&mut cache, &path, 0..SEC),
         ClipAudio::Missing
@@ -993,12 +999,12 @@ fn a_due_retry_is_reported_once_even_if_nothing_asks_the_stream_again() {
     cache.sweep_unused();
     assert!(cache.streams.contains_key(&(path.clone(), 0)));
     elapse(stream_backoff(&mut cache, &path));
-    assert!(cache.next_missing_retry().is_some());
+    assert!(cache.next_retry().is_some());
 
     assert!(cache.poll());
     for _ in 0..3 {
         assert!(!cache.poll(), "reported already");
-        assert!(cache.next_missing_retry().is_none(), "no repaint to wait");
+        assert!(cache.next_retry().is_none(), "no repaint to wait");
     }
 }
 
@@ -1025,7 +1031,7 @@ fn a_failed_level_measure_is_asked_again_only_after_its_backoff() {
         LevelReading::Pending(None)
     ));
     assert!(cache.queued_levels.is_empty(), "not asked again at once");
-    assert!(cache.next_missing_retry().is_some());
+    assert!(cache.next_retry().is_some());
 
     elapse(cache.level_failures.get_mut(&key).unwrap());
     assert!(cache.poll(), "due: a rebuild must ask for it again");
@@ -1033,7 +1039,32 @@ fn a_failed_level_measure_is_asked_again_only_after_its_backoff() {
     cache.level(analysis(&project, &timeline, 1));
     assert_eq!(cache.queued_levels.len(), 1);
     assert_eq!(cache.levels[&key], None);
-    assert!(cache.level_failures.is_empty());
+
+    level_tx
+        .send((key, None, LevelOutcome::Failed, None))
+        .unwrap();
+    cache.poll();
+    assert_eq!(
+        cache.level_failures[&key].delay,
+        2 * RETRY_BACKOFF,
+        "failed again: waits longer"
+    );
+    level_tx
+        .send((key, None, LevelOutcome::Measured(-3.0), None))
+        .unwrap();
+    cache.levels.insert(key, None);
+    cache.poll();
+    assert!(cache.level_failures.is_empty(), "measured: backoff reset");
+}
+
+#[test]
+fn a_retry_backoff_doubles_up_to_its_cap() {
+    let mut backoff = Backoff::after(None);
+    assert_eq!(backoff.delay, RETRY_BACKOFF);
+    for _ in 0..10 {
+        backoff = Backoff::after(Some(&backoff));
+    }
+    assert_eq!(backoff.delay, RETRY_BACKOFF_MAX);
 }
 
 #[test]

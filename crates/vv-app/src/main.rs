@@ -4148,10 +4148,8 @@ impl VenturiApp {
             }
         }
         self.sync_timeline_audio();
-        // Otherwise idle, nothing else would wake the app up to retry a
-        // stream whose decode or level measure failed.
         if let Some(audio) = &self.timeline_audio
-            && let Some(at) = audio.next_missing_retry()
+            && let Some(at) = audio.next_retry()
         {
             ui.ctx()
                 .request_repaint_after(at.saturating_duration_since(std::time::Instant::now()));

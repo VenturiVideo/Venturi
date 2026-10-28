@@ -117,7 +117,7 @@ enum LevelOutcome {
     /// Dropped for a newer job of the same slot, or stopped: asked again
     /// at once if still wanted.
     Superseded,
-    /// Asked again after `MISSING_RETRY`.
+    /// Asked again after a `Backoff`.
     Failed,
 }
 
@@ -137,27 +137,32 @@ const JOB_BLOCKS: u64 = 8;
 /// block of every clip.
 const BLOCK_REBUILD_INTERVAL: Duration = Duration::from_millis(250);
 
-/// A decode or level error is retried after this, in case it was transient
-/// (file briefly unavailable, disk busy).
-const MISSING_RETRY: Duration = Duration::from_secs(2);
+/// A failed decode or level measure is retried after this, in case the
+/// error was transient (file briefly unavailable, disk busy). Doubled on each
+/// failure in a row, up to `RETRY_BACKOFF_MAX`: a measure that always fails
+/// would otherwise decode its whole file again every few seconds.
+const RETRY_BACKOFF: Duration = Duration::from_secs(2);
+const RETRY_BACKOFF_MAX: Duration = Duration::from_secs(60);
 
-/// A failure waiting out `MISSING_RETRY`.
 struct Backoff {
     since: Instant,
+    delay: Duration,
     /// `poll` reported it due: once, so an idle cache does not rebuild nonstop.
     reported: bool,
 }
 
 impl Backoff {
-    fn new() -> Self {
+    /// After a failure, given the backoff of the retry that led to it.
+    fn after(previous: Option<&Backoff>) -> Self {
         Self {
             since: Instant::now(),
+            delay: previous.map_or(RETRY_BACKOFF, |b| (b.delay * 2).min(RETRY_BACKOFF_MAX)),
             reported: false,
         }
     }
 
     fn elapsed(&self) -> bool {
-        self.since.elapsed() >= MISSING_RETRY
+        self.since.elapsed() >= self.delay
     }
 
     /// `true` the first time it is asked once due.
@@ -168,7 +173,7 @@ impl Backoff {
     }
 
     fn deadline(&self) -> Option<Instant> {
-        (!self.reported).then(|| self.since + MISSING_RETRY)
+        (!self.reported).then(|| self.since + self.delay)
     }
 }
 
@@ -187,7 +192,7 @@ struct StreamCache {
     ends_before: Option<u64>,
     /// No such stream, or it does not decode.
     missing: bool,
-    /// Set with `missing`: `lookup` retries the decode once it elapsed.
+    /// Set with `missing`, kept through the retry so the next one waits longer.
     backoff: Option<Backoff>,
     /// Read since the pass began.
     asked: bool,
@@ -724,7 +729,6 @@ impl MixBufferCache {
                 return ClipAudio::Missing;
             }
             entry.missing = false;
-            entry.backoff = None;
         }
         let first_block = needed.start / BLOCK_FRAMES;
         let limit = entry.end.or(entry.ends_before).unwrap_or(u64::MAX);
@@ -907,8 +911,9 @@ impl MixBufferCache {
                             (Some(a), Some(b)) => Some(a.min(b)),
                             (a, b) => a.or(b),
                         };
-                        if missing && !stream.missing {
-                            stream.backoff = Some(Backoff::new());
+                        if !stream.missing {
+                            stream.backoff =
+                                missing.then(|| Backoff::after(stream.backoff.as_ref()));
                         }
                         stream.missing |= missing;
                     }
@@ -971,13 +976,13 @@ impl MixBufferCache {
                 }
                 LevelOutcome::Failed => {
                     if self.levels.remove(&key).is_some() {
-                        self.level_failures.insert(key, Backoff::new());
+                        let backoff = Backoff::after(self.level_failures.get(&key));
+                        self.level_failures.insert(key, backoff);
                     }
                 }
             }
         }
-        // An idle cache never asks again on its own: once a backoff elapses,
-        // report it changed so a rebuild asks for it and retries.
+        // An idle cache never asks again on its own.
         let streams = self.streams.values_mut().filter_map(|s| s.backoff.as_mut());
         for backoff in streams.chain(self.level_failures.values_mut()) {
             changed |= backoff.report();
@@ -1019,18 +1024,16 @@ impl MixBufferCache {
         }
     }
 
-    /// When a failed decode or measure is next due to retry, the earliest if
-    /// several: idle (nothing else asking for a rebuild), it is otherwise
-    /// never asked again. The caller schedules a repaint for it.
-    pub fn next_missing_retry(&self) -> Option<Instant> {
+    /// When the earliest failed decode or measure is due to retry: the caller
+    /// schedules a repaint, idle nothing else would ask for it again.
+    pub fn next_retry(&self) -> Option<Instant> {
         let now = Instant::now();
         let streams = self.streams.values().filter_map(|s| s.backoff.as_ref());
         let due = streams
             .chain(self.level_failures.values())
             .filter_map(Backoff::deadline)
             .min()?;
-        // Overdue: `poll` has not run since (it clears it), so check back
-        // later rather than repainting nonstop.
+        // Overdue until the next `poll`: no repaint nonstop meanwhile.
         Some(if due > now {
             due
         } else {
@@ -1164,7 +1167,6 @@ impl AudioSource for MixBufferCache {
                 if self.level_failures.get(&key).is_some_and(|b| !b.elapsed()) {
                     return LevelReading::Pending(last);
                 }
-                self.level_failures.remove(&key);
                 self.queued_levels.push(OwnedAnalysis {
                     key,
                     slot: analysis.slot,
