@@ -253,8 +253,8 @@ A missing `x` is fixed with `chmod +x` on that file, a broken signature with
 ### Releases
 
 `.github/workflows/release.yml` builds the AppImages (x86_64, aarch64) and the
-macOS dmg. Pushing a `v*` tag also publishes a GitHub release with the three
-files attached and notes generated from the commits:
+macOS dmg. Pushing a `v*` tag also publishes a GitHub release with the generated
+artifacts attached and notes generated from the commits:
 
 ```sh
 scripts/release.sh 0.2.0          # bumps Cargo.toml/Cargo.lock, commits, tags
