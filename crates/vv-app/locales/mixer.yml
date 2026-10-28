@@ -92,6 +92,10 @@ mixer.normalize_hint_loudness:
   en: "Measured as the ear perceives it, not on the peaks: a high gain can clip the peaks."
   it: "Misurata come la percepisce l'orecchio, non sui picchi: un guadagno alto può far clippare i picchi."
 
+mixer.normalize_failed:
+  en: "The level cannot be measured: it plays without normalization; retrying.\n%{error}"
+  it: "Impossibile misurare il livello: suona senza normalizzazione; nuovo tentativo in corso.\n%{error}"
+
 mixer.effect_multiband:
   en: "Multiband compressor"
   it: "Compressore multibanda"

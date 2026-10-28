@@ -88,6 +88,14 @@ timeline.media_offline:
   en: "⚠ Media offline"
   it: "⚠ Media offline"
 
+timeline.audio_decode_failed:
+  en: "The audio cannot be decoded and plays silent; retrying.\n%{error}"
+  it: "Impossibile decodificare l'audio, la clip è muta; nuovo tentativo in corso.\n%{error}"
+
+timeline.audio_level_failed:
+  en: "The level cannot be measured and the clip plays without normalization; retrying.\n%{error}"
+  it: "Impossibile misurare il livello, la clip suona senza normalizzazione; nuovo tentativo in corso.\n%{error}"
+
 timeline.clip_color:
   en: "Clip color"
   it: "Colore clip"

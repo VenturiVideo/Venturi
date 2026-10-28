@@ -1022,9 +1022,7 @@ fn a_failed_level_measure_is_asked_again_only_after_its_backoff() {
     assert_eq!(cache.queued_levels.len(), 1);
     cache.queued_levels.clear();
 
-    level_tx
-        .send((key, None, LevelOutcome::Failed, None))
-        .unwrap();
+    level_tx.send((key, None, level_failed(), None)).unwrap();
     assert!(!cache.poll(), "nothing to rebuild before the backoff");
     assert!(matches!(
         cache.level(analysis(&project, &timeline, 1)),
@@ -1033,19 +1031,17 @@ fn a_failed_level_measure_is_asked_again_only_after_its_backoff() {
     assert!(cache.queued_levels.is_empty(), "not asked again at once");
     assert!(cache.next_retry().is_some());
 
-    elapse(cache.level_failures.get_mut(&key).unwrap());
+    elapse(&mut cache.level_failures.get_mut(&key).unwrap().backoff);
     assert!(cache.poll(), "due: a rebuild must ask for it again");
     assert!(!cache.poll(), "reported once");
     cache.level(analysis(&project, &timeline, 1));
     assert_eq!(cache.queued_levels.len(), 1);
     assert_eq!(cache.levels[&key], None);
 
-    level_tx
-        .send((key, None, LevelOutcome::Failed, None))
-        .unwrap();
+    level_tx.send((key, None, level_failed(), None)).unwrap();
     cache.poll();
     assert_eq!(
-        cache.level_failures[&key].delay,
+        cache.level_failures[&key].backoff.delay,
         2 * RETRY_BACKOFF,
         "failed again: waits longer"
     );
@@ -1055,6 +1051,107 @@ fn a_failed_level_measure_is_asked_again_only_after_its_backoff() {
     cache.levels.insert(key, None);
     cache.poll();
     assert!(cache.level_failures.is_empty(), "measured: backoff reset");
+}
+
+fn level_failed() -> LevelOutcome {
+    LevelOutcome::Failed {
+        error: "boom".into(),
+        measured: vv_audio::Measured {
+            channel: vv_core::MixerChannel::Track(1),
+            insert: 2,
+            clip: Some(vv_core::ClipId(7)),
+        },
+    }
+}
+
+#[test]
+fn a_decode_failure_is_reported_until_a_retry_decodes_the_file() {
+    let good = sine_wav("reported.wav", 1);
+    let path = good.with_file_name("reported-then-present.wav");
+    let _ = std::fs::remove_file(&path);
+    let mut cache = missing_in_timeline(&path);
+    let failures: Vec<(PathBuf, usize, String)> = cache
+        .decode_failures()
+        .map(|(path, stream, error)| (path.to_path_buf(), stream, error.to_owned()))
+        .collect();
+    assert_eq!(failures.len(), 1);
+    assert_eq!((&failures[0].0, failures[0].1), (&path, 0));
+    assert!(!failures[0].2.is_empty(), "the decoder's error");
+
+    std::fs::copy(&good, &path).unwrap();
+    elapse(stream_backoff(&mut cache, &path));
+    cache.begin_pass();
+    read(&mut cache, &path, 0..SEC);
+    cache.sweep_unused();
+    assert_eq!(
+        cache.decode_failures().count(),
+        1,
+        "kept while the retry runs, so the UI does not blink"
+    );
+    wait_done(&mut cache);
+    assert_eq!(cache.decode_failures().count(), 0, "decoded: cleared");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn a_stream_the_file_lacks_is_reported_without_a_decoder_error() {
+    let path = sine_wav("one-stream.wav", 1);
+    let mut cache = MixBufferCache::spawn(48_000, 1);
+    cache.begin_pass();
+    cache.file_frames(&path, 3, 0..SEC, 0);
+    cache.sweep_unused();
+    wait_done(&mut cache);
+    let failures: Vec<(usize, String)> = cache
+        .decode_failures()
+        .map(|(_, stream, error)| (stream, error.to_owned()))
+        .collect();
+    assert_eq!(failures, [(3, "no decodable audio stream 3".to_owned())]);
+}
+
+#[test]
+fn a_failed_level_measure_is_reported_with_its_strip_until_measured() {
+    let mut cache = MixBufferCache::spawn(48_000, 1);
+    let (level_tx, level_rx) = mpsc::channel();
+    cache.level_rx = level_rx;
+    let mut project = Project::default();
+    let timeline_id = project.timelines.insert(queued_timeline());
+    let timeline = queued_timeline();
+    let slot = (timeline_id, vv_core::MixerChannel::Track(1), 2, 0);
+    let nested = analysis(&project, &timeline, 2).key();
+    let key = analysis(&project, &timeline, 1).key();
+    cache.level(analysis(&project, &timeline, 1));
+    cache.level(analysis(&project, &timeline, 2));
+
+    level_tx
+        .send((key, Some(slot), level_failed(), None))
+        .unwrap();
+    level_tx.send((nested, None, level_failed(), None)).unwrap();
+    cache.poll();
+    let failures: Vec<_> = cache.level_failures().collect();
+    assert_eq!(
+        failures.len(),
+        1,
+        "a nested timeline's has no strip to show"
+    );
+    assert_eq!(failures[0].timeline, timeline_id);
+    assert_eq!(
+        failures[0].measured.channel,
+        vv_core::MixerChannel::Track(1)
+    );
+    assert_eq!(failures[0].measured.insert, 2);
+    assert_eq!(failures[0].measured.clip, Some(vv_core::ClipId(7)));
+    assert_eq!(failures[0].error, "boom");
+
+    // The retry in flight keeps it shown.
+    elapse(&mut cache.level_failures.get_mut(&key).unwrap().backoff);
+    cache.level(analysis(&project, &timeline, 1));
+    assert_eq!(cache.level_failures().count(), 1);
+
+    level_tx
+        .send((key, Some(slot), LevelOutcome::Measured(-3.0), None))
+        .unwrap();
+    cache.poll();
+    assert_eq!(cache.level_failures().count(), 0);
 }
 
 #[test]

@@ -4440,12 +4440,18 @@ impl VenturiApp {
                     // the timeline draws them as waveforms on the audio clips.
                     self.ensure_waveforms_loaded();
                     let is_playing = self.is_timeline_playing();
+                    let audio_failures = self
+                        .timeline_audio
+                        .as_ref()
+                        .map(|audio| audio.clip_failures(&self.session.project, timeline_id))
+                        .unwrap_or_default();
                     let (drop, enter_compound) = timeline_ui::show_timeline(
                         ui,
                         &mut self.session.project,
                         &mut self.session.history,
                         timeline_id,
                         &|id| labels.get(&id).cloned().unwrap_or_default(),
+                        &audio_failures,
                         &mut self.timeline_state,
                         self.snapping_enabled,
                         self.settings.kinetic_scroll,
@@ -4570,6 +4576,11 @@ impl VenturiApp {
                         self.timeline_audio
                             .as_ref()
                             .is_some_and(|audio| audio.plugin_failed(key))
+                    },
+                    normalize_failed: &|channel, insert| {
+                        let audio = self.timeline_audio.as_ref()?;
+                        let error = audio.normalize_failure(self.timeline_id?, channel, insert)?;
+                        Some(error.to_owned())
                     },
                 },
             ));

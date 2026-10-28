@@ -8,6 +8,8 @@ use egui::emath::GuiRounding as _;
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 
+use crate::timeline_audio::ClipAudioFailure;
+
 use vv_core::{
     Clip, ClipId, ClipSource, FadeEdge, FrameIdx, History, Keyframed, Project, TimelineId, Track,
     TrackFlag, TrackKind, TrimEdge,
@@ -615,6 +617,8 @@ struct ClipVisual<'a> {
     locked: bool,
     /// Excluded from the output: it or its video track is disabled.
     muted: bool,
+    /// Why its audio plays silent or un-normalized.
+    warning: Option<String>,
 }
 
 /// Command collected during the drawing (which borrows `project`) and
@@ -1938,6 +1942,7 @@ pub fn show_timeline(
     history: &mut History,
     timeline_id: TimelineId,
     media_labels: &dyn Fn(vv_core::MediaId) -> String,
+    audio_failures: &std::collections::HashMap<ClipId, ClipAudioFailure>,
     state: &mut TimelineState,
     snapping_enabled: bool,
     kinetic_scroll_enabled: bool,
@@ -2022,6 +2027,7 @@ pub fn show_timeline(
                     color,
                     locked: track.locked,
                     muted: clip.disabled || (track.kind == TrackKind::Video && track.muted),
+                    warning: audio_failures.get(&clip.id).map(audio_failure_text),
                 });
             }
         }
@@ -2855,6 +2861,10 @@ pub fn show_timeline(
                         id,
                         sense,
                     );
+                    let resp = match &visual.warning {
+                        Some(warning) => resp.on_hover_text(warning),
+                        None => resp,
+                    };
 
                     let is_selected = state
                         .selected
@@ -4057,7 +4067,7 @@ fn paint_clip_label(
     painter.galley(pos, galley, color);
 }
 
-/// Label, "disabled" badge, link icon and veil of the locked
+/// Label, "disabled" and warning badges, link icon and veil of the locked
 /// tracks, on top of the waveform.
 fn paint_clip_overlay(
     painter: &egui::Painter,
@@ -4077,6 +4087,10 @@ fn paint_clip_overlay(
     let mut label_pos = clip_rect.left_top() + egui::vec2(4.0, label_offset_y);
     if visual.clip.disabled {
         paint_disabled_badge(painter, label_pos);
+        label_pos.x += DISABLED_BADGE_SIZE + 4.0;
+    }
+    if visual.warning.is_some() {
+        paint_warning_badge(painter, label_pos);
         label_pos.x += DISABLED_BADGE_SIZE + 4.0;
     }
     let label_color = if visual.muted {
@@ -6188,6 +6202,29 @@ fn paint_disabled_badge(painter: &egui::Painter, top_left: egui::Pos2) {
         [inner.left_bottom(), inner.right_top()],
         egui::Stroke::new(1.5, egui::Color32::WHITE),
     );
+}
+
+fn paint_warning_badge(painter: &egui::Painter, top_left: egui::Pos2) {
+    let rect = egui::Rect::from_min_size(
+        top_left + egui::vec2(0.0, 1.0),
+        egui::vec2(DISABLED_BADGE_SIZE, DISABLED_BADGE_SIZE),
+    );
+    painter.rect_filled(rect, 2.0, crate::theme::ERROR);
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "!",
+        egui::FontId::proportional(DISABLED_BADGE_SIZE - 1.0),
+        egui::Color32::WHITE,
+    );
+}
+
+fn audio_failure_text(failure: &ClipAudioFailure) -> String {
+    match failure {
+        ClipAudioFailure::Decode(error) => t!("timeline.audio_decode_failed", error = error),
+        ClipAudioFailure::Level(error) => t!("timeline.audio_level_failed", error = error),
+    }
+    .into_owned()
 }
 
 /// Rectangle of a clip in content-local coordinates: same

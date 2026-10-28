@@ -70,6 +70,7 @@ impl Harness {
                     &mut self.history,
                     self.timeline_id,
                     &|_id| "media".to_string(),
+                    &std::collections::HashMap::new(),
                     &mut self.state,
                     false,
                     false,
