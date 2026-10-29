@@ -1084,7 +1084,7 @@ fn a_superseded_level_measure_is_asked_again_at_once() {
 
 #[test]
 fn a_file_that_keeps_failing_is_logged_once_until_it_decodes() {
-    let good = sine_wav("logged.wav", 1);
+    let (_dir_good, good) = sine_wav("logged.wav", 1);
     let bad = good.with_file_name("logged-then-present.wav");
     let _ = std::fs::remove_file(&bad);
     let (tx, _rx) = mpsc::channel();
