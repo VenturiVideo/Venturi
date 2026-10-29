@@ -111,6 +111,7 @@ fn save_then_load_keeps_custom_shortcuts_and_defaults_for_the_rest() {
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
+/// Ensures saved shortcuts keep priority over conflicting defaults during migration.
 #[test]
 fn loading_legacy_shortcuts_prioritizes_saved_bindings_over_defaults() {
     let path = std::env::temp_dir()
