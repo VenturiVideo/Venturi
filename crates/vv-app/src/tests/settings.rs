@@ -112,6 +112,45 @@ fn save_then_load_keeps_custom_shortcuts_and_defaults_for_the_rest() {
 }
 
 #[test]
+fn loading_legacy_shortcuts_prioritizes_saved_bindings_over_defaults() {
+    let path = std::env::temp_dir()
+        .join(format!(
+            "vv-settings-shortcut-migration-{}",
+            std::process::id()
+        ))
+        .join("settings.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, r#"{"shortcuts":{"cut":["Alt+V"]}}"#).unwrap();
+
+    let loaded = Settings::load(&path);
+    let alt_v = Shortcut {
+        alt: true,
+        ..Shortcut::plain(egui::Key::V)
+    };
+
+    assert_eq!(loaded.keymap.shortcuts(Action::Cut), &[alt_v]);
+    assert!(loaded.keymap.shortcuts(Action::PasteAttributes).is_empty());
+    for action in Action::ALL
+        .into_iter()
+        .filter(|action| *action != Action::Cut)
+    {
+        assert!(
+            !loaded.keymap.shortcuts(action).contains(&alt_v),
+            "{action:?} also uses {alt_v}"
+        );
+    }
+    assert_eq!(
+        loaded.keymap.shortcuts(Action::SelectFromPlayhead),
+        &[Shortcut {
+            alt: true,
+            ..Shortcut::plain(egui::Key::Y)
+        }]
+    );
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
 fn save_then_load_keeps_custom_panel_layout_and_defaults_it_when_absent() {
     let path = std::env::temp_dir()
         .join(format!("vv-settings-panels-{}", std::process::id()))
