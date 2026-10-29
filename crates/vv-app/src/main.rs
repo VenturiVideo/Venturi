@@ -995,11 +995,13 @@ impl VenturiApp {
         if total <= 0 {
             return;
         }
-        let (marks, frame) = if self.browsing.is_some() {
-            (&mut self.browse_marks, self.browse_playhead)
+        let frame = if self.browsing.is_some() {
+            self.browse_playhead
         } else {
-            let state = &mut self.timeline_state;
-            (&mut state.export_marks, state.playhead)
+            self.timeline_state.playhead
+        };
+        let Some(marks) = self.mark_target() else {
+            return;
         };
         if is_in {
             marks.set_in(frame, total);
@@ -1008,25 +1010,13 @@ impl VenturiApp {
         }
     }
 
-    /// Returns marks for the active preview or timeline, if either is active.
-    ///
-    /// An active media preview takes priority over the timeline's export range.
-    fn current_mark_range(&self) -> Option<transport::MarkRange> {
+    fn mark_target(&mut self) -> Option<&mut transport::MarkRange> {
         if self.browsing.is_some() {
-            Some(self.browse_marks)
-        } else if self.timeline_id.is_some() {
-            Some(self.timeline_state.export_marks)
-        } else {
-            None
-        }
-    }
-
-    /// Returns mutable marks for the active preview or timeline, if either is active.
-    ///
-    /// An active media preview takes priority over the timeline's export range.
-    fn current_mark_range_mut(&mut self) -> Option<&mut transport::MarkRange> {
-        if self.browsing.is_some() {
-            Some(&mut self.browse_marks)
+            if self.preview_error.is_some() {
+                None
+            } else {
+                Some(&mut self.browse_marks)
+            }
         } else if self.timeline_id.is_some() {
             Some(&mut self.timeline_state.export_marks)
         } else {
@@ -1038,7 +1028,7 @@ impl VenturiApp {
     ///
     /// The unset endpoint resolves to frame zero; Out remains unchanged.
     fn clear_in_point(&mut self) {
-        if let Some(marks) = self.current_mark_range_mut() {
+        if let Some(marks) = self.mark_target() {
             marks.clear_in();
         }
     }
@@ -1047,7 +1037,7 @@ impl VenturiApp {
     ///
     /// The unset endpoint resolves to the content end; In remains unchanged.
     fn clear_out_point(&mut self) {
-        if let Some(marks) = self.current_mark_range_mut() {
+        if let Some(marks) = self.mark_target() {
             marks.clear_out();
         }
     }
@@ -1056,7 +1046,7 @@ impl VenturiApp {
     ///
     /// Both unset endpoints resolve to the full content range.
     fn clear_in_and_out(&mut self) {
-        if let Some(marks) = self.current_mark_range_mut() {
+        if let Some(marks) = self.mark_target() {
             marks.clear_all();
         }
     }

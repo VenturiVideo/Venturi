@@ -12,7 +12,7 @@ use vv_core::FrameIdx;
 pub struct MarkRange {
     /// Inclusive first frame, or `None` to start at frame zero.
     pub mark_in: Option<FrameIdx>,
-    /// Exclusive end frame, or `None` to extend to the content end.
+    /// Exclusive: "o" on frame `p` includes it.
     pub mark_out: Option<FrameIdx>,
 }
 
@@ -49,20 +49,16 @@ impl MarkRange {
         }
     }
 
-    /// Clears In so the resolved range starts at the first content frame.
     pub fn clear_in(&mut self) {
         self.mark_in = None;
     }
 
-    /// Clears Out so the resolved range extends to the content end.
     pub fn clear_out(&mut self) {
         self.mark_out = None;
     }
 
-    /// Clears both endpoints so the resolved range covers all content.
     pub fn clear_all(&mut self) {
-        self.mark_in = None;
-        self.mark_out = None;
+        *self = Self::default();
     }
 
     /// Reports whether these marks resolve to the full content range.

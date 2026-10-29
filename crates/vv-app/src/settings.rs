@@ -21,11 +21,11 @@ pub enum Action {
     StepForward,
     MarkIn,
     MarkOut,
-    /// Clears In and expands the range to the first content frame (Alt/Option+I).
+    /// Clears In and expands the range to the first content frame.
     ClearIn,
-    /// Clears Out and expands the range to the content end (Alt/Option+O).
+    /// Clears Out and expands the range to the content end.
     ClearOut,
-    /// Clears both endpoints and restores the full content range (Alt/Option+X).
+    /// Clears both endpoints and restores the full content range.
     ClearInOut,
     FullscreenViewer,
     ViewerZoomFit,

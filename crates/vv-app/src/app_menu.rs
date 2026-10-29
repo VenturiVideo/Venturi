@@ -503,47 +503,6 @@ impl VenturiApp {
                         }
                         ui.label(t!("menu.zoom_hint"));
                         ui.separator();
-                        let marks = self.current_mark_range();
-                        if ui
-                            .add_enabled(
-                                marks.is_some_and(|marks| marks.mark_in.is_some()),
-                                egui::Button::new(
-                                    keymap.menu_label(&t!("action.clear_in"), Action::ClearIn),
-                                ),
-                            )
-                            .clicked()
-                        {
-                            self.clear_in_point();
-                            ui.close();
-                        }
-                        if ui
-                            .add_enabled(
-                                marks.is_some_and(|marks| marks.mark_out.is_some()),
-                                egui::Button::new(
-                                    keymap.menu_label(&t!("action.clear_out"), Action::ClearOut),
-                                ),
-                            )
-                            .clicked()
-                        {
-                            self.clear_out_point();
-                            ui.close();
-                        }
-                        if ui
-                            .add_enabled(
-                                marks.is_some_and(|marks| {
-                                    marks.mark_in.is_some() || marks.mark_out.is_some()
-                                }),
-                                egui::Button::new(
-                                    keymap
-                                        .menu_label(&t!("action.clear_in_out"), Action::ClearInOut),
-                                ),
-                            )
-                            .clicked()
-                        {
-                            self.clear_in_and_out();
-                            ui.close();
-                        }
-                        ui.separator();
                         if ui
                             .button(keymap.menu_label(
                                 &t!("timeline.retime_controls"),
@@ -590,6 +549,46 @@ impl VenturiApp {
                                 self.mark_at_playhead(is_in);
                                 ui.close();
                             }
+                        }
+                        let marks = self.mark_target().copied();
+                        if ui
+                            .add_enabled(
+                                marks.is_some_and(|marks| marks.mark_in.is_some()),
+                                egui::Button::new(
+                                    keymap.menu_label(&t!("action.clear_in"), Action::ClearIn),
+                                ),
+                            )
+                            .clicked()
+                        {
+                            self.clear_in_point();
+                            ui.close();
+                        }
+                        if ui
+                            .add_enabled(
+                                marks.is_some_and(|marks| marks.mark_out.is_some()),
+                                egui::Button::new(
+                                    keymap.menu_label(&t!("action.clear_out"), Action::ClearOut),
+                                ),
+                            )
+                            .clicked()
+                        {
+                            self.clear_out_point();
+                            ui.close();
+                        }
+                        if ui
+                            .add_enabled(
+                                marks.is_some_and(|marks| {
+                                    marks.mark_in.is_some() || marks.mark_out.is_some()
+                                }),
+                                egui::Button::new(
+                                    keymap
+                                        .menu_label(&t!("action.clear_in_out"), Action::ClearInOut),
+                                ),
+                            )
+                            .clicked()
+                        {
+                            self.clear_in_and_out();
+                            ui.close();
                         }
                     })
                     .response,

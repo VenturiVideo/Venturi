@@ -39,7 +39,6 @@ fn default_shortcuts_are_unique() {
     }
 }
 
-/// Verify that clearing In, Out, or both uses the documented Alt shortcuts.
 #[test]
 fn clear_mark_shortcuts_use_alt_i_o_and_x() {
     let keymap = Keymap::default();

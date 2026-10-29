@@ -35,7 +35,6 @@ fn marks_are_clamped_when_the_content_shrinks() {
     assert_eq!(marks.resolve(50), (50, 50));
 }
 
-/// Verify that clearing In preserves Out and expands the range to frame zero.
 #[test]
 fn clearing_in_restores_the_start_of_the_content() {
     let mut marks = MarkRange::default();
@@ -48,7 +47,6 @@ fn clearing_in_restores_the_start_of_the_content() {
     assert_eq!(marks.resolve(100), (0, 30));
 }
 
-/// Verify that clearing Out preserves In and expands the range to the content end.
 #[test]
 fn clearing_out_restores_the_end_of_the_content() {
     let mut marks = MarkRange::default();
@@ -61,7 +59,6 @@ fn clearing_out_restores_the_end_of_the_content() {
     assert_eq!(marks.resolve(100), (10, 100));
 }
 
-/// Verify that clearing both endpoints restores the full content range.
 #[test]
 fn clearing_both_marks_restores_the_full_content_range() {
     let mut marks = MarkRange::default();
