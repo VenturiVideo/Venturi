@@ -3,9 +3,7 @@ use crate::{ImportMediaArgs, ToolCall};
 
 #[test]
 fn headless_host_answers_until_the_last_handle_goes() {
-    let dir = std::env::temp_dir().join("vv-mcp-headless");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = vv_media::test_support::TempDir::new("vv-mcp-headless");
     let media = crate::dispatch::tests::clip_file(&dir, "a.mp4");
     let (handle, inbox) = channel(|| {});
     let host = std::thread::spawn(move || {
