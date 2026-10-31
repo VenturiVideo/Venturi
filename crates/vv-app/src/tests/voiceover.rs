@@ -133,6 +133,118 @@ fn a_take_is_saved_next_to_the_project_and_overwrites_the_track_in_one_step() {
 }
 
 #[test]
+fn voiceover_length_comes_from_recorded_samples_for_every_available_format() {
+    for format in AudioFileFormat::available() {
+        let (mut app, timeline) = app_with_armed_track();
+        let dir = temp_dir(format.id());
+        app.session.set_path(Some(dir.join("project.vvproj")));
+        app.settings.recording_format = Some(format);
+        app.place_take(timeline, 25, &[1], &one_second_take())
+            .unwrap();
+        let recorded = app.session.project.timelines[timeline].tracks[1]
+            .clips
+            .iter()
+            .find(|clip| matches!(clip.source, ClipSource::Media(_)))
+            .unwrap();
+        assert_eq!(recorded.timeline_len, 25, "{format:?}");
+        let ClipSource::Media(media_id) = recorded.source else {
+            unreachable!()
+        };
+        let meta = &app.session.project.media_pool[media_id].meta;
+        assert_eq!(meta.duration_frames as f64, meta.fps.as_f64(), "{format:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[test]
+fn take_duration_is_rounded_once_at_the_timeline_frame_rate() {
+    for fps in [
+        Rational::new(24, 1),
+        Rational::new(25, 1),
+        Rational::new(30_000, 1001),
+    ] {
+        for samples in [48_001, 48_912, 49_008] {
+            let (mut app, timeline) = app_with_armed_track();
+            app.session.project.timelines[timeline].fps = fps;
+            let dir = temp_dir("rounding");
+            app.session.set_path(Some(dir.join("project.vvproj")));
+            app.settings.recording_format = Some(AudioFileFormat::Wav);
+            let mut take = one_second_take();
+            take.samples.resize(samples, 0.0);
+            app.place_take(timeline, 0, &[1], &take).unwrap();
+            let recorded = app.session.project.timelines[timeline].tracks[1]
+                .clips
+                .iter()
+                .find(|clip| matches!(clip.source, ClipSource::Media(_)))
+                .unwrap();
+            let expected = (take.seconds() * fps.as_f64()).round() as FrameIdx;
+            assert_eq!(
+                recorded.timeline_len, expected,
+                "{fps:?}: {samples} samples"
+            );
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
+#[test]
+fn recorded_media_keeps_the_tail_beyond_its_rounded_timeline_clip() {
+    let (mut app, timeline) = app_with_armed_track();
+    app.session.project.timelines[timeline].fps = Rational::new(24, 1);
+    let dir = temp_dir("media-tail");
+    app.session.set_path(Some(dir.join("project.vvproj")));
+    app.settings.recording_format = Some(AudioFileFormat::Wav);
+    let mut take = one_second_take();
+    take.samples.resize(48_912, 0.25);
+    app.place_take(timeline, 0, &[1], &take).unwrap();
+    let recorded = app.session.project.timelines[timeline].tracks[1]
+        .clips
+        .iter()
+        .find(|clip| matches!(clip.source, ClipSource::Media(_)))
+        .unwrap();
+    assert_eq!(recorded.timeline_len, 24);
+    let ClipSource::Media(id) = recorded.source else {
+        unreachable!()
+    };
+    let meta = &app.session.project.media_pool[id].meta;
+    assert!(
+        meta.duration_frames as f64 / meta.fps.as_f64() >= take.seconds(),
+        "reusing the media must retain the recorded tail"
+    );
+    assert!((meta.duration_frames - 1) as f64 / meta.fps.as_f64() < take.seconds());
+    let media = &app.session.project.media_pool[id];
+    let decoded = vv_media::decode_audio_track(&media.path, 0)
+        .unwrap()
+        .unwrap();
+    let tail_start = decoded.sample_rate as usize * decoded.channels as usize;
+    let tail = decoded.samples.get(tail_start..).unwrap();
+    assert_eq!(tail.len(), 912, "the complete recorded tail must remain");
+    assert!(
+        tail.iter().all(|sample| (*sample - 0.25).abs() < 1e-4),
+        "the recorded tail must retain its audio samples"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_subframe_take_creates_one_frame_instead_of_a_zero_length_clip() {
+    let (mut app, timeline) = app_with_armed_track();
+    let dir = temp_dir("subframe");
+    app.session.set_path(Some(dir.join("project.vvproj")));
+    app.settings.recording_format = Some(AudioFileFormat::Wav);
+    let mut take = one_second_take();
+    take.samples.truncate(1);
+    app.place_take(timeline, 0, &[1], &take).unwrap();
+    let recorded = app.session.project.timelines[timeline].tracks[1]
+        .clips
+        .iter()
+        .find(|clip| matches!(clip.source, ClipSource::Media(_)))
+        .unwrap();
+    assert_eq!(recorded.timeline_len, 1);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn the_live_waveform_grows_by_whole_blocks_as_the_take_arrives() {
     let mut take = Take {
         samples: Vec::new(),
