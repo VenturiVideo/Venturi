@@ -108,11 +108,16 @@ if [ ! -x "$TOOL" ]; then
     chmod +x "$TOOL"
 fi
 # No FUSE in containers: appimagetool extracts itself.
-APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" "$TOOL" "$APPDIR" "$OUT"
+UPDATE_INFO="$(bash scripts/appimage-update-info.sh "$ARCH")"
+(
+    cd "$(dirname "$OUT")"
+    APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" "$TOOL" -u "$UPDATE_INFO" "$APPDIR" "$OUT"
+)
+test -s "$OUT.zsync"
 
 # In the container the target dir is a volume: the AppImage must be moved out.
 if [ -n "${VV_APPIMAGE_OUT:-}" ]; then
-    cp "$OUT" "$VV_APPIMAGE_OUT/"
+    cp "$OUT" "$OUT.zsync" "$VV_APPIMAGE_OUT/"
     OUT="$VV_APPIMAGE_OUT/$(basename "$OUT")"
 fi
 echo "AppImage: $OUT"

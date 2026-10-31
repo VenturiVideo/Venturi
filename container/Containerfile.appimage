@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc g++ clang libclang-dev \
         zlib1g-dev libwayland-dev libxkbcommon-dev libx11-dev \
         libvulkan-dev libasound2-dev meson ninja-build \
-        patchelf file desktop-file-utils \
+        patchelf file desktop-file-utils zsync \
     && rm -rf /var/lib/apt/lists/*
 
 ENV RUSTUP_HOME=/usr/local/rustup \
