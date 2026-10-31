@@ -1,10 +1,8 @@
 use super::*;
+use vv_media::test_support::TempDir;
 
-fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("vv-forced-relink-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn temp_dir(name: &str) -> TempDir {
+    TempDir::new(&format!("vv-forced-relink-{name}"))
 }
 
 fn meta(duration_frames: i64, width: u32, height: u32) -> MediaMeta {
