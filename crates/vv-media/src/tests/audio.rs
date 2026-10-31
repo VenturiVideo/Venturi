@@ -238,11 +238,9 @@ const NOISE: &str = "anoisesrc=duration=20:color=white:amplitude=0.5:seed=7:samp
 /// their own (AAC's PNS), different after a seek.
 const CHIRP: &str = "aevalsrc=0.5*sin(2*PI*(100+300*t)*t):duration=20:sample_rate=48000";
 
-static SEEK_TEST_DIR_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
 /// A generated test file; its directory is removed when the test ends.
 struct SeekTestFile {
-    dir: std::path::PathBuf,
+    _dir: crate::test_support::TempDir,
     path: std::path::PathBuf,
 }
 
@@ -254,21 +252,12 @@ impl std::ops::Deref for SeekTestFile {
     }
 }
 
-impl Drop for SeekTestFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
-
 fn test_file(name: &str, source: &str, output_args: &[&str], with_video: bool) -> SeekTestFile {
-    let seq = SEEK_TEST_DIR_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("vv-media-seek-test-{}-{seq}", std::process::id()));
-    // The guard exists before the directory does, so a failing ffmpeg still cleans up.
+    let dir = crate::test_support::TempDir::new("vv-media-seek-test");
     let file = SeekTestFile {
         path: dir.join(name),
-        dir,
+        _dir: dir,
     };
-    std::fs::create_dir_all(&file.dir).unwrap();
     let mut args = vec!["-f", "lavfi", "-i", source];
     if with_video {
         args.extend([
