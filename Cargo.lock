@@ -4699,6 +4699,7 @@ dependencies = [
  "cpal",
  "ffmpeg-next",
  "vv-core",
+ "vv-media",
 ]
 
 [[package]]

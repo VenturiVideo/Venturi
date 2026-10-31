@@ -3,13 +3,14 @@
 //! length of the timeline (plans/AUDIO_LIVE_MIX.md §3.2). The levels of
 //! the normalizations are rendered the same way, by segment (§3.3).
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::ops::{ControlFlow, Range};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use vv_audio::decoder::{BlockBuffer as KeptStream, BlockDecoder};
 
 use vv_audio::loudness::{LOOKAHEAD_FRAMES, LevelMeter, LevelParts};
 use vv_audio::mixer::{
@@ -17,8 +18,8 @@ use vv_audio::mixer::{
     remix_channels_into,
 };
 use vv_audio::{
-    LevelAnalysis, LevelReading, LevelSegment, PluginHandle, PluginRequest, SampleBlocks,
-    StretchRequest, Stretcher,
+    BLOCK_FRAMES, LevelAnalysis, LevelReading, LevelSegment, PluginHandle, PluginRequest,
+    SampleBlocks, StretchRequest, Stretcher,
 };
 use vv_core::{Project, Timeline};
 use vv_plugin::Instances;
@@ -30,9 +31,6 @@ const CHUNK_FRAMES: u64 = 1 << 18;
 /// How far ahead of what a reader decoded a window may start and still be
 /// read from it, instead of seeking with a new one.
 const READ_AHEAD_FRAMES: u64 = 10 * PROJECT_SAMPLE_RATE as u64;
-/// Small, unlike the preview's: a window holds the blocks it overlaps,
-/// and an edited timeline reads many short windows.
-const BLOCK_FRAMES: u64 = 1 << 13;
 /// Decoded packets a reader may be ahead of the render.
 const READER_QUEUE: usize = 64;
 /// Rendered before every segment of a measure: the loudness filters settle
@@ -1047,80 +1045,6 @@ struct Reader {
     used: bool,
 }
 
-/// Decoded frames not yet dropped, in blocks on the `BLOCK_FRAMES` grid
-/// that the windows share instead of copying.
-struct KeptStream {
-    /// Grid index of `blocks[0]`, and of `filling` after the last one.
-    first: u64,
-    blocks: VecDeque<Arc<Vec<f32>>>,
-    filling: Vec<f32>,
-}
-
-impl KeptStream {
-    fn start(&self) -> u64 {
-        self.first * BLOCK_FRAMES
-    }
-
-    fn end(&self) -> u64 {
-        (self.first + self.blocks.len() as u64) * BLOCK_FRAMES
-            + (self.filling.len() / PROJECT_CHANNELS as usize) as u64
-    }
-
-    /// `None`: silence.
-    fn push(&mut self, mut frames: u64, mut samples: Option<&[f32]>) {
-        let ch = PROJECT_CHANNELS as u64;
-        while frames > 0 {
-            let room = BLOCK_FRAMES - self.filling.len() as u64 / ch;
-            let count = frames.min(room);
-            let len = (count * ch) as usize;
-            match &mut samples {
-                Some(s) => {
-                    self.filling.extend_from_slice(&s[..len]);
-                    *s = &s[len..];
-                }
-                None => self.filling.resize(self.filling.len() + len, 0.0),
-            }
-            frames -= count;
-            if count == room {
-                let block = std::mem::replace(&mut self.filling, new_block());
-                self.blocks.push_back(Arc::new(block));
-            }
-        }
-    }
-
-    /// The blocks holding `frames`, up to `end` if it comes first.
-    fn view(&self, frames: Range<u64>) -> SampleBlocks {
-        let end = frames.end.min(self.end());
-        let first = (frames.start / BLOCK_FRAMES).max(self.first);
-        let last = end.div_ceil(BLOCK_FRAMES).max(first);
-        let full = self.first + self.blocks.len() as u64;
-        let blocks = (first..last)
-            .map(
-                |index| match self.blocks.get((index - self.first) as usize) {
-                    Some(block) => Some(block.clone()),
-                    // Still filling: copied, at most one block.
-                    None => (index == full).then(|| Arc::new(self.filling.clone())),
-                },
-            )
-            .collect();
-        let start = first * BLOCK_FRAMES;
-        SampleBlocks::new(
-            start,
-            BLOCK_FRAMES,
-            PROJECT_CHANNELS,
-            blocks,
-            end.max(start),
-        )
-    }
-
-    fn drop_before(&mut self, frame: u64) {
-        while self.first < frame / BLOCK_FRAMES && !self.blocks.is_empty() {
-            self.blocks.pop_front();
-            self.first += 1;
-        }
-    }
-}
-
 impl Reader {
     /// From the start of the block `from` is in: the blocks of every reader
     /// of the file are on the same grid.
@@ -1137,11 +1061,7 @@ impl Reader {
             streams,
             decoded,
             kept: (0..n)
-                .map(|_| KeptStream {
-                    first,
-                    blocks: VecDeque::new(),
-                    filling: new_block(),
-                })
+                .map(|_| KeptStream::new(first * BLOCK_FRAMES, PROJECT_CHANNELS))
                 .collect(),
             ended: false,
             read_from: vec![None; n],
@@ -1186,18 +1106,7 @@ impl Reader {
 
     /// A gap in the stream plays as silence, as in the preview.
     fn append(&mut self, slot: usize, at: u64, samples: &[f32]) {
-        let ch = PROJECT_CHANNELS as u64;
-        let kept = &mut self.kept[slot];
-        let end = kept.end();
-        let to = at + samples.len() as u64 / ch;
-        if to <= end {
-            return;
-        }
-        if at > end {
-            kept.push(at - end, None);
-        }
-        let skip = end.saturating_sub(at);
-        kept.push(to - at - skip, Some(&samples[(skip * ch) as usize..]));
+        self.kept[slot].append(at, samples, u64::MAX);
     }
 
     /// Drops the blocks before the first frame read in this chunk: the
@@ -1209,24 +1118,18 @@ impl Reader {
     }
 }
 
-fn new_block() -> Vec<f32> {
-    Vec::with_capacity((BLOCK_FRAMES * PROJECT_CHANNELS as u64) as usize)
-}
-
 fn decode_into(path: &Path, streams: &[usize], from: u64, tx: &SyncSender<Decoded>) {
-    let result = vv_media::decode_audio_streams_from(
+    let result = BlockDecoder::new(PROJECT_SAMPLE_RATE, PROJECT_CHANNELS).decode(
         path,
         streams,
-        PROJECT_SAMPLE_RATE,
         from,
-        |slot, channels, at, chunk| {
-            let mut samples = Vec::new();
-            remix_channels_into(chunk, channels, PROJECT_CHANNELS, &mut samples);
-            match tx.send(Decoded::Samples { slot, at, samples }) {
-                Ok(()) => ControlFlow::Continue(()),
-                // The render is done with this reader.
-                Err(_) => ControlFlow::Break(()),
-            }
+        |slot, at, samples| match tx.send(Decoded::Samples {
+            slot,
+            at,
+            samples: samples.to_vec(),
+        }) {
+            Ok(()) => ControlFlow::Continue(()),
+            Err(_) => ControlFlow::Break(()),
         },
     );
     let _ = tx.send(Decoded::End(result.map(drop).map_err(|e| e.to_string())));

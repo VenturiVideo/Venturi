@@ -21,6 +21,28 @@ fn chirp(dir: &TempDir, name: &str, rate: u32, secs: u32) -> PathBuf {
     source(dir, name, &["-f", "lavfi", "-i", &lavfi])
 }
 
+#[test]
+fn a_reused_reader_decodes_the_start_of_its_shared_block() {
+    let path = chirp("reader-shared-grid.wav", PROJECT_SAMPLE_RATE, 3);
+    let expected = decoded_whole(&path, 0).unwrap();
+    let mut reader = Reader::open(path.clone(), vec![0], 60_000);
+    reader.read(0, 60_000..60_128).unwrap();
+    let earlier = 4096..4352;
+    assert!(reader.serves(&path, 0, earlier.start));
+    let actual = reader
+        .read(0, earlier.clone())
+        .unwrap()
+        .to_vec(earlier.clone());
+    let expected = expected.to_vec(earlier);
+    assert_eq!(actual.len(), expected.len());
+    let error = actual
+        .iter()
+        .zip(&expected)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(error < 1e-6, "reused-reader sample error: {error}");
+}
+
 fn media(project: &mut Project, path: PathBuf, sample_rate: u32, audio_streams: u16) -> MediaId {
     project.media_pool.insert(MediaItem {
         path,
@@ -252,7 +274,7 @@ fn the_render_holds_only_the_audio_near_where_it_is() {
             .readers
             .iter()
             .flat_map(|r| &r.kept)
-            .map(|kept| kept.blocks.iter().map(|b| b.len()).sum::<usize>() + kept.filling.len())
+            .map(KeptStream::held_samples)
             .sum();
         assert!(held <= bound, "{held} samples held at {chunk:?}");
         assert!(audio.readers.len() <= 1);
@@ -882,11 +904,7 @@ fn a_decode_thread_gone_without_an_end_fails_the_render() {
         path: PathBuf::from("gone.wav"),
         streams: vec![0],
         decoded,
-        kept: vec![KeptStream {
-            first: 0,
-            blocks: VecDeque::new(),
-            filling: new_block(),
-        }],
+        kept: vec![KeptStream::new(0, PROJECT_CHANNELS)],
         ended: false,
         read_from: vec![None],
         used: false,

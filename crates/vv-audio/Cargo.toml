@@ -10,3 +10,4 @@ workspace = true
 cpal = "0.18.2"
 ffmpeg-next = "9.0.0"
 vv-core = { path = "../vv-core" }
+vv-media = { path = "../vv-media" }

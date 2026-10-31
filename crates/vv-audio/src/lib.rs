@@ -3,6 +3,7 @@
 //! playback clock.
 
 pub mod blocks;
+pub mod decoder;
 pub mod dynamics;
 pub mod effect;
 pub mod eq;

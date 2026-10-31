@@ -1222,71 +1222,52 @@ fn decode_blocks(
     decoded_tx: &mpsc::Sender<Decoded>,
     logged: &mut HashSet<PathBuf>,
 ) -> bool {
+    use vv_audio::decoder::{BlockBuffer, BlockDecoder};
     let mut streams: Vec<usize> = jobs.iter().map(|job| job.stream).collect();
     streams.sort_unstable();
     streams.dedup();
     let slot_of = |stream: usize| streams.iter().position(|&s| s == stream).unwrap();
-    let ch = channels.max(1) as u64;
     let windows: Vec<Range<u64>> = jobs
         .iter()
         .map(|job| job.blocks.start * BLOCK_FRAMES..job.blocks.end * BLOCK_FRAMES)
         .collect();
     let from = windows.iter().map(|w| w.start).min().unwrap_or(0);
-    let mut filling: Vec<Vec<f32>> = jobs.iter().map(|_| new_block(ch)).collect();
-    let mut filled_to: Vec<u64> = windows.iter().map(|w| w.start).collect();
+    let mut buffers: Vec<_> = windows
+        .iter()
+        .map(|w| BlockBuffer::new(w.start, channels))
+        .collect();
     let mut decoded = vec![0_u64; streams.len()];
-    let mut remixed = Vec::new();
     let mut receiver_gone = false;
     let mut stopped_early = false;
-    let result = vv_media::decode_audio_streams_from(
+    let result = BlockDecoder::new(sample_rate, channels).decode(
         path,
         &streams,
-        sample_rate,
         from,
-        |slot, src_channels, at, chunk| {
-            remixed.clear();
-            vv_audio::mixer::remix_channels_into(chunk, src_channels, channels, &mut remixed);
-            let to = at + remixed.len() as u64 / ch;
+        |slot, at, samples| {
+            let to = at + samples.len() as u64 / channels.max(1) as u64;
             decoded[slot] = decoded[slot].max(to);
             let mut finished = true;
             for (i, job) in jobs.iter().enumerate() {
                 if job.cancelled.load(Ordering::Relaxed) {
                     continue;
                 }
-                let window = &windows[i];
                 if job.stream == streams[slot] {
-                    // A gap in the stream plays as silence.
-                    let gap_end = at.min(window.end);
-                    let until = window.end.min(to);
-                    let sent = (filled_to[i] >= gap_end
-                        || fill(
-                            &mut filling[i],
-                            &mut filled_to[i],
-                            gap_end,
-                            None,
-                            ch,
-                            job,
-                            decoded_tx,
-                        ))
-                        && (filled_to[i] >= until || {
-                            let skip = ((filled_to[i] - at) * ch) as usize;
-                            let samples = &remixed[skip..((until - at) * ch) as usize];
-                            fill(
-                                &mut filling[i],
-                                &mut filled_to[i],
-                                until,
-                                Some(samples),
-                                ch,
-                                job,
-                                decoded_tx,
-                            )
-                        });
-                    if !sent {
-                        receiver_gone = true;
-                        return ControlFlow::Break(());
+                    buffers[i].append(at, samples, windows[i].end);
+                    for (index, samples) in buffers[i].take_complete() {
+                        if decoded_tx
+                            .send(Decoded::Block {
+                                job: job.id,
+                                index,
+                                samples,
+                            })
+                            .is_err()
+                        {
+                            receiver_gone = true;
+                            return ControlFlow::Break(());
+                        }
                     }
                 }
-                if filled_to[i] < window.end {
+                if buffers[i].end() < windows[i].end {
                     finished = false;
                 }
             }
@@ -1311,71 +1292,34 @@ fn decode_blocks(
     if formats.iter().any(Option::is_some) {
         logged.remove(path);
     }
-    for ((job, last), filled_to) in jobs.iter().zip(filling).zip(filled_to) {
+    for (job, mut buffer) in jobs.iter().zip(buffers) {
         let slot = slot_of(job.stream);
         let missing = formats[slot].is_none();
         let at_end = !stopped_early && !missing;
         let end = (at_end && decoded[slot] > 0).then_some(decoded[slot]);
         let ends_before = (at_end && decoded[slot] == 0).then_some(from);
-        // The block the file ends in, shorter than the others.
-        if end.is_some() && !last.is_empty() {
-            let block = Decoded::Block {
-                job: job.id,
-                index: (filled_to - 1) / BLOCK_FRAMES,
-                samples: Arc::new(last),
-            };
-            if decoded_tx.send(block).is_err() {
-                return false;
-            }
-        }
-        let done = Decoded::Done {
-            job: job.id,
-            end,
-            ends_before,
-            missing,
-        };
-        if decoded_tx.send(done).is_err() {
+        if end.is_some()
+            && let Some((index, samples)) = buffer.take_tail()
+            && decoded_tx
+                .send(Decoded::Block {
+                    job: job.id,
+                    index,
+                    samples,
+                })
+                .is_err()
+        {
             return false;
         }
-    }
-    true
-}
-
-fn new_block(ch: u64) -> Vec<f32> {
-    Vec::with_capacity((BLOCK_FRAMES * ch) as usize)
-}
-
-/// Appends frames up to `until` to the block being filled (`samples`, or
-/// silence), sending every block it completes. `false` if the receiver is gone.
-fn fill(
-    filling: &mut Vec<f32>,
-    filled_to: &mut u64,
-    until: u64,
-    samples: Option<&[f32]>,
-    ch: u64,
-    job: &DecodeJob,
-    decoded_tx: &mpsc::Sender<Decoded>,
-) -> bool {
-    let mut offset = 0;
-    while *filled_to < until {
-        let block_end = (*filled_to / BLOCK_FRAMES + 1) * BLOCK_FRAMES;
-        let next = until.min(block_end);
-        let count = ((next - *filled_to) * ch) as usize;
-        match samples {
-            Some(samples) => filling.extend_from_slice(&samples[offset..offset + count]),
-            None => filling.resize(filling.len() + count, 0.0),
-        }
-        offset += count;
-        *filled_to = next;
-        if next == block_end {
-            let block = Decoded::Block {
+        if decoded_tx
+            .send(Decoded::Done {
                 job: job.id,
-                index: next / BLOCK_FRAMES - 1,
-                samples: Arc::new(std::mem::replace(filling, new_block(ch))),
-            };
-            if decoded_tx.send(block).is_err() {
-                return false;
-            }
+                end,
+                ends_before,
+                missing,
+            })
+            .is_err()
+        {
+            return false;
         }
     }
     true

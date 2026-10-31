@@ -1,5 +1,73 @@
 use super::*;
 
+#[test]
+fn block_assembly_keeps_gaps_overlaps_and_trimming_independent_of_block_size() {
+    for size in [2, 4, 16] {
+        let mut filling = Vec::new();
+        let mut cursor = 0;
+        let mut blocks = Vec::new();
+        for (at, samples) in [
+            (2, &[1.0, 2.0, 3.0, 4.0][..]),
+            (4, &[8.0, 9.0, 5.0, 6.0][..]),
+            (10, &[7.0, 8.0, 9.0, 10.0][..]),
+        ] {
+            assert!(append_to_blocks(
+                &mut filling,
+                &mut cursor,
+                at,
+                samples,
+                12,
+                1,
+                size,
+                |index, block| {
+                    blocks.push((index, block));
+                    true
+                }
+            ));
+        }
+        let mut result: Vec<f32> = blocks
+            .iter()
+            .flat_map(|(_, block)| block.iter().copied())
+            .collect();
+        result.extend_from_slice(&filling);
+        assert_eq!(cursor, 12);
+        assert_eq!(
+            result,
+            [0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 0.0, 0.0, 7.0, 8.0]
+        );
+        assert!(
+            blocks
+                .iter()
+                .enumerate()
+                .all(|(i, (index, _))| i as u64 == *index)
+        );
+    }
+}
+
+#[test]
+fn block_assembly_stops_when_the_consumer_is_gone() {
+    let mut filling = Vec::new();
+    let mut cursor = 4;
+    let mut calls = 0;
+    assert!(!append_to_blocks(
+        &mut filling,
+        &mut cursor,
+        4,
+        &[1.0; 16],
+        20,
+        2,
+        4,
+        |index, block| {
+            assert_eq!(index, 1);
+            assert_eq!(block.len(), 8);
+            calls += 1;
+            false
+        }
+    ));
+    assert_eq!(calls, 1);
+    assert_eq!(cursor, 8);
+}
+
 fn block(values: Range<u32>) -> Option<Arc<Vec<f32>>> {
     Some(Arc::new(
         values.flat_map(|v| [v as f32, -(v as f32)]).collect(),

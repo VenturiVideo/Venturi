@@ -8,6 +8,43 @@ use std::sync::Arc;
 /// The block size of the preview's audio: about 1.4 s at 48 kHz.
 pub const BLOCK_FRAMES: u64 = 1 << 16;
 
+/// Appends a placed chunk on a fixed block grid, filling gaps with silence
+/// and keeping the first samples in overlaps. The caller owns the partial block.
+pub fn append_to_blocks(
+    filling: &mut Vec<f32>,
+    cursor: &mut u64,
+    at: u64,
+    samples: &[f32],
+    until: u64,
+    channels: u16,
+    block_frames: u64,
+    mut emit: impl FnMut(u64, Vec<f32>) -> bool,
+) -> bool {
+    let ch = channels.max(1) as u64;
+    let block_frames = block_frames.max(1);
+    let end = (at + samples.len() as u64 / ch).min(until);
+    while *cursor < end {
+        let block_end = (*cursor / block_frames + 1) * block_frames;
+        let next = end.min(block_end).min(if *cursor < at { at } else { end });
+        let count = ((next - *cursor) * ch) as usize;
+        if *cursor < at {
+            filling.resize(filling.len() + count, 0.0);
+        } else {
+            let offset = ((*cursor - at) * ch) as usize;
+            filling.extend_from_slice(&samples[offset..offset + count]);
+        }
+        *cursor = next;
+        if next == block_end {
+            let block =
+                std::mem::replace(filling, Vec::with_capacity((block_frames * ch) as usize));
+            if !emit(next / block_frames - 1, block) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// A run of frames read from `SampleBlocks::run`.
 pub enum Run<'a> {
     Samples(&'a [f32]),
