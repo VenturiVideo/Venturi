@@ -1790,3 +1790,295 @@ fn a_track_level_after_a_plugin_runs_to_the_end_of_the_mix() {
     assert!(!source.ends.is_empty());
     assert!(source.ends.iter().all(|&e| e == end), "{:?}", source.ends);
 }
+
+#[test]
+fn the_levels_on_disk_drop_the_oldest_files_over_their_budget() {
+    let dir = std::env::temp_dir().join(format!("vv-session-levels-prune-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let write = |name: &str, seconds_old: u64| {
+        let path = dir.join(name);
+        std::fs::write(&path, vec![0u8; 1000]).unwrap();
+        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(seconds_old);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+    };
+    write("a.level", 40);
+    write("b.level", 30);
+    write("c.level", 20);
+    write("d.level", 10);
+    write("notes.txt", 50);
+    write("e.1234.tmp", 60);
+    write("crashed.4321.tmp", 2 * 60 * 60);
+
+    prune_levels(&dir, 2500);
+
+    assert!(!dir.join("a.level").exists(), "the oldest one went");
+    assert!(!dir.join("b.level").exists());
+    assert!(dir.join("c.level").exists(), "the newest two stay");
+    assert!(dir.join("d.level").exists());
+    assert!(
+        dir.join("notes.txt").exists(),
+        "only the level files are pruned"
+    );
+    assert!(
+        dir.join("e.1234.tmp").exists(),
+        "a write of another process in flight is left alone"
+    );
+    assert!(
+        !dir.join("crashed.4321.tmp").exists(),
+        "a temp file an hour old is a write a crash cut short"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_levels_in_memory_drop_the_oldest_parts_over_their_budget() {
+    let loudness = |segments: usize| CachedParts {
+        parts: LevelParts::Loudness {
+            segment_frames: FRAME_SAMPLES as usize,
+            segments: vec![0.5; segments],
+            tail: (0.0, 0),
+        },
+        sources: None,
+    };
+    let one = cached_bytes(&loudness(100));
+    let mut state = LevelsState::default();
+    // Four parts of one unit each in a budget of three: the first goes.
+    for key in 0..4 {
+        remember(&mut state, 3 * one, key, loudness(100), true);
+    }
+    assert_eq!(state.parts.len(), 3);
+    assert!(!state.parts.contains_key(&0), "the first one went");
+    assert!(state.parts.contains_key(&3));
+    assert_eq!(state.bytes, 3 * one);
+
+    // Measuring the same key again does not grow the droppable ones.
+    remember(&mut state, 10 * one, 3, loudness(100), true);
+    assert_eq!(state.droppable.len(), 3);
+    assert_eq!(state.bytes, 3 * one);
+
+    // A part with no copy on disk is never dropped: the measure that made it
+    // reads it back.
+    let mut state = LevelsState::default();
+    remember(&mut state, one / 2, 7, loudness(100), false);
+    assert_eq!(state.parts.len(), 1, "not droppable, so it stays");
+}
+
+#[test]
+fn a_cache_of_peaks_reaches_the_budget_too() {
+    // A peak part is a single `f32`; charging it nothing let a peak-only
+    // measure grow the map without ever evicting (Copilot, #42).
+    let peak = || CachedParts {
+        parts: LevelParts::Peak(0.5),
+        sources: None,
+    };
+    let one = cached_bytes(&peak());
+    assert!(one > 0, "a peak entry is not free");
+    let mut state = LevelsState::default();
+    for key in 0..4 {
+        remember(&mut state, 2 * one, key, peak(), true);
+    }
+    assert_eq!(state.parts.len(), 2, "the budget bounds peaks too");
+    assert!(!state.parts.contains_key(&0));
+}
+
+#[test]
+fn forgetting_a_part_drops_its_bytes_and_its_place_in_the_queue() {
+    let peak = || CachedParts {
+        parts: LevelParts::Peak(0.5),
+        sources: None,
+    };
+    let one = cached_bytes(&peak());
+    let mut state = LevelsState::default();
+    remember(&mut state, 10 * one, 7, peak(), true);
+    assert_eq!((state.bytes, state.droppable.len()), (one, 1));
+    forget(&mut state, 7);
+    assert!(state.parts.is_empty());
+    assert_eq!(state.bytes, 0);
+    assert!(state.droppable.is_empty(), "a stale key is not left queued");
+}
+
+#[test]
+fn a_key_written_after_a_failed_write_joins_the_queue() {
+    // A nested measure can `put` the same key twice: its first write may have
+    // failed and the second succeeded, and the key must become droppable then.
+    let peak = || CachedParts {
+        parts: LevelParts::Peak(0.5),
+        sources: Some(vec![Stamp {
+            path: PathBuf::from("a.wav"),
+            len: 1,
+            modified_nanos: 0,
+        }]),
+    };
+    let one = cached_bytes(&peak());
+    let mut state = LevelsState::default();
+    remember(&mut state, 10 * one, 7, peak(), false);
+    assert!(state.droppable.is_empty(), "no file, so it stays");
+    remember(&mut state, 10 * one, 7, peak(), true);
+    assert_eq!(state.droppable.len(), 1, "the second one wrote it");
+    remember(&mut state, 10 * one, 7, peak(), true);
+    assert_eq!(state.droppable.len(), 1, "and it is queued once");
+}
+
+#[test]
+fn a_level_whose_file_write_fails_is_not_droppable() {
+    // The write fails, so the part has no copy to read back and must not be
+    // evicted: the file, never `sources`, is what makes it droppable (#42).
+    let file = std::env::temp_dir().join(format!(
+        "vv-session-levels-not-a-dir-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&file);
+    std::fs::write(&file, b"x").unwrap();
+    let mut cache = LevelCache {
+        // A directory under a file: `create_dir_all` cannot make it.
+        dir: Some(file.join("levels")),
+        ..LevelCache::default()
+    };
+    let stamp = Stamp {
+        path: PathBuf::from("a.wav"),
+        len: 1,
+        modified_nanos: 0,
+    };
+    cache.put(
+        1,
+        &LevelParts::Peak(0.5),
+        Some(std::slice::from_ref(&stamp)),
+        false,
+    );
+    let state = cache.shared.state.lock().unwrap();
+    assert!(
+        state.droppable.is_empty(),
+        "no file, so it is never dropped"
+    );
+    assert_eq!(state.parts.len(), 1);
+    drop(state);
+    let _ = std::fs::remove_file(&file);
+}
+
+#[test]
+fn a_written_level_is_the_droppable_one() {
+    let root = std::env::temp_dir().join(format!("vv-session-levels-put-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let source = root.join("a.wav");
+    std::fs::write(&source, b"x").unwrap();
+    let stamp = stamp(&source).unwrap();
+    let dir = root.join("levels");
+    let mut cache = LevelCache {
+        dir: Some(dir.clone()),
+        ..LevelCache::default()
+    };
+    let part = LevelParts::Loudness {
+        segment_frames: FRAME_SAMPLES as usize,
+        segments: vec![0.5; 100],
+        tail: (0.0, 0),
+    };
+    cache.put(1, &part, Some(std::slice::from_ref(&stamp)), false);
+    let state = cache.shared.state.lock().unwrap();
+    assert_eq!(
+        state.droppable.iter().copied().collect::<Vec<_>>(),
+        vec![1],
+        "the file is there, so the session may drop it"
+    );
+    assert_eq!(
+        state.bytes,
+        cached_bytes(&CachedParts {
+            parts: part.clone(),
+            sources: Some(vec![stamp]),
+        })
+    );
+    drop(state);
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "one `.level`");
+    // Dropped from memory, the file is the only copy left: it reads back.
+    forget(&mut cache.shared.state.lock().unwrap(), 1);
+    assert_eq!(cache.get(1), Some(part), "the file holds it");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_level_read_back_is_the_last_one_the_prune_drops() {
+    // The prune evicts by modification time and a read never wrote the
+    // file, so without a touch a level written long ago and used ever since
+    // would go first (morrolinux, #42).
+    let root = std::env::temp_dir().join(format!("vv-session-levels-touch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let source = root.join("a.wav");
+    std::fs::write(&source, b"x").unwrap();
+    let stamp = stamp(&source).unwrap();
+    let dir = root.join("levels");
+    let mut cache = LevelCache {
+        dir: Some(dir.clone()),
+        ..LevelCache::default()
+    };
+    let part = LevelParts::Peak(0.5);
+    cache.put(1, &part, Some(std::slice::from_ref(&stamp)), false);
+    let path = cache.path(1).unwrap();
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60 * 60);
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+
+    // Out of memory, the file is what the read back finds.
+    forget(&mut cache.shared.state.lock().unwrap(), 1);
+    assert_eq!(cache.get(1), Some(part));
+    let touched = std::fs::metadata(&path).unwrap().modified().unwrap();
+    assert!(touched > old, "a read back counts as use");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_level_gone_before_the_read_back_is_measured_again() {
+    // Another process' start-up prune can take a `.level` file between the
+    // claim and the read back, and the measure that produced it is over.
+    // `measure_missing` is what `measure_level` falls back to.
+    struct Fallback<'c> {
+        cache: &'c mut LevelCache,
+        result: Option<(usize, Result<Vec<LevelParts>, ExportError>)>,
+    }
+
+    impl AudioSource for Fallback<'_> {
+        fn file(&mut self, path: &Path, stream: usize) -> ClipAudio {
+            decoded_whole(path, stream).map_or(ClipAudio::Missing, ClipAudio::Ready)
+        }
+
+        fn plugin(&mut self, _: vv_audio::PluginRequest<'_>) -> Option<vv_audio::PluginHandle> {
+            Some(Arc::new(Passthrough))
+        }
+
+        fn level(&mut self, analysis: LevelAnalysis) -> LevelReading {
+            if self.result.is_none() {
+                let segments = analysis.segments.len();
+                self.result = Some((segments, measure_missing(&analysis, self.cache)));
+            }
+            LevelReading::Ready(1.0)
+        }
+    }
+
+    let mut project = Project::default();
+    let tl = echoed_gap(&mut project, "fallback.wav", false);
+    let mut cache = echo_cache();
+    let mut source = Fallback {
+        cache: &mut cache,
+        result: None,
+    };
+    MixSnapshot::from_timeline(
+        &project,
+        &tl,
+        PROJECT_SAMPLE_RATE,
+        PROJECT_CHANNELS,
+        &mut source,
+    );
+    let (segments, parts) = source.result.expect("a level was asked for");
+    let parts = parts.unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(parts.len(), segments, "every segment came back");
+}
