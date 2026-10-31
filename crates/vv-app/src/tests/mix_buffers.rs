@@ -92,9 +92,8 @@ fn compound_project(path: &Path, secs: u32) -> (Project, MediaId, vv_core::Timel
     (project, compound_media, parent)
 }
 
-fn sine_wav(name: &str, secs: u32) -> PathBuf {
-    let dir = std::env::temp_dir().join("vv-app-mix-buffers-test");
-    std::fs::create_dir_all(&dir).unwrap();
+fn sine_wav(name: &str, secs: u32) -> (vv_media::test_support::TempDir, PathBuf) {
+    let dir = vv_media::test_support::TempDir::new("vv-app-mix-buffers-test");
     let path = dir.join(name);
     vv_media::test_support::ffmpeg(
         &[
@@ -105,7 +104,7 @@ fn sine_wav(name: &str, secs: u32) -> PathBuf {
         ],
         &path,
     );
-    path
+    (dir, path)
 }
 
 const SEC: u64 = 48_000;
@@ -135,8 +134,7 @@ fn blocks_held(cache: &MixBufferCache, path: &Path) -> Vec<u64> {
 
 #[test]
 fn buffers_are_decoded_in_background_per_path_and_stream() {
-    let dir = std::env::temp_dir().join("vv-app-mix-buffers-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = vv_media::test_support::TempDir::new("vv-app-mix-buffers-test");
     let path = dir.join("two_streams.mkv");
     // Stream 0 mono 44.1 kHz of 1s, stream 1 stereo 48 kHz of 0.5s.
     vv_media::test_support::ffmpeg(
@@ -187,7 +185,7 @@ fn buffers_are_decoded_in_background_per_path_and_stream() {
 
 #[test]
 fn a_long_read_plays_its_first_blocks_before_decoding_ends() {
-    let path = sine_wav("long.wav", 20);
+    let (_dir_path, path) = sine_wav("long.wav", 20);
     let mut cache = MixBufferCache::spawn(48_000, 2);
     read(&mut cache, &path, 0..20 * SEC);
     let mut partial = false;
@@ -207,7 +205,7 @@ fn a_long_read_plays_its_first_blocks_before_decoding_ends() {
 
 #[test]
 fn the_job_closest_to_the_playhead_is_decoded_first() {
-    let path = sine_wav("closest.wav", 60);
+    let (_dir_path, path) = sine_wav("closest.wav", 60);
     let mut cache = MixBufferCache::spawn(48_000, 1);
     cache.set_playhead(40 * SEC);
     cache.begin_pass();
@@ -234,7 +232,7 @@ fn the_job_closest_to_the_playhead_is_decoded_first() {
 
 #[test]
 fn over_budget_the_blocks_closest_to_the_playhead_are_kept() {
-    let path = sine_wav("budget.wav", 60);
+    let (_dir_path, path) = sine_wav("budget.wav", 60);
     let mut cache = MixBufferCache::spawn(48_000, 1);
     cache.set_budget_bytes(4 * BLOCK_FRAMES as usize * 4);
     let pass = |cache: &mut MixBufferCache| {
@@ -254,8 +252,7 @@ fn over_budget_the_blocks_closest_to_the_playhead_are_kept() {
 
 #[test]
 fn every_stream_of_a_file_starts_playing_before_any_of_them_is_fully_decoded() {
-    let dir = std::env::temp_dir().join("vv-app-mix-buffers-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = vv_media::test_support::TempDir::new("vv-app-mix-buffers-test");
     let path = dir.join("three_streams_long.mkv");
     vv_media::test_support::ffmpeg(
         &[
@@ -330,7 +327,7 @@ fn a_stretch_is_computed_in_background_and_dropped_once_unused() {
     if vv_audio::stretch::skip_without_rubberband() {
         return;
     }
-    let path = sine_wav("stretched.wav", 2);
+    let (_dir_path, path) = sine_wav("stretched.wav", 2);
     let project = Project::default();
     let request = || StretchRequest {
         project: &project,
@@ -382,7 +379,7 @@ fn a_stretch_is_computed_in_background_and_dropped_once_unused() {
 
 #[test]
 fn only_the_blocks_read_are_decoded_with_the_same_samples_as_the_whole_file() {
-    let path = sine_wav("ranged.wav", 60);
+    let (_dir_path, path) = sine_wav("ranged.wav", 60);
     let mut cache = MixBufferCache::spawn(48_000, 1);
     let frames = 20 * SEC..25 * SEC;
     let ClipAudio::Partial(decoding) = read(&mut cache, &path, frames.clone()) else {
@@ -407,7 +404,7 @@ fn only_the_blocks_read_are_decoded_with_the_same_samples_as_the_whole_file() {
 
 #[test]
 fn a_trim_into_the_margin_is_ready_at_once() {
-    let path = sine_wav("within.wav", 40);
+    let (_dir_path, path) = sine_wav("within.wav", 40);
     let mut cache = MixBufferCache::spawn(48_000, 1);
     read(&mut cache, &path, 10 * SEC..12 * SEC);
     wait_done(&mut cache);
@@ -418,7 +415,7 @@ fn a_trim_into_the_margin_is_ready_at_once() {
 
 #[test]
 fn a_longer_read_plays_the_blocks_there_while_the_others_decode() {
-    let path = sine_wav("extended.wav", 40);
+    let (_dir_path, path) = sine_wav("extended.wav", 40);
     let mut cache = MixBufferCache::spawn(48_000, 1);
     read(&mut cache, &path, 10 * SEC..12 * SEC);
     wait_done(&mut cache);
@@ -435,7 +432,7 @@ fn a_longer_read_plays_the_blocks_there_while_the_others_decode() {
 
 #[test]
 fn a_pass_frees_the_blocks_a_shortened_clip_no_longer_reads() {
-    let path = sine_wav("shortened.wav", 40);
+    let (_dir_path, path) = sine_wav("shortened.wav", 40);
     let mut cache = MixBufferCache::spawn(48_000, 1);
     cache.begin_pass();
     read(&mut cache, &path, 0..40 * SEC);
@@ -451,7 +448,7 @@ fn a_pass_frees_the_blocks_a_shortened_clip_no_longer_reads() {
 
 #[test]
 fn a_read_past_the_end_of_the_file_ends_at_it() {
-    let path = sine_wav("short.wav", 10);
+    let (_dir_path, path) = sine_wav("short.wav", 10);
     let mut cache = MixBufferCache::spawn(48_000, 1);
     read(&mut cache, &path, 5 * SEC..20 * SEC);
     wait_done(&mut cache);
@@ -462,7 +459,7 @@ fn a_read_past_the_end_of_the_file_ends_at_it() {
 
 #[test]
 fn what_a_pass_does_not_read_is_dropped() {
-    let path = sine_wav("dropped.wav", 10);
+    let (_dir_path, path) = sine_wav("dropped.wav", 10);
     let mut cache = MixBufferCache::spawn(48_000, 1);
     cache.begin_pass();
     read(&mut cache, &path, 0..SEC);
@@ -507,7 +504,7 @@ fn settle(
 
 #[test]
 fn a_compound_mixed_live_plays_as_over_whole_files() {
-    let path = sine_wav("compound_blocks.wav", 6);
+    let (_dir_path, path) = sine_wav("compound_blocks.wav", 6);
     let (project, _, parent) = compound_project(&path, 6);
     let mut cache = MixBufferCache::spawn(48_000, 1);
     let snapshot = settle(&mut cache, &project, &parent);
@@ -527,7 +524,7 @@ fn a_compound_mixed_live_plays_as_over_whole_files() {
 /// from the files all the same (it used to wait for all of it, forever).
 #[test]
 fn a_master_normalization_is_measured_over_budget() {
-    let path = sine_wav("normalized_over_budget.wav", 6);
+    let (_dir_path, path) = sine_wav("normalized_over_budget.wav", 6);
     let (project, _, mut parent) = compound_project(&path, 6);
     parent.master.effects = vec![vv_core::AudioEffect::new(
         vv_core::AudioEffectKind::Normalize {
@@ -585,8 +582,7 @@ fn a_read_takes_the_other_streams_queued_over_the_same_blocks() {
 
 #[test]
 fn a_resampled_file_read_in_distant_places_matches_its_whole_decode() {
-    let dir = std::env::temp_dir().join("vv-app-mix-buffers-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = vv_media::test_support::TempDir::new("vv-app-mix-buffers-test");
     let path = dir.join("chirp44.wav");
     vv_media::test_support::ffmpeg(
         &[
@@ -643,7 +639,7 @@ fn wait_idle(busy: &AtomicUsize, within: std::time::Duration) {
 /// A drag of a pitch-corrected clip asks a new stretch every frame.
 #[test]
 fn a_stretch_no_longer_played_stops_and_the_next_waits_for_the_worker() {
-    let path = sine_wav("long_stretch.wav", 600);
+    let (_dir_path, path) = sine_wav("long_stretch.wav", 600);
     let project = Project::default();
     let mut cache = MixBufferCache::spawn(48_000, 1);
     cache.begin_pass();
@@ -668,7 +664,7 @@ fn a_stretch_no_longer_played_stops_and_the_next_waits_for_the_worker() {
 
 #[test]
 fn dropping_the_cache_stops_the_stretches_and_measures_running() {
-    let path = sine_wav("long_drop.wav", 600);
+    let (_dir_path, path) = sine_wav("long_drop.wav", 600);
     let (project, _, mut parent) = compound_project(&path, 600);
     parent.master.effects = vec![vv_core::AudioEffect::new(
         vv_core::AudioEffectKind::Normalize {
@@ -697,9 +693,9 @@ fn dropping_the_cache_stops_the_stretches_and_measures_running() {
 
 #[test]
 fn previewing_a_media_keeps_the_timeline_blocks_and_not_the_previous_media() {
-    let timeline = sine_wav("timeline_kept.wav", 10);
-    let first = sine_wav("first_media.wav", 10);
-    let second = sine_wav("second_media.wav", 10);
+    let (_dir_timeline, timeline) = sine_wav("timeline_kept.wav", 10);
+    let (_dir_first, first) = sine_wav("first_media.wav", 10);
+    let (_dir_second, second) = sine_wav("second_media.wav", 10);
     let mut cache = MixBufferCache::spawn(48_000, 1);
     cache.begin_pass();
     read(&mut cache, &timeline, 0..5 * SEC);
@@ -1091,7 +1087,7 @@ fn a_superseded_level_measure_is_asked_again_at_once() {
 
 #[test]
 fn a_file_that_keeps_failing_is_logged_once_until_it_decodes() {
-    let good = sine_wav("logged.wav", 1);
+    let (_dir_good, good) = sine_wav("logged.wav", 1);
     let bad = good.with_file_name("logged-then-present.wav");
     let _ = std::fs::remove_file(&bad);
     let (tx, _rx) = mpsc::channel();
@@ -1109,4 +1105,24 @@ fn a_file_that_keeps_failing_is_logged_once_until_it_decodes() {
     decode(&bad, &mut logged);
     assert!(logged.is_empty(), "decoded again: logged again if it fails");
     std::fs::remove_file(&bad).unwrap();
+}
+
+#[test]
+fn a_job_without_a_wanted_block_is_cancelled_and_forgotten() {
+    let key: Key = (PathBuf::from("a.wav"), 0);
+    let mut jobs: Vec<Job> = (0..2)
+        .map(|id| Job {
+            id,
+            blocks: id * 4..id * 4 + 2,
+            cancelled: Arc::default(),
+        })
+        .collect();
+    let flags: Vec<_> = jobs.iter().map(|j| j.cancelled.clone()).collect();
+    let mut job_keys: HashMap<u64, Key> = (0..2).map(|id| (id, key.clone())).collect();
+    StreamCache::retain_jobs(&mut jobs, &mut job_keys, |index| index == 5);
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].id, 1);
+    assert!(flags[0].load(Ordering::Relaxed));
+    assert!(!flags[1].load(Ordering::Relaxed));
+    assert!(!job_keys.contains_key(&0) && job_keys.contains_key(&1));
 }

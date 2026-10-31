@@ -83,6 +83,15 @@ A working graphics backend is required at runtime (Vulkan on Linux, through
 `mesa-vulkan-drivers` or the proprietary GPU driver): without one, `wgpu`
 finds no adapter and the window does not open.
 
+On Wayland, pointer focus and keyboard focus are separate. The
+[keyboard protocol](https://wayland.freedesktop.org/docs/html/apa.html#protocol-spec-wl_keyboard)
+allows compositors to send modifiers without keyboard focus, but does not
+require it. If scrolling over an unfocused Venturi window does not recognize
+Alt or Ctrl, focus the window before using the modified scroll gesture. The
+Timeline menu's Zoom in and Zoom out actions provide an alternative. A problem
+that persists with keyboard focus needs a separate reproduction; this does
+not establish the cause of every compositor-specific modifier issue.
+
 `vv-app mcp` runs the MCP server for AI agents instead of the window, and
 `vv-app --mcp` opens the window with it on: see [MCP.md](MCP.md).
 

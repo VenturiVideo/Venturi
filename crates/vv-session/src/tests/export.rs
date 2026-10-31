@@ -1,6 +1,7 @@
 use super::*;
 use vv_core::ClipSource;
 use vv_core::{Clip, Keyframed, Rgba, Track, TrackKind};
+use vv_media::test_support::TempDir;
 
 fn solid_color_clip(id: u64, start: FrameIdx, len: FrameIdx, color: Rgba) -> Clip {
     let mut clip = Clip::from_source_range(
@@ -187,8 +188,7 @@ fn render_video_frame_recurses_into_a_compound_clips_nested_timeline() {
 /// the next: reopening and seeking it cost about 90 ms a frame.
 #[test]
 fn the_decoders_of_nested_clips_stay_open_between_frames() {
-    let dir = std::env::temp_dir().join("vv-app-export-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("vv-app-export-test");
     let path = dir.join("nested_decoder_source.mkv");
     vv_media::test_support::ffmpeg(
         &["-f", "lavfi", "-i", "color=c=red:size=4x2:rate=25:d=1"],
@@ -374,8 +374,7 @@ fn render_video_frame_lets_the_track_below_show_through_the_compound_clips_empty
 /// be preserved from decode all the way to compositing.
 #[test]
 fn render_video_frame_lets_the_track_below_show_through_a_transparent_png() {
-    let dir = std::env::temp_dir().join("vv-app-export-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("vv-app-export-test");
     let path = dir.join("half_transparent.png");
     // Left half opaque red, right half fully transparent.
     vv_media::test_support::ffmpeg(
@@ -608,8 +607,7 @@ fn mix_audio_track_is_silence_when_no_audio_track_has_clips() {
 /// nested timeline.
 #[test]
 fn mix_audio_track_recurses_into_a_compound_clips_nested_timeline() {
-    let dir = std::env::temp_dir().join("vv-app-export-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("vv-app-export-test");
     let path = dir.join("compound_audio_source.wav");
     vv_media::test_support::ffmpeg(
         &[
@@ -730,8 +728,7 @@ fn mix_audio_track_recurses_into_a_compound_clips_nested_timeline() {
 /// player side, not in this export).
 #[test]
 fn export_keeps_video_and_audio_frame_accurate_at_a_fractional_ntsc_fps() {
-    let dir = std::env::temp_dir().join("vv-app-diag-avsync-frac");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("vv-app-diag-avsync-frac");
     let beep_path = dir.join("beep.wav");
     vv_media::test_support::ffmpeg(
         &[
@@ -896,8 +893,7 @@ fn mix_audio_track_plays_a_faster_clip_with_or_without_its_pitch() {
     if vv_audio::stretch::skip_without_rubberband() {
         return;
     }
-    let dir = std::env::temp_dir().join("vv-app-export-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("vv-app-export-test");
     let path = dir.join("speed_source.wav");
     vv_media::test_support::ffmpeg(
         &[
@@ -977,8 +973,7 @@ fn mix_audio_track_plays_a_faster_clip_with_or_without_its_pitch() {
 /// A range is resampled like the whole file.
 #[test]
 fn mix_audio_track_of_a_range_is_the_same_part_of_the_whole_mix() {
-    let dir = std::env::temp_dir().join("vv-app-export-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("vv-app-export-test");
     let path = dir.join("range_source.wav");
     vv_media::test_support::ffmpeg(
         &[

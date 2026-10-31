@@ -231,12 +231,15 @@ fn scrub_snippet_does_not_move_the_position() {
 }
 
 /// A timeline playing `tone.wav` for 20 s.
-fn tone_timeline(project: &mut vv_core::Project, name: &str, amplitude: f32) -> TimelineId {
+fn tone_timeline(
+    project: &mut vv_core::Project,
+    name: &str,
+    amplitude: f32,
+) -> (TimelineId, vv_media::test_support::TempDir) {
     use vv_core::{
         Clip, ClipId, ClipSource, MediaItem, MediaMeta, Rational, Timeline, Track, TrackKind,
     };
-    let dir = std::env::temp_dir().join("vv-app-timeline-audio-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = vv_media::test_support::TempDir::new("vv-app-timeline-audio-test");
     let path = dir.join(name);
     let lavfi = format!("aevalsrc={amplitude}*sin(2*PI*440*t):sample_rate=48000:duration=20");
     vv_media::test_support::ffmpeg(&["-f", "lavfi", "-i", &lavfi], &path);
@@ -266,7 +269,7 @@ fn tone_timeline(project: &mut vv_core::Project, name: &str, amplitude: f32) -> 
         0,
         Rational::one(),
     );
-    project.timelines.insert(Timeline {
+    let timeline = project.timelines.insert(Timeline {
         name: name.into(),
         fps: Rational::new(25, 1),
         resolution: (4, 2),
@@ -276,7 +279,8 @@ fn tone_timeline(project: &mut vv_core::Project, name: &str, amplitude: f32) -> 
         }],
         markers: Vec::new(),
         master: Default::default(),
-    })
+    });
+    (timeline, dir)
 }
 
 /// Syncs `timeline` until the fast forward window is loud, within `limit`.
@@ -308,8 +312,8 @@ fn another_timeline_during_a_fast_forward_plays_its_own_audio_at_once() {
         return;
     }
     let mut project = vv_core::Project::default();
-    let quiet = tone_timeline(&mut project, "quiet.wav", 0.05);
-    let loud = tone_timeline(&mut project, "loud.wav", 0.8);
+    let (quiet, _dir_quiet) = tone_timeline(&mut project, "quiet.wav", 0.05);
+    let (loud, _dir_loud) = tone_timeline(&mut project, "loud.wav", 0.8);
     let mut audio = TimelineAudio::new();
     while {
         audio.sync(&project, quiet, 1);
@@ -333,7 +337,7 @@ fn a_fast_forward_started_before_the_audio_is_decoded_plays_it_once_decoded() {
         return;
     }
     let mut project = vv_core::Project::default();
-    let timeline = tone_timeline(&mut project, "late.wav", 0.8);
+    let (timeline, _dir_timeline) = tone_timeline(&mut project, "late.wav", 0.8);
     let mut audio = TimelineAudio::new();
     audio.sync(&project, timeline, 1);
     audio.play();
@@ -364,7 +368,7 @@ fn a_drag_during_a_fast_forward_stretches_one_window_at_a_time() {
         return;
     }
     let mut project = vv_core::Project::default();
-    let timeline = tone_timeline(&mut project, "drag.wav", 0.8);
+    let (timeline, _dir_timeline) = tone_timeline(&mut project, "drag.wav", 0.8);
     let mut audio = fast_forward_on(&project, timeline);
     let before = audio.next_request_id;
     for generation in 2..32 {
@@ -391,7 +395,7 @@ fn an_edit_while_paused_in_fast_forward_stretches_on_resume() {
         return;
     }
     let mut project = vv_core::Project::default();
-    let timeline = tone_timeline(&mut project, "paused.wav", 0.8);
+    let (timeline, _dir_timeline) = tone_timeline(&mut project, "paused.wav", 0.8);
     let mut audio = fast_forward_on(&project, timeline);
     audio.pause();
     while audio.stretch_request.is_some() {
@@ -416,7 +420,7 @@ fn a_failed_stretch_is_not_retried_every_frame() {
         return;
     }
     let mut project = vv_core::Project::default();
-    let timeline = tone_timeline(&mut project, "failed.wav", 0.8);
+    let (timeline, _dir_timeline) = tone_timeline(&mut project, "failed.wav", 0.8);
     let mut audio = fast_forward_on(&project, timeline);
     while audio.stretch_request.is_some() {
         std::thread::sleep(Duration::from_millis(5));
@@ -506,9 +510,9 @@ fn a_rescan_forces_a_timeline_rebuild_and_keeps_a_media_preview() {
     });
 }
 
-fn loaded_audio(name: &str) -> TimelineAudio {
+fn loaded_audio(name: &str) -> (TimelineAudio, vv_media::test_support::TempDir) {
     let mut project = vv_core::Project::default();
-    let timeline = tone_timeline(&mut project, name, 0.8);
+    let (timeline, dir) = tone_timeline(&mut project, name, 0.8);
     let mut audio = TimelineAudio::new();
     while {
         audio.sync(&project, timeline, 1);
@@ -516,12 +520,12 @@ fn loaded_audio(name: &str) -> TimelineAudio {
     } {
         std::thread::sleep(Duration::from_millis(10));
     }
-    audio
+    (audio, dir)
 }
 
 #[test]
 fn a_window_mixed_in_pieces_equals_one_mixed_whole() {
-    let audio = loaded_audio("pieces.wav");
+    let (audio, _dir) = loaded_audio("pieces.wav");
     let frames = 3 * PROJECT_SAMPLE_RATE as u64 + 1234;
     let start = 777;
     let mut whole = vec![0.0; frames as usize * audio.mix.channels as usize];
@@ -538,7 +542,7 @@ fn a_window_mixed_in_pieces_equals_one_mixed_whole() {
 
 #[test]
 fn a_cancelled_window_stops_mixing_between_pieces() {
-    let audio = loaded_audio("cancel_mix.wav");
+    let (audio, _dir) = loaded_audio("cancel_mix.wav");
     let polls = std::cell::Cell::new(0);
     let cancelled = || {
         polls.set(polls.get() + 1);
@@ -591,7 +595,7 @@ fn a_window_rendered_in_pieces_equals_the_whole_stretch() {
     if Stretcher::new(PROJECT_SAMPLE_RATE, 1, 2.0).is_err() {
         return; // FFmpeg without rubberband
     }
-    let audio = loaded_audio("render_equal.wav");
+    let (audio, _dir) = loaded_audio("render_equal.wav");
     let frames = 4 * RENDER_PIECE_FRAMES + 1000;
     let ch = audio.mix.channels as usize;
     let mut whole = vec![0.0; frames as usize * ch];

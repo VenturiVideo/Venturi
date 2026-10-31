@@ -5,21 +5,20 @@ use vv_core::{
     AudioEffect, AudioEffectKind, Clip, ClipId, ClipSource, Equalizer, MediaId, MediaItem,
     MediaMeta, MultibandCompressor, NormalizeMode, Rational, SetLevel, Track, TrackKind,
 };
+use vv_media::test_support::TempDir;
 
 const FPS: u64 = 25;
 const FRAME_SAMPLES: u64 = PROJECT_SAMPLE_RATE as u64 / FPS;
 
-fn source(name: &str, args: &[&str]) -> PathBuf {
-    let dir = std::env::temp_dir().join("vv-audio-render-test");
-    std::fs::create_dir_all(&dir).unwrap();
+fn source(dir: &TempDir, name: &str, args: &[&str]) -> PathBuf {
     let path = dir.join(name);
     vv_media::test_support::ffmpeg(args, &path);
     path
 }
 
-fn chirp(name: &str, rate: u32, secs: u32) -> PathBuf {
+fn chirp(dir: &TempDir, name: &str, rate: u32, secs: u32) -> PathBuf {
     let lavfi = format!("aevalsrc=0.8*sin(300*t*t):sample_rate={rate}:duration={secs}");
-    source(name, &["-f", "lavfi", "-i", &lavfi])
+    source(dir, name, &["-f", "lavfi", "-i", &lavfi])
 }
 
 fn media(project: &mut Project, path: PathBuf, sample_rate: u32, audio_streams: u16) -> MediaId {
@@ -157,9 +156,20 @@ fn boosting_eq() -> Equalizer {
 /// resampled one at varispeed and a pitch-corrected clip.
 #[test]
 fn a_render_in_chunks_equals_one_mix_of_the_whole_timeline() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let seekable = media(&mut project, chirp("seekable.wav", 48_000, 20), 48_000, 1);
-    let resampled = media(&mut project, chirp("resampled.wav", 44_100, 20), 44_100, 1);
+    let seekable = media(
+        &mut project,
+        chirp(&dir, "seekable.wav", 48_000, 20),
+        48_000,
+        1,
+    );
+    let resampled = media(
+        &mut project,
+        chirp(&dir, "resampled.wav", 44_100, 20),
+        44_100,
+        1,
+    );
     let mut first = audio_track(vec![
         clip(1, seekable, 10, 300, 0),
         clip(2, seekable, 50, 120, 320),
@@ -196,8 +206,9 @@ fn a_render_in_chunks_equals_one_mix_of_the_whole_timeline() {
 
 #[test]
 fn a_range_reads_only_the_windows_near_it() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let file = media(&mut project, chirp("near.wav", 48_000, 20), 48_000, 1);
+    let file = media(&mut project, chirp(&dir, "near.wav", 48_000, 20), 48_000, 1);
     let tl = timeline(vec![audio_track(vec![clip(1, file, 0, 500, 0)])]);
     let mut wanted = Wanted {
         windows: HashSet::new(),
@@ -222,8 +233,9 @@ fn a_range_reads_only_the_windows_near_it() {
 /// The point of the render: what it holds does not grow with the timeline.
 #[test]
 fn the_render_holds_only_the_audio_near_where_it_is() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let file = media(&mut project, chirp("long.wav", 48_000, 60), 48_000, 1);
+    let file = media(&mut project, chirp(&dir, "long.wav", 48_000, 60), 48_000, 1);
     let tl = timeline(vec![audio_track(vec![clip(1, file, 0, 1500, 0)])]);
     let mut cache = LevelCache::default();
     let mut audio = StreamingAudio::new(&mut cache);
@@ -250,7 +262,9 @@ fn the_render_holds_only_the_audio_near_where_it_is() {
 
 #[test]
 fn the_streams_of_a_file_read_at_the_same_place_share_one_decode() {
+    let dir = TempDir::new("vv-audio-render-test");
     let path = source(
+        &dir,
         "two_streams.mkv",
         &[
             "-f",
@@ -294,8 +308,14 @@ fn the_streams_of_a_file_read_at_the_same_place_share_one_decode() {
 
 #[test]
 fn a_stream_the_file_does_not_have_is_silent() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let file = media(&mut project, chirp("one_stream.wav", 48_000, 2), 48_000, 1);
+    let file = media(
+        &mut project,
+        chirp(&dir, "one_stream.wav", 48_000, 2),
+        48_000,
+        1,
+    );
     let mut missing = clip(1, file, 0, 50, 0);
     missing.audio_stream_index = 3;
     let tl = timeline(vec![audio_track(vec![missing])]);
@@ -305,8 +325,9 @@ fn a_stream_the_file_does_not_have_is_silent() {
 
 #[test]
 fn a_break_from_the_sink_stops_the_render() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let file = media(&mut project, chirp("stop.wav", 48_000, 20), 48_000, 1);
+    let file = media(&mut project, chirp(&dir, "stop.wav", 48_000, 20), 48_000, 1);
     let tl = timeline(vec![audio_track(vec![clip(1, file, 0, 500, 0)])]);
     let mut chunks = 0;
     render_offline(
@@ -325,8 +346,9 @@ fn a_break_from_the_sink_stops_the_render() {
 
 #[test]
 fn a_range_starting_inside_the_timeline_is_that_part_of_the_mix() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let file = media(&mut project, chirp("part.wav", 48_000, 20), 48_000, 1);
+    let file = media(&mut project, chirp(&dir, "part.wav", 48_000, 20), 48_000, 1);
     let mut track = audio_track(vec![clip(1, file, 0, 500, 0)]);
     track.mix.effects = vec![effect(AudioEffectKind::Equalizer(boosting_eq()))];
     let tl = timeline(vec![track]);
@@ -342,8 +364,14 @@ fn a_range_starting_inside_the_timeline_is_that_part_of_the_mix() {
 /// across them like the outer ones.
 #[test]
 fn a_compound_rendered_in_chunks_equals_one_mix() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let file = media(&mut project, chirp("nested.wav", 48_000, 20), 48_000, 1);
+    let file = media(
+        &mut project,
+        chirp(&dir, "nested.wav", 48_000, 20),
+        48_000,
+        1,
+    );
     let mut nested_track = audio_track(vec![clip(1, file, 0, 400, 0)]);
     nested_track.mix.effects = vec![effect(AudioEffectKind::MultibandCompressor(
         MultibandCompressor::DEFAULT,
@@ -468,11 +496,11 @@ fn normalize(mode: NormalizeMode) -> AudioEffect {
 }
 
 /// Two tracks cut in several places, measured on the master.
-fn edited_timeline(project: &mut Project, name: &str) -> Timeline {
-    let file = media(project, chirp(name, 48_000, 20), 48_000, 1);
+fn edited_timeline(project: &mut Project, dir: &TempDir, name: &str) -> Timeline {
+    let file = media(project, chirp(dir, name, 48_000, 20), 48_000, 1);
     let quiet = media(
         project,
-        chirp(&format!("quiet-{name}"), 44_100, 20),
+        chirp(dir, &format!("quiet-{name}"), 44_100, 20),
         44_100,
         1,
     );
@@ -493,8 +521,9 @@ fn db(a: f32, b: f32) -> f32 {
 
 #[test]
 fn a_level_measured_by_segment_reads_as_the_whole_measure() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let mut tl = edited_timeline(&mut project, "segments.wav");
+    let mut tl = edited_timeline(&mut project, &dir, "segments.wav");
     for mode in NormalizeMode::ALL {
         tl.master.effects = vec![normalize(mode)];
         let levels = both_measures(&project, &tl, &mut LevelCache::default());
@@ -516,8 +545,9 @@ fn a_level_measured_by_segment_reads_as_the_whole_measure() {
 
 #[test]
 fn a_level_after_a_compressor_reads_as_the_whole_measure() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let mut tl = edited_timeline(&mut project, "compressed.wav");
+    let mut tl = edited_timeline(&mut project, &dir, "compressed.wav");
     tl.tracks[0].mix.effects = vec![effect(AudioEffectKind::MultibandCompressor(
         MultibandCompressor::DEFAULT,
     ))];
@@ -536,8 +566,9 @@ fn a_level_after_a_compressor_reads_as_the_whole_measure() {
 /// only what it touches.
 #[test]
 fn an_edit_measures_again_only_the_segments_it_touches() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let mut tl = edited_timeline(&mut project, "edits.wav");
+    let mut tl = edited_timeline(&mut project, &dir, "edits.wav");
     tl.tracks.truncate(1);
     tl.master.effects = vec![normalize(NormalizeMode::Loudness)];
     let mut cache = LevelCache::default();
@@ -584,8 +615,14 @@ fn measured_parts_survive_the_disk() {
 /// measured apart.
 #[test]
 fn a_normalizing_timeline_renders_in_chunks() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let file = media(&mut project, chirp("normalized.wav", 48_000, 60), 48_000, 1);
+    let file = media(
+        &mut project,
+        chirp(&dir, "normalized.wav", 48_000, 60),
+        48_000,
+        1,
+    );
     let mut tl = timeline(vec![audio_track(vec![clip(1, file, 0, 1500, 0)])]);
     tl.master.effects = vec![normalize(NormalizeMode::Loudness)];
     let mut cache = LevelCache::default();
@@ -603,14 +640,14 @@ fn a_normalizing_timeline_renders_in_chunks() {
 /// Reopening a project: the levels measured the last time come from disk.
 #[test]
 fn a_new_cache_reads_the_measures_from_disk() {
-    let dir = std::env::temp_dir().join("vv-audio-render-test-levels");
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = TempDir::new("vv-audio-render-test");
+    let cache = TempDir::new("vv-audio-render-test-levels");
     let on_disk = || LevelCache {
-        dir: Some(dir.clone()),
+        dir: Some(cache.to_path_buf()),
         ..LevelCache::default()
     };
     let mut project = Project::default();
-    let mut tl = edited_timeline(&mut project, "reopened.wav");
+    let mut tl = edited_timeline(&mut project, &dir, "reopened.wav");
     tl.master.effects = vec![normalize(NormalizeMode::Loudness)];
     let mut first = on_disk();
     let measured = both_measures(&project, &tl, &mut first);
@@ -625,13 +662,13 @@ fn a_new_cache_reads_the_measures_from_disk() {
 /// again when its measure comes from disk.
 #[test]
 fn a_file_changed_on_disk_is_measured_again() {
-    let dir = std::env::temp_dir().join("vv-audio-render-test-changed");
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = TempDir::new("vv-audio-render-test");
+    let cache = TempDir::new("vv-audio-render-test-changed");
     let on_disk = || LevelCache {
-        dir: Some(dir.clone()),
+        dir: Some(cache.to_path_buf()),
         ..LevelCache::default()
     };
-    let path = chirp("changed.wav", 48_000, 10);
+    let path = chirp(&dir, "changed.wav", 48_000, 10);
     let mut project = Project::default();
     let file = media(&mut project, path.clone(), 48_000, 1);
     let mut tl = timeline(vec![audio_track(vec![clip(1, file, 0, 200, 0)])]);
@@ -652,7 +689,8 @@ fn a_file_changed_on_disk_is_measured_again() {
 
 #[test]
 fn an_in_memory_measure_is_rechecked_when_its_source_changes() {
-    let path = chirp("changed-in-memory.wav", 48_000, 10);
+    let dir = TempDir::new("vv-audio-render-test");
+    let path = chirp(&dir, "changed-in-memory.wav", 48_000, 10);
     let mut project = Project::default();
     let file = media(&mut project, path.clone(), 48_000, 1);
     let mut tl = timeline(vec![audio_track(vec![clip(1, file, 0, 200, 0)])]);
@@ -697,8 +735,9 @@ fn neighbouring_segments_render_as_one_run_split_between_the_threads() {
 
 #[test]
 fn a_level_measured_on_several_threads_reads_as_on_one() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let mut tl = edited_timeline(&mut project, "threads.wav");
+    let mut tl = edited_timeline(&mut project, &dir, "threads.wav");
     tl.master.effects = vec![normalize(NormalizeMode::Loudness)];
     let measure = |threads| {
         let mut cache = LevelCache {
@@ -719,8 +758,14 @@ fn a_pitch_corrected_clip_rendered_in_chunks_equals_its_whole_stretch() {
     if vv_audio::stretch::skip_without_rubberband() {
         return;
     }
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let file = media(&mut project, chirp("stretch.wav", 48_000, 20), 48_000, 1);
+    let file = media(
+        &mut project,
+        chirp(&dir, "stretch.wav", 48_000, 20),
+        48_000,
+        1,
+    );
     let mut nested_track = audio_track(vec![clip(1, file, 0, 300, 0)]);
     nested_track.mix.effects = vec![effect(AudioEffectKind::MultibandCompressor(
         MultibandCompressor::DEFAULT,
@@ -756,8 +801,14 @@ fn a_pitch_corrected_clip_rendered_in_chunks_equals_its_whole_stretch() {
 
 #[test]
 fn a_compound_measuring_a_segment_its_parent_claimed_does_not_wait_on_itself() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let file = media(&mut project, chirp("self_wait.wav", 48_000, 70), 48_000, 1);
+    let file = media(
+        &mut project,
+        chirp(&dir, "self_wait.wav", 48_000, 70),
+        48_000,
+        1,
+    );
     let chain = || {
         vec![
             effect(AudioEffectKind::MultibandCompressor(
@@ -799,8 +850,14 @@ fn a_compound_measuring_a_segment_its_parent_claimed_does_not_wait_on_itself() {
 
 #[test]
 fn a_cancelled_render_stops_at_the_next_chunk() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let file = media(&mut project, chirp("cancelled.wav", 48_000, 20), 48_000, 1);
+    let file = media(
+        &mut project,
+        chirp(&dir, "cancelled.wav", 48_000, 20),
+        48_000,
+        1,
+    );
     let tl = timeline(vec![audio_track(vec![clip(1, file, 0, 500, 0)])]);
     let cancel = Arc::new(AtomicBool::new(false));
     let mut cache = LevelCache {
@@ -849,9 +906,14 @@ fn plugin_effect(class_id: &str, state: &[u8]) -> AudioEffect {
     AudioEffect::new(AudioEffectKind::Vst3(fixture_effect_of(class_id, state)))
 }
 
-fn chirp_project(secs: u32) -> (Project, Track) {
+fn chirp_project(dir: &TempDir, secs: u32) -> (Project, Track) {
     let mut project = Project::default();
-    let id = media(&mut project, chirp("plugin.wav", 48_000, secs), 48_000, 1);
+    let id = media(
+        &mut project,
+        chirp(dir, "plugin.wav", 48_000, secs),
+        48_000,
+        1,
+    );
     let len = secs as u64 * FPS;
     (project, audio_track(vec![clip(1, id, 0, len, 0)]))
 }
@@ -862,7 +924,8 @@ fn rendered_samples(project: &Project, tl: &Timeline, frames: u64) -> Vec<f32> {
 
 #[test]
 fn render_with_uninstalled_plugin_equals_without() {
-    let (project, plain) = chirp_project(2);
+    let dir = TempDir::new("vv-audio-render-test");
+    let (project, plain) = chirp_project(&dir, 2);
     let mut with = plain.clone();
     with.mix
         .effects
@@ -876,7 +939,8 @@ fn render_with_uninstalled_plugin_equals_without() {
 
 #[test]
 fn render_creates_plugins_once_per_render() {
-    let (project, mut track) = chirp_project(20);
+    let dir = TempDir::new("vv-audio-render-test");
+    let (project, mut track) = chirp_project(&dir, 20);
     track.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
     let (plugins, made) = counting_pool(|| Some(Arc::new(Passthrough)));
     let frames = 2 * CHUNK_FRAMES + 1000;
@@ -895,11 +959,12 @@ fn render_creates_plugins_once_per_render() {
 
 #[test]
 fn export_applies_fixture_gain() {
+    let dir = TempDir::new("vv-audio-render-test");
     let infos = vv_plugin::scan(&[fixture_dir()]);
     assert!(infos.iter().any(|i| i.class_id == FIXTURE_CLASS));
     vv_plugin::set_installed(infos);
 
-    let (project, plain) = chirp_project(2);
+    let (project, plain) = chirp_project(&dir, 2);
     let mut hosted = plain.clone();
     // 0.25 as f32 little-endian: the fixture's gain is twice its state.
     hosted
@@ -965,8 +1030,9 @@ impl vv_plugin::HostedPlugin for Echo {
 
 #[test]
 fn a_tail_rings_through_a_gap_spanning_chunks_and_no_ghost_follows() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let id = media(&mut project, chirp("echo.wav", 48_000, 5), 48_000, 1);
+    let id = media(&mut project, chirp(&dir, "echo.wav", 48_000, 5), 48_000, 1);
     let mut dry = audio_track(vec![clip(1, id, 0, 25, 0), clip(2, id, 0, 25, 750)]);
     let plain = timeline(vec![dry.clone()]);
     dry.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
@@ -1005,8 +1071,8 @@ fn a_tail_rings_through_a_gap_spanning_chunks_and_no_ghost_follows() {
 
 /// Two short clips 9 s apart, the 7 s tap of the first one falling in the gap,
 /// and a clip of another track ending after the tap of the second.
-fn echoed_gap(project: &mut Project, name: &str, on_track: bool) -> Timeline {
-    let file = media(project, chirp(name, 48_000, 5), 48_000, 1);
+fn echoed_gap(dir: &TempDir, project: &mut Project, name: &str, on_track: bool) -> Timeline {
+    let file = media(project, chirp(dir, name, 48_000, 5), 48_000, 1);
     let mut track = audio_track(vec![clip(1, file, 0, 25, 0), clip(2, file, 25, 25, 250)]);
     let mut tl = timeline(Vec::new());
     if on_track {
@@ -1049,9 +1115,10 @@ fn echo_cache() -> LevelCache {
 /// it, segmented or not.
 #[test]
 fn a_level_after_a_plugin_reads_its_tail_in_the_gaps() {
+    let dir = TempDir::new("vv-audio-render-test");
     for on_track in [false, true] {
         let mut project = Project::default();
-        let tl = echoed_gap(&mut project, &format!("tail{on_track}.wav"), on_track);
+        let tl = echoed_gap(&dir, &mut project, &format!("tail{on_track}.wav"), on_track);
         let levels = echo_measures(&project, &tl, &mut echo_cache());
         let [(by_segment, whole)] = levels[..] else {
             panic!("{levels:?}");
@@ -1067,8 +1134,14 @@ fn a_level_after_a_plugin_reads_its_tail_in_the_gaps() {
 /// tap of the plugin ring into the measure.
 #[test]
 fn a_plugin_strip_is_measured_to_the_end_of_the_video() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let file = media(&mut project, chirp("video-end.wav", 48_000, 5), 48_000, 1);
+    let file = media(
+        &mut project,
+        chirp(&dir, "video-end.wav", 48_000, 5),
+        48_000,
+        1,
+    );
     let mut strip = audio_track(vec![clip(1, file, 0, 25, 0)]);
     strip.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
     let mut audio_only = timeline(vec![strip]);
@@ -1096,8 +1169,9 @@ fn a_plugin_strip_is_measured_to_the_end_of_the_video() {
 /// from before the edit is reused, and a cold cache reads the same.
 #[test]
 fn an_edit_before_a_plugin_tail_measures_the_whole_strip_again() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let mut tl = echoed_gap(&mut project, "edited-tail.wav", true);
+    let mut tl = echoed_gap(&dir, &mut project, "edited-tail.wav", true);
     let mut cache = echo_cache();
     let before = echo_measures(&project, &tl, &mut cache);
     let rendered = cache.rendered;
@@ -1117,8 +1191,9 @@ fn echo_plugins(calls: Arc<std::sync::atomic::AtomicUsize>) -> vv_plugin::Instan
 
 #[test]
 fn a_muted_track_with_a_plugin_renders_silence() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let id = media(&mut project, chirp("muted.wav", 48_000, 2), 48_000, 1);
+    let id = media(&mut project, chirp(&dir, "muted.wav", 48_000, 2), 48_000, 1);
     let mut track = audio_track(vec![clip(1, id, 0, 25, 0)]);
     track.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
     track.muted = true;
@@ -1142,8 +1217,14 @@ fn a_muted_track_with_a_plugin_renders_silence() {
 
 #[test]
 fn a_clipless_track_with_a_plugin_is_not_processed() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let id = media(&mut project, chirp("clipless.wav", 48_000, 2), 48_000, 1);
+    let id = media(
+        &mut project,
+        chirp(&dir, "clipless.wav", 48_000, 2),
+        48_000,
+        1,
+    );
     let mut empty = audio_track(Vec::new());
     empty.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
     let tl = timeline(vec![audio_track(vec![clip(1, id, 0, 25, 0)]), empty]);
@@ -1190,8 +1271,9 @@ fn render_to_vec(
 
 #[test]
 fn consecutive_renders_through_a_cache_reuse_its_plugins() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let id = media(&mut project, chirp("reuse.wav", 48_000, 2), 48_000, 1);
+    let id = media(&mut project, chirp(&dir, "reuse.wav", 48_000, 2), 48_000, 1);
     let mut track = audio_track(vec![clip(1, id, 0, 25, 0)]);
     track.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
     let tl = timeline(vec![track]);
@@ -1212,8 +1294,14 @@ fn consecutive_renders_through_a_cache_reuse_its_plugins() {
 
 #[test]
 fn renders_of_different_strips_keep_each_others_instances() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let id = media(&mut project, chirp("strips.wav", 48_000, 2), 48_000, 1);
+    let id = media(
+        &mut project,
+        chirp(&dir, "strips.wav", 48_000, 2),
+        48_000,
+        1,
+    );
     let strip = |clip_id| {
         let mut track = audio_track(vec![clip(clip_id, id, 0, 25, 0)]);
         let mut plugin = plugin_effect(FIXTURE_CLASS, &[]);
@@ -1330,7 +1418,8 @@ fn the_pools_kept_between_renders_stay_within_the_budget() {
 
 #[test]
 fn a_nested_render_and_its_outer_one_keep_their_pools() {
-    let (project, mut tl, mut levels, _) = pool_race(true, "both_pools.wav");
+    let dir = TempDir::new("vv-audio-render-test");
+    let (project, mut tl, mut levels, _) = pool_race(&dir, true, "both_pools.wav");
     let list: Arc<[vv_plugin::PluginInfo]> = Arc::from(fake_known());
     levels.installed = Arc::new(move || list.clone());
     let (new_pool, made, pools) = counting_pools();
@@ -1356,8 +1445,9 @@ fn a_nested_render_and_its_outer_one_keep_their_pools() {
 
 #[test]
 fn a_failing_plugin_is_attempted_once_across_renders() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let id = media(&mut project, chirp("fail.wav", 48_000, 2), 48_000, 1);
+    let id = media(&mut project, chirp(&dir, "fail.wav", 48_000, 2), 48_000, 1);
     let mut track = audio_track(vec![clip(1, id, 0, 25, 0)]);
     track.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
     let tl = timeline(vec![track]);
@@ -1372,8 +1462,14 @@ fn a_failing_plugin_is_attempted_once_across_renders() {
 
 #[test]
 fn a_rescan_drops_the_pools_kept_between_renders() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let id = media(&mut project, chirp("rescan.wav", 48_000, 2), 48_000, 1);
+    let id = media(
+        &mut project,
+        chirp(&dir, "rescan.wav", 48_000, 2),
+        48_000,
+        1,
+    );
     let mut track = audio_track(vec![clip(1, id, 0, 25, 0)]);
     track.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
     let tl = timeline(vec![track]);
@@ -1404,9 +1500,13 @@ type Made = Arc<std::sync::Mutex<Vec<Arc<Passthrough>>>>;
 
 /// A track with a plugin and a normalization, in `plugin_first` order, and a
 /// cache whose pool is `P1` with its one instance.
-fn pool_race(plugin_first: bool, name: &str) -> (Project, Timeline, LevelCache, Made) {
+fn pool_race(
+    dir: &TempDir,
+    plugin_first: bool,
+    name: &str,
+) -> (Project, Timeline, LevelCache, Made) {
     let mut project = Project::default();
-    let id = media(&mut project, chirp(name, 48_000, 2), 48_000, 1);
+    let id = media(&mut project, chirp(dir, name, 48_000, 2), 48_000, 1);
     let mut track = audio_track(vec![clip(1, id, 0, 25, 0)]);
     let plugin = plugin_effect(FIXTURE_CLASS, &[]);
     let normalized = normalize(NormalizeMode::SamplePeak);
@@ -1442,7 +1542,8 @@ fn pool_race(plugin_first: bool, name: &str) -> (Project, Timeline, LevelCache, 
 
 #[test]
 fn a_pool_from_a_list_a_nested_render_replaced_is_dropped() {
-    let (project, tl, mut levels, made) = pool_race(false, "stale_pool.wav");
+    let dir = TempDir::new("vv-audio-render-test");
+    let (project, tl, mut levels, made) = pool_race(&dir, false, "stale_pool.wav");
     render_to_vec(&project, &tl, samples(0..50), &mut levels);
     let made = made.lock().unwrap();
     assert_eq!(made.len(), 1);
@@ -1452,7 +1553,8 @@ fn a_pool_from_a_list_a_nested_render_replaced_is_dropped() {
 
 #[test]
 fn a_nested_render_does_not_discard_the_outer_pool() {
-    let (project, tl, mut levels, made) = pool_race(true, "outer_pool.wav");
+    let media_dir = TempDir::new("vv-audio-render-test");
+    let (project, tl, mut levels, made) = pool_race(&media_dir, true, "outer_pool.wav");
     let list: Arc<[vv_plugin::PluginInfo]> = Arc::from(fake_known());
     levels.installed = Arc::new(move || list.clone());
     render_to_vec(&project, &tl, samples(0..50), &mut levels);
@@ -1466,17 +1568,21 @@ fn level_files(dir: &Path) -> usize {
 }
 
 /// A cache on disk in a fresh temp dir, with `plugins` as its pool.
-fn disk_cache(name: &str, plugins: Instances) -> (LevelCache, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("vv-levels-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn disk_cache(name: &str, plugins: Instances) -> (TempDir, LevelCache) {
+    let dir = TempDir::new(&format!("vv-levels-{name}"));
     let mut levels = fixed_list_cache();
-    levels.dir = Some(dir.clone());
+    levels.dir = Some(dir.to_path_buf());
     levels.plugins = vec![plugins];
-    (levels, dir)
+    (dir, levels)
 }
 
-fn normalized_after_plugin(project: &mut Project, nested: bool, name: &str) -> Timeline {
-    let file = media(project, chirp(name, 48_000, 4), 48_000, 1);
+fn normalized_after_plugin(
+    dir: &TempDir,
+    project: &mut Project,
+    nested: bool,
+    name: &str,
+) -> Timeline {
+    let file = media(project, chirp(dir, name, 48_000, 4), 48_000, 1);
     let mut track = audio_track(vec![clip(1, file, 0, 100, 0)]);
     track.mix.effects.push(plugin_effect(FIXTURE_CLASS, &[]));
     if !nested {
@@ -1496,11 +1602,17 @@ fn normalized_after_plugin(project: &mut Project, nested: bool, name: &str) -> T
 
 #[test]
 fn a_level_measured_while_a_plugin_failed_is_not_kept_for_a_working_render() {
+    let media_dir = TempDir::new("vv-audio-render-test");
     for nested in [false, true] {
         let mut project = Project::default();
-        let tl = normalized_after_plugin(&mut project, nested, &format!("degraded{nested}.wav"));
+        let tl = normalized_after_plugin(
+            &media_dir,
+            &mut project,
+            nested,
+            &format!("degraded{nested}.wav"),
+        );
         let (failing, _) = counting_pool(|| None);
-        let (mut levels, dir) = disk_cache(&format!("fail{nested}"), failing);
+        let (dir, mut levels) = disk_cache(&format!("fail{nested}"), failing);
 
         both_measures_through(&project, &tl, &mut levels, true);
         assert!(levels.degraded, "nested {nested}");
@@ -1522,21 +1634,20 @@ fn a_level_measured_while_a_plugin_failed_is_not_kept_for_a_working_render() {
         let rendered = levels.rendered;
         both_measures_through(&project, &tl, &mut levels, true);
         assert_eq!(levels.rendered, rendered, "nested {nested}: found");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
 #[test]
 fn a_bypassed_plugin_does_not_degrade_a_measure() {
+    let media_dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let mut tl = normalized_after_plugin(&mut project, false, "bypassed.wav");
+    let mut tl = normalized_after_plugin(&media_dir, &mut project, false, "bypassed.wav");
     tl.tracks[0].mix.effects[0].enabled = false;
     let (failing, _) = counting_pool(|| None);
-    let (mut levels, dir) = disk_cache("bypassed", failing);
+    let (dir, mut levels) = disk_cache("bypassed", failing);
     both_measures_through(&project, &tl, &mut levels, true);
     assert!(!levels.degraded);
     assert!(level_files(&dir) > 0);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Halves the audio.
@@ -1563,41 +1674,41 @@ impl vv_plugin::HostedPlugin for Halve {
 
 #[test]
 fn a_measure_plays_a_plugin_the_live_pool_did_not_make_as_its_key_says() {
+    let media_dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let tl = normalized_after_plugin(&mut project, false, "reverse.wav");
+    let tl = normalized_after_plugin(&media_dir, &mut project, false, "reverse.wav");
     // `BothMeasures` keys the segments with no plugin made.
     let (failing, _) = counting_pool(|| None);
-    let (mut dry, dry_dir) = disk_cache("reverse-dry", failing);
+    let (_dry_dir, mut dry) = disk_cache("reverse-dry", failing);
     let (halving, _) = counting_pool(|| Some(Arc::new(Halve)));
-    let (mut wet, wet_dir) = disk_cache("reverse-wet", halving);
+    let (_wet_dir, mut wet) = disk_cache("reverse-wet", halving);
     let expected = both_measures(&project, &tl, &mut dry)[0].0;
     let measured = both_measures(&project, &tl, &mut wet)[0].0;
     assert!(expected > 0.1);
     assert_eq!(measured, expected);
     assert!(!wet.degraded);
-    let _ = std::fs::remove_dir_all(dry_dir);
-    let _ = std::fs::remove_dir_all(wet_dir);
 }
 
 #[test]
 fn a_plugin_that_is_not_installed_does_not_degrade_a_measure() {
+    let media_dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let mut tl = normalized_after_plugin(&mut project, false, "uninstalled.wav");
+    let mut tl = normalized_after_plugin(&media_dir, &mut project, false, "uninstalled.wav");
     tl.tracks[0].mix.effects[0] = plugin_effect("00000000000000000000000000000000", &[]);
     let (pool, _) = counting_pool(|| None);
-    let (mut levels, dir) = disk_cache("uninstalled", pool);
+    let (dir, mut levels) = disk_cache("uninstalled", pool);
     both_measures(&project, &tl, &mut levels);
     assert!(!levels.degraded);
     assert!(level_files(&dir) > 0);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn a_measure_inside_a_compound_plays_unmade_plugins_as_its_key_says() {
+    let media_dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
     let file = media(
         &mut project,
-        chirp("reverse-nested.wav", 48_000, 4),
+        chirp(&media_dir, "reverse-nested.wav", 48_000, 4),
         48_000,
         1,
     );
@@ -1612,22 +1723,21 @@ fn a_measure_inside_a_compound_plays_unmade_plugins_as_its_key_says() {
     });
     let tl = timeline(vec![audio_track(vec![clip(2, compound, 0, 100, 0)])]);
     let (failing, _) = counting_pool(|| None);
-    let (mut dry, dry_dir) = disk_cache("nested-dry", failing);
+    let (_dry_dir, mut dry) = disk_cache("nested-dry", failing);
     let (halving, _) = counting_pool(|| Some(Arc::new(Halve)));
-    let (mut wet, wet_dir) = disk_cache("nested-wet", halving);
+    let (_wet_dir, mut wet) = disk_cache("nested-wet", halving);
     let expected = both_measures(&project, &tl, &mut dry)[0].0;
     let measured = both_measures(&project, &tl, &mut wet)[0].0;
     assert!(expected > 0.1);
     assert_eq!(measured, expected);
-    let _ = std::fs::remove_dir_all(dry_dir);
-    let _ = std::fs::remove_dir_all(wet_dir);
 }
 
 /// An echo inside a compound clip remembers beyond the preroll as well.
 #[test]
 fn a_level_after_a_compound_with_a_plugin_reads_its_tail_in_the_gaps() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let inner = echoed_gap(&mut project, "compound-tail.wav", true);
+    let inner = echoed_gap(&dir, &mut project, "compound-tail.wav", true);
     let mut inner = inner;
     inner.master.effects.clear();
     let file = inner.tracks[0].clips[0].source.clone();
@@ -1705,8 +1815,14 @@ impl AudioSource for Outer<'_> {
 /// A measure stopped inside another one is neither stored nor taken for a level.
 #[test]
 fn a_nested_measure_that_is_stopped_stores_nothing() {
+    let media_dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let file = media(&mut project, chirp("stopped.wav", 48_000, 4), 48_000, 1);
+    let file = media(
+        &mut project,
+        chirp(&media_dir, "stopped.wav", 48_000, 4),
+        48_000,
+        1,
+    );
     let mut inner = timeline(vec![audio_track(vec![clip(1, file, 0, 100, 0)])]);
     inner.tracks[0]
         .mix
@@ -1724,7 +1840,7 @@ fn a_nested_measure_that_is_stopped_stores_nothing() {
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
     let (plugins, _) = counting_pool(move || Some(Arc::new(Stopper(flag.clone()))));
-    let (mut cache, dir) = disk_cache("stopped", plugins);
+    let (dir, mut cache) = disk_cache("stopped", plugins);
     cache.cancel = Some(stop);
     let mut source = Outer {
         cache: &mut cache,
@@ -1741,7 +1857,6 @@ fn a_nested_measure_that_is_stopped_stores_nothing() {
     assert!(matches!(result, Err(ExportError::Cancelled)), "{result:?}");
     assert_eq!(cache.rendered, 0);
     assert_eq!(level_files(&dir), 0);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Records where the segments of each level end.
@@ -1771,8 +1886,9 @@ impl AudioSource for SegmentEnds<'_> {
 /// its own last clip does.
 #[test]
 fn a_track_level_after_a_plugin_runs_to_the_end_of_the_mix() {
+    let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
-    let mut tl = echoed_gap(&mut project, "track-tail.wav", true);
+    let mut tl = echoed_gap(&dir, &mut project, "track-tail.wav", true);
     tl.master.effects.clear();
     tl.tracks[0]
         .mix
