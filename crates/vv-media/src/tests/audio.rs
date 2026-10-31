@@ -332,14 +332,7 @@ fn assert_seeks_match_full_decode(path: &std::path::Path, tolerance: f32, offset
         let len = 48_000.min(full.len() as u64 / 2 - from);
         let got = seeked(path, from, len);
         let want = &full[from as usize * 2..(from + len) as usize * 2];
-        let worst = got
-            .iter()
-            .zip(want)
-            .fold(0.0f32, |m, (g, w)| match (g.is_nan(), w.is_nan()) {
-                (true, true) => m,
-                (false, false) => m.max((g - w).abs()),
-                _ => f32::INFINITY,
-            });
+        let worst = worst_difference(&got, want);
         assert!(
             worst <= tolerance,
             "{}: from frame {from} the seeked decode differs by {worst}",
@@ -473,23 +466,6 @@ fn a_gap_in_the_timestamps_is_kept_by_a_decode_from_the_start_and_by_a_seek() {
     }
 }
 
-/// Removes its directory on drop, even when an assertion panics.
-struct TempDir(std::path::PathBuf);
-
-impl TempDir {
-    fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("vv-media-seek-{name}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        Self(dir)
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 /// Each requested stream decoded from `from`, by seeking when `from > 0`,
 /// as `(frames placed, NaN where nothing plays)` over `from..from + len`.
 fn multi_decode(path: &std::path::Path, streams: &[usize], from: u64, len: u64) -> Vec<Vec<f32>> {
@@ -529,8 +505,8 @@ fn worst_difference(got: &[f32], want: &[f32]) -> f32 {
 /// 14 s Opus from a different sweep), plus video, in one mkv.
 #[test]
 fn a_seeked_decode_of_several_streams_matches_the_full_decode_of_each() {
-    let dir = TempDir::new("multi");
-    let path = dir.0.join("two_streams.mkv");
+    let dir = crate::test_support::TempDir::new("vv-media-seek-multi");
+    let path = dir.join("two_streams.mkv");
     let second = "aevalsrc=0.5*sin(2*PI*(200+500*t)*t):duration=14:sample_rate=48000";
     crate::test_support::ffmpeg(
         &[
@@ -595,8 +571,8 @@ fn a_seeked_decode_of_several_streams_matches_the_full_decode_of_each() {
 
 #[test]
 fn a_seeked_decode_matches_the_full_decode_on_vbr_mp3() {
-    let dir = TempDir::new("vbr");
-    let path = dir.0.join("chirp_vbr.mp3");
+    let dir = crate::test_support::TempDir::new("vv-media-seek-vbr");
+    let path = dir.join("chirp_vbr.mp3");
     crate::test_support::ffmpeg(
         &[
             "-f",
