@@ -1,10 +1,7 @@
 use super::*;
 
-fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("vv-app-library-ui-test-{name}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn temp_dir(name: &str) -> vv_media::test_support::TempDir {
+    vv_media::test_support::TempDir::new(&format!("vv-app-library-ui-test-{name}"))
 }
 
 /// A library holding one asset, `music.mp3`.
