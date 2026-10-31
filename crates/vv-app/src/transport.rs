@@ -5,17 +5,21 @@
 
 use vv_core::FrameIdx;
 
-/// In/out markers: `None` = end of the bar, so they follow the duration
-/// when the content changes.
+/// Stores optional In and Out endpoints for preview trimming or timeline export.
+///
+/// An unset endpoint follows its content edge, so cleared marks expand the range.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MarkRange {
+    /// Inclusive first frame, or `None` to start at frame zero.
     pub mark_in: Option<FrameIdx>,
     /// Exclusive: "o" on frame `p` includes it.
     pub mark_out: Option<FrameIdx>,
 }
 
 impl MarkRange {
-    /// Effective `(in, out)` within `0..=total`, with `in <= out`.
+    /// Resolves the selected range within `0..=total`, keeping `in <= out`.
+    ///
+    /// Unset endpoints use the content edges; out-of-range values are clamped.
     pub fn resolve(&self, total: FrameIdx) -> (FrameIdx, FrameIdx) {
         let total = total.max(0);
         let out = self.mark_out.unwrap_or(total).clamp(0, total);
@@ -23,6 +27,9 @@ impl MarkRange {
         (mark_in, out)
     }
 
+    /// Sets the inclusive In point and clamps it to the content range.
+    ///
+    /// Clears Out if the new In point would otherwise follow it.
     pub fn set_in(&mut self, frame: FrameIdx, total: FrameIdx) {
         let frame = frame.clamp(0, total.max(0));
         self.mark_in = Some(frame);
@@ -31,6 +38,9 @@ impl MarkRange {
         }
     }
 
+    /// Sets Out after the inclusive frame and clamps it to the content range.
+    ///
+    /// Clears In if the new Out point would otherwise precede or touch it.
     pub fn set_out(&mut self, frame: FrameIdx, total: FrameIdx) {
         let out = (frame + 1).clamp(0, total.max(0));
         self.mark_out = Some(out);
@@ -39,6 +49,19 @@ impl MarkRange {
         }
     }
 
+    pub fn clear_in(&mut self) {
+        self.mark_in = None;
+    }
+
+    pub fn clear_out(&mut self) {
+        self.mark_out = None;
+    }
+
+    pub fn clear_all(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Reports whether these marks resolve to the full content range.
     pub fn is_full(&self, total: FrameIdx) -> bool {
         self.resolve(total) == (0, total.max(0))
     }

@@ -995,16 +995,59 @@ impl VenturiApp {
         if total <= 0 {
             return;
         }
-        let (marks, frame) = if self.browsing.is_some() {
-            (&mut self.browse_marks, self.browse_playhead)
+        let frame = if self.browsing.is_some() {
+            self.browse_playhead
         } else {
-            let state = &mut self.timeline_state;
-            (&mut state.export_marks, state.playhead)
+            self.timeline_state.playhead
+        };
+        let Some(marks) = self.mark_target() else {
+            return;
         };
         if is_in {
             marks.set_in(frame, total);
         } else {
             marks.set_out(frame, total);
+        }
+    }
+
+    fn mark_target(&mut self) -> Option<&mut transport::MarkRange> {
+        if self.browsing.is_some() {
+            if self.preview_error.is_some() {
+                None
+            } else {
+                Some(&mut self.browse_marks)
+            }
+        } else if self.timeline_id.is_some() {
+            Some(&mut self.timeline_state.export_marks)
+        } else {
+            None
+        }
+    }
+
+    /// Clears In on the active preview or timeline range.
+    ///
+    /// The unset endpoint resolves to frame zero; Out remains unchanged.
+    fn clear_in_point(&mut self) {
+        if let Some(marks) = self.mark_target() {
+            marks.clear_in();
+        }
+    }
+
+    /// Clears Out on the active preview or timeline range.
+    ///
+    /// The unset endpoint resolves to the content end; In remains unchanged.
+    fn clear_out_point(&mut self) {
+        if let Some(marks) = self.mark_target() {
+            marks.clear_out();
+        }
+    }
+
+    /// Clears both endpoints on the active preview or timeline range.
+    ///
+    /// Both unset endpoints resolve to the full content range.
+    fn clear_in_and_out(&mut self) {
+        if let Some(marks) = self.mark_target() {
+            marks.clear_all();
         }
     }
 

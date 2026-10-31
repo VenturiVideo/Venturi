@@ -4130,6 +4130,22 @@ fn in_out_marks_on_the_preview_trim_the_clip_dropped_on_the_timeline() {
 }
 
 #[test]
+fn clearing_preview_marks_uses_the_active_valid_preview() {
+    let (mut app, _) = browse_fixture("marks.mp4");
+    let total = app.browse_total_frames();
+    app.browse_marks.set_in(10, total);
+    app.browse_marks.set_out(29, total);
+
+    app.preview_error = Some("preview failed".into());
+    app.clear_in_point();
+    assert_eq!(app.browse_marks.resolve(total), (10, 30));
+
+    app.preview_error = None;
+    app.clear_in_point();
+    assert_eq!(app.browse_marks.resolve(total), (0, 30));
+}
+
+#[test]
 fn video_only_and_audio_only_drags_insert_just_that_stream() {
     for (streams, kind) in [
         (timeline_ui::DragStreams::VideoOnly, TrackKind::Video),
@@ -4164,6 +4180,29 @@ fn in_out_keys_on_the_timeline_set_the_export_range() {
     app.timeline_state.playhead = 59;
     app.mark_at_playhead(false);
     assert_eq!(app.timeline_state.export_marks.resolve(100), (20, 60));
+}
+
+#[test]
+fn clearing_in_out_actions_restore_the_timeline_export_range() {
+    let mut app = VenturiApp::default();
+    make_timeline_with_clip(&mut app, 0, 0, 100);
+    app.timeline_state.playhead = 20;
+    app.mark_at_playhead(true);
+    app.timeline_state.playhead = 59;
+    app.mark_at_playhead(false);
+
+    app.clear_in_point();
+    assert_eq!(app.timeline_state.export_marks.resolve(100), (0, 60));
+
+    app.timeline_state.playhead = 40;
+    app.mark_at_playhead(true);
+    app.clear_out_point();
+    assert_eq!(app.timeline_state.export_marks.resolve(100), (40, 100));
+
+    app.timeline_state.playhead = 59;
+    app.mark_at_playhead(false);
+    app.clear_in_and_out();
+    assert_eq!(app.timeline_state.export_marks.resolve(100), (0, 100));
 }
 
 /// End-to-end test of the reported bug ("the buffer always stops at the

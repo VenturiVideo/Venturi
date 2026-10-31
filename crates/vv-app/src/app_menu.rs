@@ -6,6 +6,8 @@ const DISCORD_INVITE: &str = "https://discord.gg/3v2xjXFnZv";
 
 impl VenturiApp {
     /// Handles configured keyboard shortcuts using the current UI frame.
+    ///
+    /// In/out actions operate on the media preview when active, or the timeline otherwise.
     pub(crate) fn handle_shortcuts(&mut self, ui: &mut egui::Ui) {
         // Copy/paste are handled outside `ui.input`: `ctx.copy_text` takes
         // the same lock and would deadlock inside it.
@@ -99,6 +101,15 @@ impl VenturiApp {
             }
             if pressed(Action::MarkOut) {
                 self.mark_at_playhead(false);
+            }
+            if pressed(Action::ClearIn) {
+                self.clear_in_point();
+            }
+            if pressed(Action::ClearOut) {
+                self.clear_out_point();
+            }
+            if pressed(Action::ClearInOut) {
+                self.clear_in_and_out();
             }
             if pressed(Action::FastPlayback) {
                 self.handle_fast_playback_key();
@@ -538,6 +549,46 @@ impl VenturiApp {
                                 self.mark_at_playhead(is_in);
                                 ui.close();
                             }
+                        }
+                        let marks = self.mark_target().copied();
+                        if ui
+                            .add_enabled(
+                                marks.is_some_and(|marks| marks.mark_in.is_some()),
+                                egui::Button::new(
+                                    keymap.menu_label(&t!("action.clear_in"), Action::ClearIn),
+                                ),
+                            )
+                            .clicked()
+                        {
+                            self.clear_in_point();
+                            ui.close();
+                        }
+                        if ui
+                            .add_enabled(
+                                marks.is_some_and(|marks| marks.mark_out.is_some()),
+                                egui::Button::new(
+                                    keymap.menu_label(&t!("action.clear_out"), Action::ClearOut),
+                                ),
+                            )
+                            .clicked()
+                        {
+                            self.clear_out_point();
+                            ui.close();
+                        }
+                        if ui
+                            .add_enabled(
+                                marks.is_some_and(|marks| {
+                                    marks.mark_in.is_some() || marks.mark_out.is_some()
+                                }),
+                                egui::Button::new(
+                                    keymap
+                                        .menu_label(&t!("action.clear_in_out"), Action::ClearInOut),
+                                ),
+                            )
+                            .clicked()
+                        {
+                            self.clear_in_and_out();
+                            ui.close();
                         }
                     })
                     .response,

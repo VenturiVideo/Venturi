@@ -39,6 +39,24 @@ fn default_shortcuts_are_unique() {
 }
 
 #[test]
+fn clear_mark_shortcuts_use_alt_i_o_and_x() {
+    let keymap = Keymap::default();
+    for (action, key) in [
+        (Action::ClearIn, egui::Key::I),
+        (Action::ClearOut, egui::Key::O),
+        (Action::ClearInOut, egui::Key::X),
+    ] {
+        assert_eq!(
+            keymap.shortcuts(action),
+            &[Shortcut {
+                alt: true,
+                ..Shortcut::plain(key)
+            }]
+        );
+    }
+}
+
+#[test]
 fn assigning_a_shortcut_takes_it_away_from_other_actions() {
     let mut keymap = Keymap::default();
     let stolen = keymap.assign(Action::Split, Some(0), Shortcut::plain(egui::Key::D));

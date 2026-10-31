@@ -12,6 +12,7 @@ use vv_media::proxy::ProxyQuality;
 
 use crate::i18n::Language;
 
+/// Identifies a keyboard action, including commands for clearing In and Out points.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Action {
     TogglePlayback,
@@ -20,6 +21,12 @@ pub enum Action {
     StepForward,
     MarkIn,
     MarkOut,
+    /// Clears In and expands the range to the first content frame.
+    ClearIn,
+    /// Clears Out and expands the range to the content end.
+    ClearOut,
+    /// Clears both endpoints and restores the full content range.
+    ClearInOut,
     FullscreenViewer,
     ViewerZoomFit,
     ViewerZoomActual,
@@ -54,13 +61,16 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 37] = [
+    pub const ALL: [Action; 40] = [
         Action::TogglePlayback,
         Action::FastPlayback,
         Action::StepBackward,
         Action::StepForward,
         Action::MarkIn,
         Action::MarkOut,
+        Action::ClearIn,
+        Action::ClearOut,
+        Action::ClearInOut,
         Action::FullscreenViewer,
         Action::ViewerZoomFit,
         Action::ViewerZoomActual,
@@ -103,6 +113,9 @@ impl Action {
             Action::StepForward => "step_forward",
             Action::MarkIn => "mark_in",
             Action::MarkOut => "mark_out",
+            Action::ClearIn => "clear_in",
+            Action::ClearOut => "clear_out",
+            Action::ClearInOut => "clear_in_out",
             Action::FullscreenViewer => "fullscreen_viewer",
             Action::ViewerZoomFit => "viewer_zoom_fit",
             Action::ViewerZoomActual => "viewer_zoom_actual",
@@ -152,6 +165,9 @@ impl Action {
             | Action::StepForward
             | Action::MarkIn
             | Action::MarkOut
+            | Action::ClearIn
+            | Action::ClearOut
+            | Action::ClearInOut
             | Action::FullscreenViewer
             | Action::ViewerZoomFit
             | Action::ViewerZoomActual => t!("action_category.playback"),
@@ -204,6 +220,18 @@ impl Action {
             Action::StepForward => vec![plain(Key::ArrowRight)],
             Action::MarkIn => vec![plain(Key::I)],
             Action::MarkOut => vec![plain(Key::O)],
+            Action::ClearIn => vec![Shortcut {
+                alt: true,
+                ..plain(Key::I)
+            }],
+            Action::ClearOut => vec![Shortcut {
+                alt: true,
+                ..plain(Key::O)
+            }],
+            Action::ClearInOut => vec![Shortcut {
+                alt: true,
+                ..plain(Key::X)
+            }],
             Action::FullscreenViewer => vec![ctrl(Key::F)],
             Action::ViewerZoomFit => vec![plain(Key::Z)],
             Action::ViewerZoomActual => vec![Shortcut {
