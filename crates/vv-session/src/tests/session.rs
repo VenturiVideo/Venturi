@@ -1,12 +1,12 @@
 use super::*;
 use crate::export::{ExportError, ExportSettings};
 use crate::relink_job::RelinkRequest;
-use crate::test_support::TempDir;
 use crate::{RelinkEnd, SessionEvent, Waker};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use vv_core::edit::{self, MediaInsert, RangeDelete, TargetTracks};
 use vv_core::{AddEntities, CommandLabel, FrameIdx, MediaId, Rational, Timeline, Track, TrackKind};
+use vv_media::test_support::TempDir;
 
 fn test_dir(name: &str) -> TempDir {
     TempDir::new(&format!("vv-session-{name}"))
@@ -96,8 +96,8 @@ fn insert_whole(session: &mut Session, timeline: TimelineId, media: MediaId, sta
 #[test]
 fn import_adds_the_media_in_order_and_reports_the_failures() {
     let dir = test_dir("import");
-    let a = clip_file(dir.path(), "a.mp4");
-    let b = clip_file(dir.path(), "b.mp4");
+    let a = clip_file(&dir, "a.mp4");
+    let b = clip_file(&dir, "b.mp4");
     let wakes = Arc::new(AtomicUsize::new(0));
     let mut session = Session::default();
     session.set_waker(Waker::new({
@@ -139,10 +139,7 @@ fn import_adds_the_media_in_order_and_reports_the_failures() {
 #[test]
 fn an_import_is_one_undo_step_with_what_the_host_joins_to_it() {
     let dir = test_dir("import-undo");
-    let files = vec![
-        clip_file(dir.path(), "a.mp4"),
-        clip_file(dir.path(), "b.mp4"),
-    ];
+    let files = vec![clip_file(&dir, "a.mp4"), clip_file(&dir, "b.mp4")];
     let mut session = Session::default();
     let job = session.import_media(files);
     let events = run_jobs(&mut session);
@@ -195,7 +192,7 @@ fn an_edit_or_another_import_in_between_starts_a_new_step() {
 #[test]
 fn importing_media_already_in_the_pool_finishes_without_starting() {
     let dir = test_dir("reimport");
-    let a = clip_file(dir.path(), "a.mp4");
+    let a = clip_file(&dir, "a.mp4");
     let mut session = Session::default();
     session.import_media(vec![a.clone()]);
     run_jobs(&mut session);
@@ -252,7 +249,7 @@ fn saving_and_opening_follow_the_unsaved_state() {
 #[test]
 fn import_edit_and_export_without_a_ui() {
     let dir = test_dir("end-to-end");
-    let a = clip_file(dir.path(), "a.mp4");
+    let a = clip_file(&dir, "a.mp4");
     let mut session = Session::default();
     session.import_media(vec![a]);
     let media = match run_jobs(&mut session).pop() {
@@ -367,7 +364,7 @@ fn relink_by_name_is_one_undo_step() {
     let dir = test_dir("relink");
     let moved = dir.join("moved");
     std::fs::create_dir_all(&moved).unwrap();
-    let a = clip_file(dir.path(), "a.mp4");
+    let a = clip_file(&dir, "a.mp4");
     let mut session = Session::default();
     session.import_media(vec![a.clone()]);
     run_jobs(&mut session);
@@ -376,7 +373,7 @@ fn relink_by_name_is_one_undo_step() {
 
     let job = session
         .relink(RelinkRequest::ByName {
-            base_dir: dir.path().to_path_buf(),
+            base_dir: dir.to_path_buf(),
             targets: vec![(media, a.clone())],
         })
         .unwrap();
@@ -406,7 +403,7 @@ fn relink_by_name_is_one_undo_step() {
 #[test]
 fn otio_import_asks_before_reusing_media_with_the_same_name() {
     let dir = test_dir("otio");
-    let a = clip_file(dir.path(), "a.mp4");
+    let a = clip_file(&dir, "a.mp4");
     let mut source = Session::default();
     source.import_media(vec![a]);
     let media = match run_jobs(&mut source).pop() {

@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_support::TempDir;
+use vv_media::test_support::TempDir;
 
 fn touch(path: &Path) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();

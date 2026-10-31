@@ -1,7 +1,7 @@
 use super::*;
-use crate::test_support::TempDir;
 use vv_core::ClipSource;
 use vv_core::{Clip, Keyframed, Rgba, Track, TrackKind};
+use vv_media::test_support::TempDir;
 
 fn solid_color_clip(id: u64, start: FrameIdx, len: FrameIdx, color: Rgba) -> Clip {
     let mut clip = Clip::from_source_range(

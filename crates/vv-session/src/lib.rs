@@ -17,39 +17,3 @@ pub mod worker;
 pub use jobs::{JobId, OtioMerged, RelinkEnd, SessionEvent, Waker, file_label};
 pub use media_tree::MediaTree;
 pub use session::{ChangeMark, Session, complete_legacy_media};
-
-#[cfg(test)]
-mod test_support {
-    use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    /// Unique per-test directory, removed on drop.
-    pub struct TempDir(PathBuf);
-
-    impl TempDir {
-        pub fn new(prefix: &str) -> Self {
-            static SEQ: AtomicU64 = AtomicU64::new(0);
-            let dir = std::env::temp_dir().join(format!(
-                "{prefix}-{}-{}",
-                std::process::id(),
-                SEQ.fetch_add(1, Ordering::Relaxed)
-            ));
-            std::fs::create_dir_all(&dir).unwrap();
-            Self(dir)
-        }
-
-        pub fn path(&self) -> &Path {
-            &self.0
-        }
-
-        pub fn join(&self, name: impl AsRef<Path>) -> PathBuf {
-            self.0.join(name)
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-}

@@ -1,6 +1,6 @@
 use super::*;
-use crate::test_support::TempDir;
 use vv_core::{Clip, ClipSource, MediaItem, MediaMeta, Timeline, Track, TrackKind};
+use vv_media::test_support::TempDir;
 
 /// 1 s of silence, then 1 s of a sine at 440 Hz (peak 0.5).
 fn silence_then_tone(dir: &TempDir, name: &str) -> std::path::PathBuf {
