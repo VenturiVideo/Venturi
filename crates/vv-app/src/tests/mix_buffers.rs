@@ -92,8 +92,8 @@ fn compound_project(path: &Path, secs: u32) -> (Project, MediaId, vv_core::Timel
     (project, compound_media, parent)
 }
 
-fn sine_wav(name: &str, secs: u32) -> (crate::test_support::TempDir, PathBuf) {
-    let dir = crate::test_support::TempDir::new("vv-app-mix-buffers-test");
+fn sine_wav(name: &str, secs: u32) -> (vv_media::test_support::TempDir, PathBuf) {
+    let dir = vv_media::test_support::TempDir::new("vv-app-mix-buffers-test");
     let path = dir.join(name);
     vv_media::test_support::ffmpeg(
         &[
@@ -134,7 +134,7 @@ fn blocks_held(cache: &MixBufferCache, path: &Path) -> Vec<u64> {
 
 #[test]
 fn buffers_are_decoded_in_background_per_path_and_stream() {
-    let dir = crate::test_support::TempDir::new("vv-app-mix-buffers-test");
+    let dir = vv_media::test_support::TempDir::new("vv-app-mix-buffers-test");
     let path = dir.join("two_streams.mkv");
     // Stream 0 mono 44.1 kHz of 1s, stream 1 stereo 48 kHz of 0.5s.
     vv_media::test_support::ffmpeg(
@@ -252,7 +252,7 @@ fn over_budget_the_blocks_closest_to_the_playhead_are_kept() {
 
 #[test]
 fn every_stream_of_a_file_starts_playing_before_any_of_them_is_fully_decoded() {
-    let dir = crate::test_support::TempDir::new("vv-app-mix-buffers-test");
+    let dir = vv_media::test_support::TempDir::new("vv-app-mix-buffers-test");
     let path = dir.join("three_streams_long.mkv");
     vv_media::test_support::ffmpeg(
         &[
@@ -579,7 +579,7 @@ fn a_read_takes_the_other_streams_queued_over_the_same_blocks() {
 
 #[test]
 fn a_resampled_file_read_in_distant_places_matches_its_whole_decode() {
-    let dir = crate::test_support::TempDir::new("vv-app-mix-buffers-test");
+    let dir = vv_media::test_support::TempDir::new("vv-app-mix-buffers-test");
     let path = dir.join("chirp44.wav");
     vv_media::test_support::ffmpeg(
         &[

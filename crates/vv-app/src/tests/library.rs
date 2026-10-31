@@ -2,8 +2,8 @@ use super::*;
 use vv_core::clipboard::ClipboardOrigin;
 use vv_core::{MediaId, MediaMeta, Project};
 
-fn temp_root(name: &str) -> crate::test_support::TempDir {
-    crate::test_support::TempDir::new(&format!("vv-app-library-test-{name}"))
+fn temp_root(name: &str) -> vv_media::test_support::TempDir {
+    vv_media::test_support::TempDir::new(&format!("vv-app-library-test-{name}"))
 }
 
 fn project_with_file(path: &Path, hash: u64) -> (Project, MediaId) {

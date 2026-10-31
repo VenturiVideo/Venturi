@@ -6,8 +6,8 @@ fn make_test_clip(
     dir_name: &str,
     file_name: &str,
     duration_secs: u32,
-) -> (crate::test_support::TempDir, std::path::PathBuf) {
-    let dir = crate::test_support::TempDir::new(dir_name);
+) -> (vv_media::test_support::TempDir, std::path::PathBuf) {
+    let dir = vv_media::test_support::TempDir::new(dir_name);
     let path = dir.join(file_name);
     vv_media::test_support::ffmpeg(
         &[
@@ -28,8 +28,8 @@ fn make_test_clip(
 fn make_test_image(
     dir_name: &str,
     file_name: &str,
-) -> (crate::test_support::TempDir, std::path::PathBuf) {
-    let dir = crate::test_support::TempDir::new(dir_name);
+) -> (vv_media::test_support::TempDir, std::path::PathBuf) {
+    let dir = vv_media::test_support::TempDir::new(dir_name);
     let path = dir.join(file_name);
     vv_media::test_support::ffmpeg(
         &[
@@ -135,8 +135,8 @@ fn make_test_clip_with_short_gop(
     file_name: &str,
     duration_secs: u32,
     gop: u32,
-) -> (crate::test_support::TempDir, std::path::PathBuf) {
-    let dir = crate::test_support::TempDir::new(dir_name);
+) -> (vv_media::test_support::TempDir, std::path::PathBuf) {
+    let dir = vv_media::test_support::TempDir::new(dir_name);
     let path = dir.join(file_name);
     vv_media::test_support::ffmpeg(
         &[
@@ -3580,8 +3580,8 @@ fn make_color_clip(
     dir_name: &str,
     file_name: &str,
     color: &str,
-) -> (crate::test_support::TempDir, std::path::PathBuf) {
-    let dir = crate::test_support::TempDir::new(dir_name);
+) -> (vv_media::test_support::TempDir, std::path::PathBuf) {
+    let dir = vv_media::test_support::TempDir::new(dir_name);
     let path = dir.join(file_name);
     vv_media::test_support::ffmpeg(
         &[
@@ -3971,7 +3971,12 @@ fn source_stride_follows_the_clip_rate_and_is_one_without_a_stride() {
 fn project_with_one_clip(
     file_name: &str,
     clip: impl FnOnce(MediaId) -> Clip,
-) -> (Project, TimelineId, MediaId, crate::test_support::TempDir) {
+) -> (
+    Project,
+    TimelineId,
+    MediaId,
+    vv_media::test_support::TempDir,
+) {
     let (dir, path) = make_test_clip("vv-app-render-ahead-test", file_name, 3);
     let mut project = Project::default();
     let media = project.media_pool.insert(MediaItem {
@@ -4142,7 +4147,12 @@ fn walk_and_fill_gives_a_media_the_smallest_stride_of_its_clips() {
 /// 8 s at 25 fps with a keyframe every 25 frames, one clip over all of it.
 fn project_with_gop_25(
     file_name: &str,
-) -> (Project, TimelineId, MediaId, crate::test_support::TempDir) {
+) -> (
+    Project,
+    TimelineId,
+    MediaId,
+    vv_media::test_support::TempDir,
+) {
     let (dir, path) = make_test_clip_with_short_gop("vv-app-render-ahead-test", file_name, 8, 25);
     let mut project = Project::default();
     let media = project.media_pool.insert(MediaItem {
@@ -4507,7 +4517,14 @@ fn walk_and_fill_in_keyframe_mode_caches_only_keyframes() {
     );
 }
 
-fn landed_at_50(file_name: &str) -> (crate::test_support::TempDir, Project, MediaId, OpenDecoder) {
+fn landed_at_50(
+    file_name: &str,
+) -> (
+    vv_media::test_support::TempDir,
+    Project,
+    MediaId,
+    OpenDecoder,
+) {
     let (project, _, media, dir) = project_with_gop_25(file_name);
     let path = project.media_pool[media].path.clone();
     let mut decoder = Decoder::open(&path).unwrap();

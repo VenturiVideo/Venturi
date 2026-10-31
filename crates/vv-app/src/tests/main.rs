@@ -965,7 +965,7 @@ fn select_all_media_selects_every_media_in_the_pool() {
 /// the same name, in some subdirectory.
 #[test]
 fn relink_media_finds_offline_files_by_name_under_the_base_folder() {
-    let dir = crate::test_support::TempDir::new("vv-app-relink-test");
+    let dir = vv_media::test_support::TempDir::new("vv-app-relink-test");
     let nested = dir.join("project").join("clip");
     std::fs::create_dir_all(&nested).unwrap();
     let found_path = nested.join("interview.mp4");
@@ -1042,7 +1042,7 @@ fn relink_media_finds_offline_files_by_name_under_the_base_folder() {
 /// what it finds is applied to those alone, in one undo step.
 #[test]
 fn media_not_found_by_name_can_be_force_relinked() {
-    let dir = crate::test_support::TempDir::new("vv-app-forced-relink-test");
+    let dir = vv_media::test_support::TempDir::new("vv-app-forced-relink-test");
     std::fs::write(dir.join("found.mp4"), b"aa").unwrap();
     let converted = dir.join("renamed.mkv");
     std::fs::write(&converted, b"b").unwrap();
@@ -1127,7 +1127,7 @@ fn media_not_found_by_name_can_be_force_relinked() {
 /// the rest of the pool — even if relinkable.
 #[test]
 fn relink_media_with_a_selection_only_touches_the_selected_media() {
-    let dir = crate::test_support::TempDir::new("vv-app-relink-selection-test");
+    let dir = vv_media::test_support::TempDir::new("vv-app-relink-selection-test");
     let found_path = dir.join("a.mp4");
     std::fs::write(&found_path, b"a").unwrap();
     let other_found_path = dir.join("b.mp4");
@@ -1768,7 +1768,7 @@ fn delete_selected_does_not_shift_other_tracks() {
 /// via command is read from its effects.
 #[test]
 fn loading_a_media_clip_sets_active_clip_and_gain() {
-    let dir = crate::test_support::TempDir::new("vv-app-main-test");
+    let dir = vv_media::test_support::TempDir::new("vv-app-main-test");
     let path = dir.join("clip.mp4");
     vv_media::test_support::ffmpeg(
         &[
@@ -2565,7 +2565,7 @@ fn fast_playback_advances_the_playhead_faster() {
 /// (the audio always came from the media of the video clip).
 #[test]
 fn preview_mix_follows_audio_clip_edits() {
-    let dir = crate::test_support::TempDir::new("vv-app-preview-mix-test");
+    let dir = vv_media::test_support::TempDir::new("vv-app-preview-mix-test");
     let path = dir.join("clip.mp4");
     vv_media::test_support::ffmpeg(
         &[
@@ -3442,7 +3442,7 @@ fn paste_splitting_a_linked_group_relinks_the_new_halves_to_each_other() {
 /// within its own timeline limits.
 #[test]
 fn buffered_timeline_ranges_reports_the_clip_under_the_playheads_decoded_frames() {
-    let dir = crate::test_support::TempDir::new("vv-app-buffered-ranges-test");
+    let dir = vv_media::test_support::TempDir::new("vv-app-buffered-ranges-test");
     let path = dir.join("clip.mp4");
     vv_media::test_support::ffmpeg(
         &[
@@ -3502,7 +3502,7 @@ fn buffered_timeline_ranges_reports_the_clip_under_the_playheads_decoded_frames(
 /// cached frames are those of the media of the nested timeline.
 #[test]
 fn buffered_timeline_ranges_covers_a_compound_clip_through_its_nested_timeline() {
-    let dir = crate::test_support::TempDir::new("vv-app-buffered-ranges-compound-test");
+    let dir = vv_media::test_support::TempDir::new("vv-app-buffered-ranges-compound-test");
     let path = dir.join("clip.mp4");
     vv_media::test_support::ffmpeg(
         &[
@@ -3589,7 +3589,7 @@ fn buffered_timeline_ranges_covers_a_compound_clip_through_its_nested_timeline()
 /// off.
 #[test]
 fn proxy_timeline_ranges_covers_the_whole_clip_once_the_proxy_is_ready() {
-    let dir = crate::test_support::TempDir::new("vv-app-proxy-ranges-test");
+    let dir = vv_media::test_support::TempDir::new("vv-app-proxy-ranges-test");
     let path = dir.join("clip.mp4");
     vv_media::test_support::ffmpeg(
         &[
@@ -3664,7 +3664,7 @@ fn proxy_timeline_ranges_covers_the_whole_clip_once_the_proxy_is_ready() {
 
 #[test]
 fn import_media_files_imports_every_file_and_queues_their_proxies() {
-    let dir = crate::test_support::TempDir::new("vv-app-multi-import-test");
+    let dir = vv_media::test_support::TempDir::new("vv-app-multi-import-test");
     let paths: Vec<PathBuf> = ["a.mp4", "b.mp4"]
         .iter()
         .map(|name| {
@@ -3722,7 +3722,7 @@ fn import_media_files_imports_every_file_and_queues_their_proxies() {
 
 #[test]
 fn imported_media_end_up_selected_in_the_pool() {
-    let dir = crate::test_support::TempDir::new("vv-app-import-selection-test");
+    let dir = vv_media::test_support::TempDir::new("vv-app-import-selection-test");
     let paths: Vec<PathBuf> = ["x.mp4", "y.mp4"]
         .iter()
         .map(|name| {
@@ -3866,7 +3866,7 @@ fn dropping_a_file_from_the_file_manager_imports_it_into_the_pool() {
 /// File → Open; media dropped along with it are not imported.
 #[test]
 fn dropping_a_project_opens_it_after_the_unsaved_changes_question() {
-    let dir = crate::test_support::TempDir::new("vv-app-drop-project-test");
+    let dir = vv_media::test_support::TempDir::new("vv-app-drop-project-test");
     let project_path = dir.join("dropped.vvproj");
     let mut saved = VenturiApp::default();
     saved.create_timeline("Dropped".into(), vv_core::Rational::new(25, 1), (64, 48));
@@ -3899,7 +3899,7 @@ fn dropping_a_project_opens_it_after_the_unsaved_changes_question() {
 /// A dropped `.otio` is imported as from Timeline → Import.
 #[test]
 fn dropping_an_otio_imports_it_as_a_timeline() {
-    let dir = crate::test_support::TempDir::new("vv-app-drop-otio-test");
+    let dir = vv_media::test_support::TempDir::new("vv-app-drop-otio-test");
     let otio_path = dir.join("Dropped.OTIO");
     let otio = serde_json::json!({
         "OTIO_SCHEMA": "Timeline.1",
@@ -3923,7 +3923,7 @@ fn dropping_an_otio_imports_it_as_a_timeline() {
 /// (or changing quality) the media already in the pool go back into the queue.
 #[test]
 fn disabling_proxies_stops_generation_and_enabling_requeues_the_pool() {
-    let dir = crate::test_support::TempDir::new("vv-app-proxy-toggle-test");
+    let dir = vv_media::test_support::TempDir::new("vv-app-proxy-toggle-test");
     let path = dir.join("clip.mp4");
     vv_media::test_support::ffmpeg(
         &[
@@ -3993,8 +3993,8 @@ fn export_pauses_the_proxy_queue_and_resumes_it_afterwards() {
     );
 }
 
-fn browse_fixture(name: &str) -> (VenturiApp, MediaId, crate::test_support::TempDir) {
-    let dir = crate::test_support::TempDir::new("vv-app-browse-test");
+fn browse_fixture(name: &str) -> (vv_media::test_support::TempDir, VenturiApp, MediaId) {
+    let dir = vv_media::test_support::TempDir::new("vv-app-browse-test");
     let path = dir.join(name);
     vv_media::test_support::ffmpeg(
         &[
@@ -4019,12 +4019,12 @@ fn browse_fixture(name: &str) -> (VenturiApp, MediaId, crate::test_support::Temp
     let media_id = app.add_media_to_pool(path).unwrap();
     app.preview_media(media_id);
     app.browsing = Some(Browsed::Media(media_id));
-    (app, media_id, dir)
+    (dir, app, media_id)
 }
 
 #[test]
 fn space_plays_the_media_pool_preview_instead_of_leaving_it() {
-    let (mut app, media_id, _dir) = browse_fixture("space.mp4");
+    let (_dir, mut app, media_id) = browse_fixture("space.mp4");
     app.toggle_playback();
     assert_eq!(app.browsing, Some(Browsed::Media(media_id)));
     assert!(app.is_timeline_playing());
@@ -4042,7 +4042,7 @@ fn space_plays_the_media_pool_preview_instead_of_leaving_it() {
 
 #[test]
 fn preview_plays_the_media_audio_and_leaving_it_restores_the_timeline_mix() {
-    let (mut app, _, _dir) = browse_fixture("audio.mp4");
+    let (_dir, mut app, _) = browse_fixture("audio.mp4");
     let fps = app.browse_fps();
     app.timeline_audio();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -4079,7 +4079,7 @@ fn preview_plays_the_media_audio_and_leaving_it_restores_the_timeline_mix() {
 
 #[test]
 fn in_out_marks_on_the_preview_trim_the_clip_dropped_on_the_timeline() {
-    let (mut app, media_id, _dir) = browse_fixture("marks.mp4");
+    let (_dir, mut app, media_id) = browse_fixture("marks.mp4");
     app.seek_browse(10);
     app.mark_at_playhead(true);
     app.seek_browse(29);
@@ -4114,7 +4114,7 @@ fn video_only_and_audio_only_drags_insert_just_that_stream() {
         (timeline_ui::DragStreams::VideoOnly, TrackKind::Video),
         (timeline_ui::DragStreams::AudioOnly, TrackKind::Audio),
     ] {
-        let (mut app, media_id, _dir) = browse_fixture("streams.mp4");
+        let (_dir, mut app, media_id) = browse_fixture("streams.mp4");
         let meta = app.session.project.media_pool[media_id].meta.clone();
         app.add_media_to_timeline_at(
             timeline_ui::MediaDrag {
@@ -4153,7 +4153,7 @@ fn in_out_keys_on_the_timeline_set_the_export_range() {
 /// case needed.
 #[test]
 fn buffered_timeline_ranges_covers_the_next_clip_before_the_playhead_reaches_it() {
-    let dir = crate::test_support::TempDir::new("vv-app-buffered-ranges-cut-test");
+    let dir = vv_media::test_support::TempDir::new("vv-app-buffered-ranges-cut-test");
     let path_a = dir.join("clip_a.mp4");
     let path_b = dir.join("clip_b.mp4");
     for (path, duration) in [(&path_a, 2), (&path_b, 1)] {
@@ -4233,7 +4233,7 @@ fn save_project_to_then_load_project_from_round_trips_and_resets_ui_state() {
     app.timeline_state.selected = BTreeSet::from([(0, clip_id)]);
     app.timeline_state.playhead = 5;
 
-    let dir = crate::test_support::TempDir::new("vv-app-persistence-test");
+    let dir = vv_media::test_support::TempDir::new("vv-app-persistence-test");
     let path = dir.join("project.vvproj");
 
     app.save_project_to(&path);
@@ -4289,7 +4289,7 @@ fn export_otio_to_writes_the_file_and_reports_failures() {
     let mut app = VenturiApp::default();
     make_timeline_with_clip(&mut app, 0, 0, 10);
     let timeline_id = app.timeline_id.unwrap();
-    let dir = crate::test_support::TempDir::new("vv-app-otio-test");
+    let dir = vv_media::test_support::TempDir::new("vv-app-otio-test");
     let path = dir.join("timeline.otio");
 
     app.export_otio_to(timeline_id, &path);
@@ -4306,7 +4306,7 @@ fn export_otio_to_writes_the_file_and_reports_failures() {
 
 #[test]
 fn import_otio_from_adds_a_timeline_and_reports_skipped_clips() {
-    let dir = crate::test_support::TempDir::new("vv-app-otio-import-test");
+    let dir = vv_media::test_support::TempDir::new("vv-app-otio-import-test");
     let media = dir.join("clip.mp4");
     vv_media::test_support::ffmpeg(
         &[
@@ -4422,7 +4422,7 @@ fn import_otio_from_adds_a_timeline_and_reports_skipped_clips() {
 /// chooses between reusing them and a new folder.
 #[test]
 fn otio_media_already_in_the_pool_wait_for_the_reuse_choice() {
-    let dir = crate::test_support::TempDir::new("vv-app-otio-reuse-test");
+    let dir = vv_media::test_support::TempDir::new("vv-app-otio-reuse-test");
     let otio = serde_json::json!({
         "OTIO_SCHEMA": "Timeline.1",
         "name": "Edit",
@@ -4493,7 +4493,7 @@ fn unsaved_changes_follow_edits_and_saves() {
     make_timeline_with_clip(&mut app, 0, 0, 10);
     assert!(app.has_unsaved_changes());
 
-    let dir = crate::test_support::TempDir::new("vv-app-unsaved-test");
+    let dir = vv_media::test_support::TempDir::new("vv-app-unsaved-test");
     app.save_project_to(&dir.join("p.vvproj"));
     assert!(!app.has_unsaved_changes());
 
@@ -4550,7 +4550,7 @@ fn new_project_discards_after_confirmation() {
 /// opening the project regenerates it.
 #[test]
 fn opening_a_project_regenerates_missing_waveforms() {
-    let dir = crate::test_support::TempDir::new("vv-app-waveform-on-load-test");
+    let dir = vv_media::test_support::TempDir::new("vv-app-waveform-on-load-test");
     let media = dir.join("tone.mp4");
     vv_media::test_support::ffmpeg(
         &[
@@ -4603,8 +4603,8 @@ fn opening_a_project_regenerates_missing_waveforms() {
     let _ = std::fs::remove_file(vv_media::waveform::waveform_path_for(content_hash, 0));
 }
 
-fn make_wav(name: &str) -> (crate::test_support::TempDir, PathBuf) {
-    let dir = crate::test_support::TempDir::new("vv-app-audio-only-test");
+fn make_wav(name: &str) -> (vv_media::test_support::TempDir, PathBuf) {
+    let dir = vv_media::test_support::TempDir::new("vv-app-audio-only-test");
     let path = dir.join(name);
     vv_media::test_support::ffmpeg(
         &[
@@ -4675,8 +4675,8 @@ fn an_audio_only_file_imports_and_drops_as_an_audio_clip() {
     assert_eq!(clip.timeline_len, 50, "2 s a 25 fps");
 }
 
-fn make_png(name: &str) -> (crate::test_support::TempDir, PathBuf) {
-    let dir = crate::test_support::TempDir::new("vv-app-image-test");
+fn make_png(name: &str) -> (vv_media::test_support::TempDir, PathBuf) {
+    let dir = vv_media::test_support::TempDir::new("vv-app-image-test");
     let path = dir.join(name);
     vv_media::test_support::ffmpeg(
         &[
@@ -4845,7 +4845,7 @@ fn closing_the_window_asks_to_save_unsaved_changes() {
 /// group — see the docs of `insert_media_clip`.
 #[test]
 fn add_media_to_timeline_creates_one_audio_clip_per_audio_stream() {
-    let dir = crate::test_support::TempDir::new("vv-app-multi-audio-import-test");
+    let dir = vv_media::test_support::TempDir::new("vv-app-multi-audio-import-test");
     let path = dir.join("two_audio_streams.mp4");
 
     vv_media::test_support::ffmpeg(
@@ -5320,7 +5320,7 @@ fn a_text_edit_leaves_the_animated_text_of_other_titles_to_keyframes() {
 
 #[test]
 fn a_library_asset_previews_without_joining_the_project_until_dragged() {
-    let (source, media_id, _dir) = browse_fixture("library-asset.mp4");
+    let (_dir, source, media_id) = browse_fixture("library-asset.mp4");
     let path = source.session.project.media_pool[media_id].path.clone();
     let mut app = VenturiApp::default();
     let origin = app.clipboard_origin();
@@ -5360,9 +5360,8 @@ fn headless_startup_seeds_the_installed_list_from_the_cached_settings() {
         path: PathBuf::from("/p/cached.vst3"),
         ..vv_plugin::testing::fixture_info()
     };
-    let path = std::env::temp_dir()
-        .join(format!("vv-headless-seed-{}", std::process::id()))
-        .join("settings.json");
+    let dir = vv_media::test_support::TempDir::new("vv-headless-seed");
+    let path = dir.join("settings.json");
     let settings = settings::Settings {
         vst3_plugins: Some(vec![plugin.clone()]),
         ..Default::default()
@@ -5492,8 +5491,7 @@ fn a_finished_plugin_scan_is_published_by_logic_without_a_ui_pass() {
 
 #[test]
 fn a_crash_marker_survives_a_quit_when_no_scan_is_running() {
-    let dir = std::env::temp_dir().join(format!("vv-quit-marker-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = vv_media::test_support::TempDir::new("vv-quit-marker");
     let mut app = VenturiApp::default();
     app.settings_path = Some(dir.join("settings.json"));
     let marker = app.plugin_scan_marker();
@@ -5505,7 +5503,6 @@ fn a_crash_marker_survives_a_quit_when_no_scan_is_running() {
     app.plugin_scan_rx = Some(rx);
     app.abandon_plugin_scan();
     let removed = !marker.exists();
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(kept);
     assert!(removed);
 }

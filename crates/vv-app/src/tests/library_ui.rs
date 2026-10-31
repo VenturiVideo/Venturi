@@ -1,7 +1,7 @@
 use super::*;
 
-fn temp_dir(name: &str) -> crate::test_support::TempDir {
-    crate::test_support::TempDir::new(&format!("vv-app-library-ui-test-{name}"))
+fn temp_dir(name: &str) -> vv_media::test_support::TempDir {
+    vv_media::test_support::TempDir::new(&format!("vv-app-library-ui-test-{name}"))
 }
 
 /// A library holding one asset, `music.mp3`.

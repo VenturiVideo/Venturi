@@ -214,11 +214,11 @@ fn tone_timeline(
     project: &mut vv_core::Project,
     name: &str,
     amplitude: f32,
-) -> (TimelineId, crate::test_support::TempDir) {
+) -> (TimelineId, vv_media::test_support::TempDir) {
     use vv_core::{
         Clip, ClipId, ClipSource, MediaItem, MediaMeta, Rational, Timeline, Track, TrackKind,
     };
-    let dir = crate::test_support::TempDir::new("vv-app-timeline-audio-test");
+    let dir = vv_media::test_support::TempDir::new("vv-app-timeline-audio-test");
     let path = dir.join(name);
     let lavfi = format!("aevalsrc={amplitude}*sin(2*PI*440*t):sample_rate=48000:duration=20");
     vv_media::test_support::ffmpeg(&["-f", "lavfi", "-i", &lavfi], &path);
@@ -474,7 +474,7 @@ fn a_rescan_forces_a_timeline_rebuild_and_keeps_a_media_preview() {
     });
 }
 
-fn loaded_audio(name: &str) -> (TimelineAudio, crate::test_support::TempDir) {
+fn loaded_audio(name: &str) -> (TimelineAudio, vv_media::test_support::TempDir) {
     let mut project = vv_core::Project::default();
     let (timeline, dir) = tone_timeline(&mut project, name, 0.8);
     let mut audio = TimelineAudio::new();

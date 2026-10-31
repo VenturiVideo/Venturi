@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn a_finished_search_turns_into_rows_preselected_where_something_matched() {
-    let dir = crate::test_support::TempDir::new("vv-app-forced-relink-dialog-test");
+    let dir = vv_media::test_support::TempDir::new("vv-app-forced-relink-dialog-test");
     let found = dir.join("rana.mp4");
     std::fs::write(&found, b"x").unwrap();
 

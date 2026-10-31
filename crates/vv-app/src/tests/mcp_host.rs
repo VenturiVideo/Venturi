@@ -175,8 +175,8 @@ fn a_project_replaced_by_the_agent_resets_the_editor() {
     assert_eq!(app.timeline_id, None, "the editor follows the new project");
 }
 
-fn video_file(name: &str) -> (crate::test_support::TempDir, PathBuf) {
-    let dir = crate::test_support::TempDir::new("vv-app-mcp-host");
+fn video_file(name: &str) -> (vv_media::test_support::TempDir, PathBuf) {
+    let dir = vv_media::test_support::TempDir::new("vv-app-mcp-host");
     let path = dir.join(name);
     vv_media::test_support::ffmpeg(
         &[
@@ -269,7 +269,7 @@ fn screenshot_answers_with_the_next_drawn_frame() {
 
 #[test]
 fn an_agent_export_shows_in_the_progress_window() {
-    let dir = crate::test_support::TempDir::new("vv-app-mcp-export");
+    let dir = vv_media::test_support::TempDir::new("vv-app-mcp-export");
     let (mut app, handle, ctx) = attached();
     let (timeline, _) = solid_clip(&mut app);
 

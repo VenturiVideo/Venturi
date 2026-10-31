@@ -1,7 +1,7 @@
 use super::*;
 
-fn temp_dir(name: &str) -> crate::test_support::TempDir {
-    crate::test_support::TempDir::new(&format!("vv-paste-image-{name}"))
+fn temp_dir(name: &str) -> vv_media::test_support::TempDir {
+    vv_media::test_support::TempDir::new(&format!("vv-paste-image-{name}"))
 }
 
 fn v_key(pressed: bool) -> egui::Event {

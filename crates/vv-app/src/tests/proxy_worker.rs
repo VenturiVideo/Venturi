@@ -11,7 +11,7 @@ fn wait_until(mut cond: impl FnMut() -> bool, what: &str) {
 
 #[test]
 fn pause_holds_the_queue_and_resume_completes_it() {
-    let dir = crate::test_support::TempDir::new("vv-app-proxy-worker-test");
+    let dir = vv_media::test_support::TempDir::new("vv-app-proxy-worker-test");
     let path = dir.join("clip.mp4");
     vv_media::test_support::ffmpeg(
         &[
