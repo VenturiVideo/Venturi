@@ -337,6 +337,8 @@ fn a_stretch_is_computed_in_background_and_dropped_once_unused() {
         },
         frames: 0..48_000,
         tempo: 2.0,
+        pitch: 1.0,
+        preserve_formants: false,
         sample_rate: 48_000,
         channels: 1,
         key: 1,
@@ -375,6 +377,51 @@ fn a_stretch_is_computed_in_background_and_dropped_once_unused() {
         matches!(ask(&mut cache), ClipAudio::Pending),
         "dropped when unused"
     );
+}
+
+#[test]
+fn a_pitch_shift_is_prepared_in_background_at_the_original_duration() {
+    let path = sine_wav("pitch_shift.wav", 2);
+    let project = Project::default();
+    let request = || StretchRequest {
+        project: &project,
+        input: vv_audio::StretchInput::File {
+            path: &path,
+            stream: 0,
+        },
+        frames: 0..48_000,
+        tempo: 1.0,
+        pitch: 2.0,
+        preserve_formants: true,
+        sample_rate: 48_000,
+        channels: 1,
+        key: 42,
+    };
+    let mut cache = MixBufferCache::spawn(48_000, 1);
+    assert!(matches!(cache.stretched(request()), ClipAudio::Pending));
+    cache.send_jobs(&project);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let shifted = loop {
+        cache.poll();
+        match cache.stretched(request()) {
+            ClipAudio::Ready(samples) => break samples,
+            ClipAudio::Pending => {}
+            _ => panic!("pitch shift failed"),
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "pitch shift never arrived"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    assert!(shifted.end().abs_diff(48_000) < 2048);
+    let middle = shifted.to_vec(12_000..36_000);
+    let crossings = middle
+        .windows(2)
+        .filter(|pair| pair[0] <= 0.0 && pair[1] > 0.0)
+        .count();
+    let frequency = crossings as f64 * 48_000.0 / middle.len() as f64;
+    assert!((frequency - 880.0).abs() < 8.0, "heard {frequency} Hz");
 }
 
 #[test]
@@ -623,6 +670,8 @@ fn long_stretch<'a>(project: &'a Project, path: &'a Path, key: u64) -> StretchRe
         input: vv_audio::StretchInput::File { path, stream: 0 },
         frames: 0..600 * SEC,
         tempo: 2.0,
+        pitch: 1.0,
+        preserve_formants: false,
         sample_rate: 48_000,
         channels: 1,
         key,

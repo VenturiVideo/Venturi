@@ -1,4 +1,4 @@
-//! A pitch-corrected clip's audio, described rather than read: rendered from
+//! A time-stretched or pitch-shifted clip's audio, described rather than read: rendered from
 //! the files and stretched apart from the mix, like a level is measured
 //! (plans/AUDIO_LIVE_MIX.md step 4).
 
@@ -9,9 +9,9 @@ use std::sync::Arc;
 use vv_core::{Project, Timeline};
 
 use crate::SampleBlocks;
-use crate::mixer::{AudioSource, ClipAudio, MixSnapshot, mix_range, stretch_range};
+use crate::mixer::{AudioSource, ClipAudio, MixSnapshot, mix_range};
 
-/// What a pitch-corrected clip stretches.
+/// What a clip processes before mixing.
 #[derive(Clone, Copy)]
 pub enum StretchInput<'a> {
     File {
@@ -34,6 +34,9 @@ pub struct StretchRequest<'a> {
     /// Of the input: the clip's, from its first frame.
     pub frames: Range<u64>,
     pub tempo: f64,
+    /// Frequency multiplier, independently of `tempo`.
+    pub pitch: f64,
+    pub preserve_formants: bool,
     pub sample_rate: u32,
     pub channels: u16,
     /// Same key, same stretch, in every build.
@@ -91,19 +94,23 @@ impl StretchRequest<'_> {
                 SampleBlocks::contiguous(Arc::new(mixed), self.frames.start, self.channels)
             }
         };
-        stretch_range(
-            &input,
-            self.frames.clone(),
-            self.tempo,
+        let mut stretcher = match crate::Stretcher::with_pitch(
             self.sample_rate,
             self.channels,
-        )
-        .map_or(ClipAudio::Missing, |stretched| {
-            ClipAudio::Ready(SampleBlocks::contiguous(
-                Arc::new(stretched),
-                0,
-                self.channels,
-            ))
-        })
+            self.tempo,
+            self.pitch,
+            self.preserve_formants,
+        ) {
+            Ok(stretcher) => stretcher,
+            Err(_) => return ClipAudio::Missing,
+        };
+        let mut out = Vec::new();
+        let range = self.frames.start.max(input.start())..self.frames.end.min(input.end());
+        if stretcher.push(&input.to_vec(range), &mut out).is_err()
+            || stretcher.finish(&mut out).is_err()
+        {
+            return ClipAudio::Missing;
+        }
+        ClipAudio::Ready(SampleBlocks::contiguous(Arc::new(out), 0, self.channels))
     }
 }
