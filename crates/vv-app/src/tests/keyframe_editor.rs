@@ -87,3 +87,27 @@ fn the_time_axis_maps_the_visible_window_onto_the_rect() {
     assert_eq!(axis.frame(200.0), 100);
     assert_eq!(axis.delta(-20.0), -10);
 }
+
+#[test]
+fn camera_shake_curves_are_exposed_to_the_keyframe_editor() {
+    let mut effects = EffectStack::default();
+    let mut filter = vv_core::ClipFilter::new(vv_core::FilterKind::CameraShake);
+    filter
+        .shake
+        .track_mut(vv_core::ShakeParam::Pan)
+        .upsert(10, 0.0, Interpolation::Linear);
+    filter
+        .shake
+        .track_mut(vv_core::ShakeParam::Pan)
+        .upsert(30, 2.0, Interpolation::EaseOut);
+    effects.filters.push(filter);
+    let target = KeyframeTarget::CameraShake(vv_core::ShakeParam::Pan);
+    assert_eq!(rows(&effects), vec![target]);
+    assert_eq!(frames_of(&effects, target), vec![10, 30]);
+    assert_eq!(scalar_value_at(&effects, target, 20), Some(1.0));
+    assert_eq!(
+        scalar_at(&effects, target, 30),
+        Some((2.0, Interpolation::EaseOut))
+    );
+    assert_eq!(scalar_keyframes(&effects, target).len(), 2);
+}

@@ -1,0 +1,41 @@
+_version: 2
+
+filter.camera_shake:
+  en: Camera Shake
+  it: Tremolio camera
+shake.motion_scale:
+  en: Motion scale
+  it: Intensità
+shake.speed:
+  en: Speed (Hz)
+  it: Velocità (Hz)
+shake.pan:
+  en: Pan (%)
+  it: Orizzontale (%)
+shake.tilt:
+  en: Tilt (%)
+  it: Verticale (%)
+shake.rotation:
+  en: Rotation (°)
+  it: Rotazione (°)
+shake.zoom:
+  en: Zoom (%)
+  it: Zoom (%)
+shake.smoothness:
+  en: Smoothness
+  it: Morbidezza
+shake.auto_zoom:
+  en: Compensate edges
+  it: Compensa bordi
+shake.auto_zoom_hint:
+  en: Adds a zoom margin around the clip's centre without moving it. Covers shake on full-frame clips; crop, placement or letterboxing can still leave uncovered edges.
+  it: Aggiunge un margine di zoom attorno al centro della clip senza spostarla. Compensa il tremolio sulle clip a pieno fotogramma; ritaglio, posizionamento o bande possono lasciare bordi scoperti.
+shake.seed:
+  en: Seed
+  it: Seme
+shake.new_seed:
+  en: New variation
+  it: Nuova variante
+shake.hint:
+  en: Animate motion scale to fade the shake in and out. Applied with the clip transform, before pixel filters.
+  it: Anima l'intensità per introdurre e attenuare il movimento. Applicato con la trasformazione della clip, prima dei filtri sui pixel.
