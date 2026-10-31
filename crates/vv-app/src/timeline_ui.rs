@@ -6263,6 +6263,9 @@ pub(crate) fn draw_clip_waveform(
         egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 90, 90, 200));
 
     let width = clip_rect.width();
+    let constant_gain = gain_db
+        .is_constant()
+        .then(|| vv_audio::mixer::db_to_linear(gain_db.default));
     let mut x = vis.min.x;
     while x < vis.max.x {
         let frac = ((x - clip_rect.min.x) / width) as f64;
@@ -6275,9 +6278,12 @@ pub(crate) fn draw_clip_waveform(
         );
         // The gain lives in *source* frames, as in the mixer: the shape
         // drawn is the one that will really be heard, clipping included.
-        let secs = clip_start_secs + frac * (clip_end_secs - clip_start_secs);
-        let source_frame = (secs * media_fps).floor() as FrameIdx;
-        let amplified = peaks[bin] * vv_audio::mixer::db_to_linear(gain_db.value_at(source_frame));
+        let gain = constant_gain.unwrap_or_else(|| {
+            let secs = clip_start_secs + frac * (clip_end_secs - clip_start_secs);
+            let source_frame = (secs * media_fps).floor() as FrameIdx;
+            vv_audio::mixer::db_to_linear(gain_db.value_at(source_frame))
+        });
+        let amplified = peaks[bin] * gain;
         let h = (half_height * amplified.min(1.0)).max(0.5);
         painter.line_segment(
             [egui::pos2(x, center_y - h), egui::pos2(x, center_y + h)],

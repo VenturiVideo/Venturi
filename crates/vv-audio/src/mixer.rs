@@ -323,7 +323,7 @@ impl Default for Channel {
 pub struct MixSnapshot {
     pub sample_rate: u32,
     pub channels: u16,
-    /// Sorted by track.
+    /// Sorted by (track, start).
     pub clips: Vec<MixClip>,
     /// Track and range of `clips` of each track with clips.
     groups: Vec<(usize, std::ops::Range<usize>)>,
@@ -352,7 +352,7 @@ impl MixSnapshot {
         tracks: Vec<Channel>,
         master: Channel,
     ) -> Self {
-        clips.sort_by_key(|c| c.track);
+        clips.sort_by_key(|c| (c.track, c.start));
         let mut groups: Vec<(usize, std::ops::Range<usize>)> = Vec::new();
         for (i, clip) in clips.iter().enumerate() {
             match groups.last_mut() {
@@ -1209,6 +1209,12 @@ fn collect_clips(
             fps,
             sample_rate,
         ));
+    let mut inputs_by_track: Vec<Vec<&InputClip>> = vec![Vec::new(); timeline.tracks.len()];
+    for clip in &inputs {
+        if let Some(bucket) = inputs_by_track.get_mut(clip.track) {
+            bucket.push(clip);
+        }
+    }
     let measured_channel = measuring.map(|m| m.channel);
     let format = (sample_rate, channels);
     let mut tracks: Vec<Channel> = Vec::with_capacity(timeline.tracks.len());
@@ -1222,7 +1228,7 @@ fn collect_clips(
             continue;
         }
         let stop = measuring.filter(|m| m.channel == channel).map(|m| m.insert);
-        let track_inputs: Vec<&InputClip> = inputs.iter().filter(|c| c.track == index).collect();
+        let track_inputs = &inputs_by_track[index];
         let mut track_clips: Vec<(ClipId, u64)> =
             track_inputs.iter().map(|c| (c.id, c.start)).collect();
         track_clips.sort_by_key(|&(_, start)| start);
@@ -1915,7 +1921,14 @@ fn mix_into(
             let channel = snapshot.track(*track);
             let scratch = &mut state.scratch[..len * ch];
             scratch.fill(0.0);
+            let block_end = block_time + len as u64;
             for (index, clip) in range.clone().zip(&snapshot.clips[range.clone()]) {
+                if clip.start >= block_end {
+                    break;
+                }
+                if clip.start + clip.len <= block_time {
+                    continue;
+                }
                 let nested = state.nested.get_mut(index).and_then(Option::as_mut);
                 add_clip(snapshot, clip, nested, block_time, scratch);
             }
@@ -2164,6 +2177,10 @@ fn mono_as_stereo(peak: [f32; 2], channels: usize) -> [f32; 2] {
 /// interpolation slowing down; speeding up, the average of the `step`
 /// frames skipped over, a crude low-pass against aliasing.
 fn add_resampled(buffer: &impl Frames, pos: f64, step: f64, gain: f32, out: &mut [f32]) {
+    let ch = out.len();
+    if ch == 0 {
+        return;
+    }
     let last = buffer.end().saturating_sub(1);
     let at = |frame: u64, c: usize| {
         buffer
@@ -2174,14 +2191,28 @@ fn add_resampled(buffer: &impl Frames, pos: f64, step: f64, gain: f32, out: &mut
     let i = pos as u64;
     if step < 1.0 {
         let t = (pos - i as f64) as f32;
+        let s0 = buffer.frame(i.min(last));
+        let s1 = buffer.frame((i + 1).min(last));
         for (c, o) in out.iter_mut().enumerate() {
-            *o += (at(i, c) + (at(i + 1, c) - at(i, c)) * t) * gain;
+            let v0 = s0.map_or(0.0, |s| s[c]);
+            let v1 = s1.map_or(0.0, |s| s[c]);
+            *o += (v0 + (v1 - v0) * t) * gain;
         }
     } else {
         let n = (step as usize).max(1);
-        for (c, o) in out.iter_mut().enumerate() {
-            let sum: f32 = (i..i + n as u64).map(|frame| at(frame, c)).sum();
-            *o += sum / n as f32 * gain;
+        if let Run::Samples(samples) = buffer.run(i)
+            && samples.len() / ch >= n
+        {
+            for (c, o) in out.iter_mut().enumerate() {
+                let sum: f32 = samples[c..n * ch].iter().step_by(ch).copied().sum();
+                *o += sum / n as f32 * gain;
+            }
+        } else {
+            // Keep clamping and summation order across gaps and the buffer end.
+            for (c, o) in out.iter_mut().enumerate() {
+                let sum: f32 = (i..i + n as u64).map(|frame| at(frame, c)).sum();
+                *o += sum / n as f32 * gain;
+            }
         }
     }
 }
