@@ -136,6 +136,8 @@ pub struct TimelineState {
     /// The playhead jumped programmatically (e.g. ripple delete): the next
     /// frame brings it into view if it left, without waiting for playback.
     pub reveal_playhead: bool,
+    /// Discard the tail of a wheel gesture interrupted by a playhead reveal.
+    pub suppress_hscroll_smoothing: bool,
     /// Clips showing the retime bar (Ctrl+R): dragging their right edge
     /// changes the speed instead of trimming.
     pub retime_controls: BTreeSet<ClipId>,
@@ -445,6 +447,7 @@ impl Default for TimelineState {
             save_preset_requested: None,
             preset_drop: None,
             reveal_playhead: false,
+            suppress_hscroll_smoothing: false,
             retime_controls: BTreeSet::new(),
             speed_dialog_requested: None,
             silence_dialog_requested: None,
@@ -2060,7 +2063,8 @@ pub fn show_timeline(
     let track_locked = |track_index: usize| track_flags.get(track_index).is_some_and(|f| f.locked);
     state.drop_locked(&project.timelines[timeline_id]);
 
-    let total_secs = (max_end_frames as f64 / fps + TRAILING_MARGIN_SECS).max(MIN_TIMELINE_SECS);
+    let total_secs = (max_end_frames.max(state.playhead) as f64 / fps + TRAILING_MARGIN_SECS)
+        .max(MIN_TIMELINE_SECS);
     // At low zoom the natural content is narrower than the panel: we force
     // at least `viewport_width` so the ruler always reaches the edge.
     let viewport_width = (panel_rect.width() - TRACK_HEADER_WIDTH).max(1.0);
@@ -5269,12 +5273,47 @@ fn sync_timeline_scroll(
 
     let max_offset_x = (content_width - viewport_width).max(0.0);
     let dt = ctx.input(|i| i.stable_dt).min(0.1);
-    // During playback the view follows the playhead: a residual inertia would
-    // make it slide away from the point it just centered it on above.
-    if !kinetic_scroll_enabled || playback_active {
+    let (horizontal_modifier, vertical_modifier, zoom_modifier) = ctx.options(|options| {
+        (
+            options.input_options.horizontal_scroll_modifier,
+            options.input_options.vertical_scroll_modifier,
+            options.input_options.zoom_modifier,
+        )
+    });
+    if reveal {
+        state.suppress_hscroll_smoothing = true;
+    } else if ctx.input(|i| {
+        !i.is_scrolling()
+            || i.events.iter().any(|event| match event {
+                egui::Event::MouseWheel {
+                    delta, modifiers, ..
+                } => {
+                    if modifiers.matches_any(zoom_modifier) {
+                        return false;
+                    }
+                    let horizontal = modifiers.matches_any(horizontal_modifier);
+                    let vertical = modifiers.matches_any(vertical_modifier);
+                    if horizontal && !vertical {
+                        delta.x + delta.y != 0.0
+                    } else if vertical && !horizontal {
+                        false
+                    } else {
+                        delta.x != 0.0
+                    }
+                }
+                _ => false,
+            })
+    }) {
+        state.suppress_hscroll_smoothing = false;
+    }
+    // Residual inertia would move the view away from the revealed playhead.
+    if !kinetic_scroll_enabled || playback_active || state.suppress_hscroll_smoothing {
         state.hscroll_vel = 0.0;
     }
     let hovering_panel = pointer_over(ctx, panel_rect);
+    if hovering_panel && state.suppress_hscroll_smoothing {
+        ctx.input_mut(|i| i.smooth_scroll_delta.x = 0.0);
+    }
     // Horizontal swipe in progress: applied immediately (as the
     // ScrollArea would), and its instantaneous speed becomes the inertia to
     // damp when the gesture ends.

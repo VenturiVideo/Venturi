@@ -1038,6 +1038,7 @@ impl VenturiApp {
         let target = arrow_hold_target(hold, time - hold.pressed_at, fps);
         if target != self.timeline_state.playhead {
             self.timeline_state.playhead = target;
+            self.timeline_state.reveal_playhead = true;
             self.ensure_active_clip_matches_playhead(true);
             self.sync_selection_to_playhead();
             self.play_scrub_audio();

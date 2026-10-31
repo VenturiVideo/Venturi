@@ -4154,6 +4154,23 @@ fn in_out_keys_on_the_timeline_set_the_export_range() {
     assert_eq!(app.timeline_state.export_marks.resolve(100), (20, 60));
 }
 
+#[test]
+fn keyboard_steps_request_visibility_in_both_directions_but_idle_input_does_not() {
+    let mut app = VenturiApp::default();
+    make_timeline_with_clip(&mut app, 0, 0, 100);
+    app.scrub_audio = false;
+    app.timeline_state.playhead = 50;
+    for direction in [1, -1] {
+        app.timeline_state.reveal_playhead = false;
+        app.arrow_hold = None;
+        assert!(app.step_playhead_with_arrows(Some(direction), 0.0));
+        assert!(app.timeline_state.reveal_playhead);
+    }
+    app.timeline_state.reveal_playhead = false;
+    assert!(!app.step_playhead_with_arrows(None, 1.0));
+    assert!(!app.timeline_state.reveal_playhead);
+}
+
 /// End-to-end test of the reported bug ("the buffer always stops at the
 /// edge of the next clip"): unlike the old per-clip
 /// system, `render_ahead` must buffer *past* the end of the
