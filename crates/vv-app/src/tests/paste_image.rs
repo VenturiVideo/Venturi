@@ -1,10 +1,7 @@
 use super::*;
 
-fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("vv-paste-image-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn temp_dir(name: &str) -> vv_media::test_support::TempDir {
+    vv_media::test_support::TempDir::new(&format!("vv-paste-image-{name}"))
 }
 
 fn v_key(pressed: bool) -> egui::Event {
@@ -87,7 +84,8 @@ fn name_problem_rejects_empty_separators_and_existing_files() {
 
 #[test]
 fn save_image_creates_the_folder_and_never_overwrites() {
-    let dir = temp_dir("save").join(PASTED_IMAGES_DIR);
+    let root = temp_dir("save");
+    let dir = root.join(PASTED_IMAGES_DIR);
     let image = ClipboardImage {
         bytes: vec![1, 2, 3],
         extension: "png",

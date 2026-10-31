@@ -2,9 +2,12 @@ use super::*;
 use vv_core::{Clip, ClipId, MediaItem, MediaMeta, Rational, Track, TrackKind};
 use vv_media::HwPriority;
 
-fn make_test_clip(dir_name: &str, file_name: &str, duration_secs: u32) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(dir_name);
-    std::fs::create_dir_all(&dir).unwrap();
+fn make_test_clip(
+    dir_name: &str,
+    file_name: &str,
+    duration_secs: u32,
+) -> (vv_media::test_support::TempDir, std::path::PathBuf) {
+    let dir = vv_media::test_support::TempDir::new(dir_name);
     let path = dir.join(file_name);
     vv_media::test_support::ffmpeg(
         &[
@@ -19,12 +22,14 @@ fn make_test_clip(dir_name: &str, file_name: &str, duration_secs: u32) -> std::p
         ],
         &path,
     );
-    path
+    (dir, path)
 }
 
-fn make_test_image(dir_name: &str, file_name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(dir_name);
-    std::fs::create_dir_all(&dir).unwrap();
+fn make_test_image(
+    dir_name: &str,
+    file_name: &str,
+) -> (vv_media::test_support::TempDir, std::path::PathBuf) {
+    let dir = vv_media::test_support::TempDir::new(dir_name);
     let path = dir.join(file_name);
     vv_media::test_support::ffmpeg(
         &[
@@ -39,7 +44,7 @@ fn make_test_image(dir_name: &str, file_name: &str) -> std::path::PathBuf {
         ],
         &path,
     );
-    path
+    (dir, path)
 }
 
 /// End-to-end regression for image support
@@ -51,7 +56,7 @@ fn make_test_image(dir_name: &str, file_name: &str) -> std::path::PathBuf {
 /// for the rest of the clip.
 #[test]
 fn walk_and_fill_decodes_a_stretched_image_clip_past_its_only_real_frame() {
-    let path = make_test_image("vv-app-render-ahead-image-test", "still.png");
+    let (_dir_path, path) = make_test_image("vv-app-render-ahead-image-test", "still.png");
     let mut project = Project::default();
     let media_a = project.media_pool.insert(MediaItem {
         path,
@@ -130,9 +135,8 @@ fn make_test_clip_with_short_gop(
     file_name: &str,
     duration_secs: u32,
     gop: u32,
-) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(dir_name);
-    std::fs::create_dir_all(&dir).unwrap();
+) -> (vv_media::test_support::TempDir, std::path::PathBuf) {
+    let dir = vv_media::test_support::TempDir::new(dir_name);
     let path = dir.join(file_name);
     vv_media::test_support::ffmpeg(
         &[
@@ -151,7 +155,7 @@ fn make_test_clip_with_short_gop(
         ],
         &path,
     );
-    path
+    (dir, path)
 }
 
 /// Enough for the pure tests of `collect_media_segments`, which do not
@@ -736,8 +740,8 @@ fn without_already_cached_chunks_drops_only_fully_covered_chunks() {
 /// clip level").
 #[test]
 fn render_ahead_buffers_across_a_straight_cut_between_two_different_media() {
-    let path_a = make_test_clip("vv-app-render-ahead-test", "a.mp4", 2);
-    let path_b = make_test_clip("vv-app-render-ahead-test", "b.mp4", 2);
+    let (_dir_path_a, path_a) = make_test_clip("vv-app-render-ahead-test", "a.mp4", 2);
+    let (_dir_path_b, path_b) = make_test_clip("vv-app-render-ahead-test", "b.mp4", 2);
 
     let mut project = Project::default();
     let media_a = project.media_pool.insert(MediaItem {
@@ -832,8 +836,8 @@ fn render_ahead_buffers_across_a_straight_cut_between_two_different_media() {
 /// start of `clip_b`.
 #[test]
 fn render_ahead_keeps_both_sides_of_a_crossing_readable_through_the_whole_window() {
-    let path_a = make_test_clip("vv-app-render-ahead-test", "crossing_a.mp4", 2);
-    let path_b = make_test_clip("vv-app-render-ahead-test", "crossing_b.mp4", 2);
+    let (_dir_path_a, path_a) = make_test_clip("vv-app-render-ahead-test", "crossing_a.mp4", 2);
+    let (_dir_path_b, path_b) = make_test_clip("vv-app-render-ahead-test", "crossing_b.mp4", 2);
 
     let mut project = Project::default();
     let item = |path: std::path::PathBuf| MediaItem {
@@ -946,7 +950,7 @@ fn render_ahead_keeps_both_sides_of_a_crossing_readable_through_the_whole_window
 /// shrink repeatedly.
 #[test]
 fn render_ahead_does_not_loop_when_the_playhead_sits_still_just_before_a_cut() {
-    let path = make_test_clip_with_short_gop(
+    let (_dir_path, path) = make_test_clip_with_short_gop(
         "vv-app-render-ahead-test",
         "stationary_before_cut.mp4",
         20,
@@ -1034,7 +1038,7 @@ fn render_ahead_does_not_loop_when_the_playhead_sits_still_just_before_a_cut() {
 /// observations yet, so it uses the default fallback.
 #[test]
 fn open_decoder_seek_threshold_uses_the_default_fallback_before_any_observation() {
-    let path = make_test_clip("vv-app-render-ahead-test", "gop_fresh.mp4", 2);
+    let (_dir_path, path) = make_test_clip("vv-app-render-ahead-test", "gop_fresh.mp4", 2);
     let decoder = Decoder::open(&path).unwrap();
     let od = OpenDecoder::fresh(decoder, path.clone(), false);
     assert_eq!(od.seek_threshold_frames(), DEFAULT_SEEK_THRESHOLD_FRAMES);
@@ -1044,7 +1048,7 @@ fn open_decoder_seek_threshold_uses_the_default_fallback_before_any_observation(
 /// to the distance observed between them.
 #[test]
 fn open_decoder_records_the_observed_gap_between_two_consecutive_landings() {
-    let path = make_test_clip("vv-app-render-ahead-test", "gop_observed.mp4", 2);
+    let (_dir_path, path) = make_test_clip("vv-app-render-ahead-test", "gop_observed.mp4", 2);
     let decoder = Decoder::open(&path).unwrap();
     let mut od = OpenDecoder::fresh(decoder, path.clone(), false);
 
@@ -1060,7 +1064,7 @@ fn open_decoder_records_the_observed_gap_between_two_consecutive_landings() {
 /// narrows it further, never the opposite.
 #[test]
 fn open_decoder_gop_estimate_never_grows_from_a_wider_observation() {
-    let path = make_test_clip("vv-app-render-ahead-test", "gop_min.mp4", 2);
+    let (_dir_path, path) = make_test_clip("vv-app-render-ahead-test", "gop_min.mp4", 2);
     let decoder = Decoder::open(&path).unwrap();
     let mut od = OpenDecoder::fresh(decoder, path.clone(), false);
 
@@ -1084,7 +1088,7 @@ fn open_decoder_gop_estimate_never_grows_from_a_wider_observation() {
 /// the same keyframe and start over, as at 2x on a 250-frame GOP.
 #[test]
 fn open_decoder_threshold_covers_the_stretch_a_seek_had_to_cross() {
-    let path = make_test_clip("vv-app-render-ahead-test", "gop_crossed.mp4", 2);
+    let (_dir_path, path) = make_test_clip("vv-app-render-ahead-test", "gop_crossed.mp4", 2);
     let decoder = Decoder::open(&path).unwrap();
     let mut od = OpenDecoder::fresh(decoder, path.clone(), false);
 
@@ -1106,7 +1110,7 @@ fn open_decoder_threshold_covers_the_stretch_a_seek_had_to_cross() {
 /// one arrives.
 #[test]
 fn open_decoder_gop_estimate_is_capped_even_on_the_first_observation() {
-    let path = make_test_clip("vv-app-render-ahead-test", "gop_cap.mp4", 2);
+    let (_dir_path, path) = make_test_clip("vv-app-render-ahead-test", "gop_cap.mp4", 2);
     let decoder = Decoder::open(&path).unwrap();
     let mut od = OpenDecoder::fresh(decoder, path.clone(), false);
 
@@ -1127,7 +1131,7 @@ fn open_decoder_gop_estimate_is_capped_even_on_the_first_observation() {
 /// more than the time between two ticks of a fast scrub.
 #[test]
 fn open_decoder_ignores_the_learned_gop_estimate_for_an_all_intra_proxy() {
-    let path = make_test_clip("vv-app-render-ahead-test", "gop_proxy_bypass.mp4", 2);
+    let (_dir_path, path) = make_test_clip("vv-app-render-ahead-test", "gop_proxy_bypass.mp4", 2);
     let decoder = Decoder::open(&path).unwrap();
     let mut od = OpenDecoder::fresh(decoder, path.clone(), true);
     assert_eq!(od.seek_threshold_frames(), PROXY_SEEK_THRESHOLD_FRAMES);
@@ -1166,7 +1170,7 @@ fn open_decoder_ignores_the_learned_gop_estimate_for_an_all_intra_proxy() {
 /// exactly this).
 #[test]
 fn position_decoder_reuses_the_open_decoder_for_a_real_seek_instead_of_reopening_the_file() {
-    let path = make_test_clip("vv-app-render-ahead-test", "reuse.mp4", 3);
+    let (_dir_path, path) = make_test_clip("vv-app-render-ahead-test", "reuse.mp4", 3);
     let (media_a, _) = two_media_ids();
 
     let caches = SharedFrameCache::new();
@@ -1214,8 +1218,8 @@ fn position_decoder_reuses_the_open_decoder_for_a_real_seek_instead_of_reopening
 /// seek.
 #[test]
 fn position_decoder_reopens_when_the_resolved_path_changes_even_without_a_seek() {
-    let path_a = make_test_clip("vv-app-render-ahead-test", "swap_a.mp4", 2);
-    let path_b = make_test_clip("vv-app-render-ahead-test", "swap_b.mp4", 2);
+    let (_dir_path_a, path_a) = make_test_clip("vv-app-render-ahead-test", "swap_a.mp4", 2);
+    let (_dir_path_b, path_b) = make_test_clip("vv-app-render-ahead-test", "swap_b.mp4", 2);
     let (media_a, _) = two_media_ids();
 
     let caches = SharedFrameCache::new();
@@ -1272,7 +1276,7 @@ fn position_decoder_reopens_when_the_resolved_path_changes_even_without_a_seek()
 /// `next_frame` and return `Reused` over a hole.
 #[test]
 fn position_decoder_reseeks_when_next_frame_claims_coverage_the_cache_no_longer_has() {
-    let path = make_test_clip("vv-app-render-ahead-test", "stale_next_frame.mp4", 3);
+    let (_dir_path, path) = make_test_clip("vv-app-render-ahead-test", "stale_next_frame.mp4", 3);
     let (media_a, _) = two_media_ids();
 
     let caches = SharedFrameCache::new();
@@ -1363,7 +1367,7 @@ fn position_decoder_reseeks_when_next_frame_claims_coverage_the_cache_no_longer_
 /// "going in circles" without ever advancing steadily.
 #[test]
 fn position_decoder_does_not_reseek_when_already_usefully_ahead_of_the_segment_start() {
-    let path = make_test_clip("vv-app-render-ahead-test", "steady.mp4", 3);
+    let (_dir_path, path) = make_test_clip("vv-app-render-ahead-test", "steady.mp4", 3);
     let (media_a, _) = two_media_ids();
 
     let caches = SharedFrameCache::new();
@@ -1435,7 +1439,7 @@ fn position_decoder_does_not_reseek_when_already_usefully_ahead_of_the_segment_s
 /// all and signal so.
 #[test]
 fn walk_and_fill_reports_caught_up_when_the_whole_window_fits_the_budget() {
-    let path = make_test_clip("vv-app-render-ahead-test", "caught_up.mp4", 3);
+    let (_dir_path, path) = make_test_clip("vv-app-render-ahead-test", "caught_up.mp4", 3);
     let mut project = Project::default();
     let media_a = project.media_pool.insert(MediaItem {
         path,
@@ -1500,7 +1504,7 @@ fn walk_and_fill_reports_caught_up_when_the_whole_window_fits_the_budget() {
 /// the start of the clip would have nothing to retain behind it.
 #[test]
 fn walk_and_fill_decodes_the_behind_window_on_a_fresh_area() {
-    let path = make_test_clip("vv-app-render-ahead-test", "fresh_behind.mp4", 4);
+    let (_dir_path, path) = make_test_clip("vv-app-render-ahead-test", "fresh_behind.mp4", 4);
     let mut project = Project::default();
     let media_a = project.media_pool.insert(MediaItem {
         path,
@@ -1590,7 +1594,7 @@ fn walk_and_fill_decodes_the_behind_window_nearest_frames_first_under_a_tight_bu
     // *before* the target, making the computation below fragile
     // without adding anything to what is under test (the priority
     // order of the chunks, not how much it costs to get there).
-    let path =
+    let (_dir_path, path) =
         make_test_clip_with_short_gop("vv-app-render-ahead-test", "behind_priority.mp4", 4, 1);
     let mut project = Project::default();
     let media_a = project.media_pool.insert(MediaItem {
@@ -1677,7 +1681,7 @@ fn walk_and_fill_decodes_the_behind_window_nearest_frames_first_under_a_tight_bu
 /// "it did not touch the decoder" from "it redid work".
 #[test]
 fn walk_and_fill_does_not_reseek_an_already_complete_behind_window_when_idle() {
-    let path = make_test_clip_with_short_gop(
+    let (_dir_path, path) = make_test_clip_with_short_gop(
         "vv-app-render-ahead-test",
         "behind_idle_stability.mp4",
         4,
@@ -1785,7 +1789,7 @@ fn walk_and_fill_does_not_reseek_an_already_complete_behind_window_when_idle() {
 /// the retention one, see the test above).
 #[test]
 fn walk_and_fill_buffers_only_a_minimal_margin_when_configured_to_zero_seconds() {
-    let path = make_test_clip("vv-app-render-ahead-test", "no_read_ahead.mp4", 4);
+    let (_dir_path, path) = make_test_clip("vv-app-render-ahead-test", "no_read_ahead.mp4", 4);
     let mut project = Project::default();
     let media_a = project.media_pool.insert(MediaItem {
         path,
@@ -1873,7 +1877,7 @@ fn walk_and_fill_buffers_only_a_minimal_margin_when_configured_to_zero_seconds()
 #[test]
 fn walk_and_fill_prioritizes_frames_near_the_playhead_when_the_budget_is_too_small_for_the_full_window()
  {
-    let path = make_test_clip("vv-app-render-ahead-test", "small_budget.mp4", 3);
+    let (_dir_path, path) = make_test_clip("vv-app-render-ahead-test", "small_budget.mp4", 3);
     let mut project = Project::default();
     let media_a = project.media_pool.insert(MediaItem {
         path,
@@ -1947,7 +1951,7 @@ fn walk_and_fill_prioritizes_frames_near_the_playhead_when_the_budget_is_too_sma
 /// window a prefetch that is by now obsolete.
 #[test]
 fn walk_and_fill_stops_early_and_reports_true_when_the_live_target_has_already_drifted() {
-    let path =
+    let (_dir_path, path) =
         make_test_clip_with_short_gop("vv-app-render-ahead-test", "reactivity_drift.mp4", 20, 25);
     let mut project = Project::default();
     let media_a = project.media_pool.insert(MediaItem {
@@ -2032,7 +2036,7 @@ fn walk_and_fill_stops_early_and_reports_true_when_the_live_target_has_already_d
 #[test]
 fn walk_and_fill_does_not_invalidate_one_segment_while_processing_another_segment_of_the_same_media()
  {
-    let path =
+    let (_dir_path, path) =
         make_test_clip_with_short_gop("vv-app-render-ahead-test", "same_media_cut.mp4", 20, 25);
     let mut project = Project::default();
     let media_a = project.media_pool.insert(MediaItem {
@@ -2123,7 +2127,7 @@ fn walk_and_fill_does_not_invalidate_one_segment_while_processing_another_segmen
 #[test]
 fn walk_and_fill_does_not_let_one_segment_of_a_media_evict_another_via_capacity_when_the_budget_is_tight()
  {
-    let path = make_test_clip_with_short_gop(
+    let (_dir_path, path) = make_test_clip_with_short_gop(
         "vv-app-render-ahead-test",
         "same_media_cut_tight_budget.mp4",
         20,
@@ -2224,7 +2228,8 @@ fn walk_and_fill_does_not_let_one_segment_of_a_media_evict_another_via_capacity_
 /// same media, not that threshold).
 #[test]
 fn position_decoder_does_not_reseek_across_cycles_when_the_same_media_appears_in_two_segments() {
-    let path = make_test_clip("vv-app-render-ahead-test", "same_media_two_segments.mp4", 3);
+    let (_dir_path, path) =
+        make_test_clip("vv-app-render-ahead-test", "same_media_two_segments.mp4", 3);
     let (media_a, _) = two_media_ids();
     let caches = SharedFrameCache::new();
     let mut open: HashMap<MediaId, OpenDecoder> = HashMap::new();
@@ -2312,8 +2317,8 @@ fn position_decoder_does_not_reseek_across_cycles_when_the_same_media_appears_in
 /// buffer *more* frames (no longer capacity, but real coverage).
 #[test]
 fn walk_and_fill_buffers_more_of_a_media_once_fewer_distinct_media_share_the_budget() {
-    let path_a = make_test_clip("vv-app-render-ahead-test", "resize_a.mp4", 2);
-    let path_b = make_test_clip("vv-app-render-ahead-test", "resize_b.mp4", 15);
+    let (_dir_path_a, path_a) = make_test_clip("vv-app-render-ahead-test", "resize_a.mp4", 2);
+    let (_dir_path_b, path_b) = make_test_clip("vv-app-render-ahead-test", "resize_b.mp4", 15);
 
     let mut project = Project::default();
     let media_a = project.media_pool.insert(MediaItem {
@@ -2439,7 +2444,7 @@ fn walk_and_fill_buffers_more_of_a_media_once_fewer_distinct_media_share_the_bud
 /// it would stay stuck past the new target forever.
 #[test]
 fn render_ahead_catches_up_after_a_large_backward_seek() {
-    let path = make_test_clip("vv-app-render-ahead-test", "backward_seek.mp4", 4);
+    let (_dir_path, path) = make_test_clip("vv-app-render-ahead-test", "backward_seek.mp4", 4);
     let mut project = Project::default();
     let media_a = project.media_pool.insert(MediaItem {
         path,
@@ -2530,7 +2535,8 @@ fn render_ahead_catches_up_after_a_large_backward_seek() {
 /// is unreachable by decoding only forwards.
 #[test]
 fn render_ahead_catches_up_after_a_backward_seek_beyond_the_retention_window() {
-    let path = make_test_clip("vv-app-render-ahead-test", "small_backward_seek.mp4", 6);
+    let (_dir_path, path) =
+        make_test_clip("vv-app-render-ahead-test", "small_backward_seek.mp4", 6);
     let mut project = Project::default();
     let media_a = project.media_pool.insert(MediaItem {
         path,
@@ -2633,7 +2639,7 @@ fn render_ahead_catches_up_after_a_backward_seek_beyond_the_retention_window() {
 /// decoding the frame can overrun.
 #[test]
 fn render_ahead_reacts_to_each_target_change_faster_than_the_old_poll_interval() {
-    let path = make_test_clip("vv-app-render-ahead-test", "wake_on_change.mp4", 2);
+    let (_dir_path, path) = make_test_clip("vv-app-render-ahead-test", "wake_on_change.mp4", 2);
     let mut project = Project::default();
     let media_a = project.media_pool.insert(MediaItem {
         path,
@@ -2706,7 +2712,7 @@ fn render_ahead_reacts_to_each_target_change_faster_than_the_old_poll_interval()
 /// single isolated backwards jump.
 #[test]
 fn walk_and_fill_catches_up_after_a_backward_seek_above_the_historical_minimum() {
-    let path = make_test_clip_with_short_gop(
+    let (_dir_path, path) = make_test_clip_with_short_gop(
         "vv-app-render-ahead-test",
         "backward_above_historical_min.mp4",
         20,
@@ -2839,7 +2845,7 @@ fn walk_and_fill_catches_up_after_a_backward_seek_above_the_historical_minimum()
 /// survives.
 #[test]
 fn walk_and_fill_does_not_redecode_the_already_buffered_tail_after_a_small_backward_seek() {
-    let path = make_test_clip("vv-app-render-ahead-test", "reconnect.mp4", 20);
+    let (_dir_path, path) = make_test_clip("vv-app-render-ahead-test", "reconnect.mp4", 20);
     let mut project = Project::default();
     let media_a = project.media_pool.insert(MediaItem {
         path,
@@ -2957,7 +2963,7 @@ fn walk_and_fill_does_not_redecode_the_already_buffered_tail_after_a_small_backw
 /// (presumed) position of the decoder.
 #[test]
 fn walk_and_fill_does_not_loop_forever_after_reconnecting_early_from_a_backward_seek() {
-    let path = make_test_clip("vv-app-render-ahead-test", "reconnect_loop.mp4", 20);
+    let (_dir_path, path) = make_test_clip("vv-app-render-ahead-test", "reconnect_loop.mp4", 20);
     let mut project = Project::default();
     let media_a = project.media_pool.insert(MediaItem {
         path,
@@ -3073,7 +3079,8 @@ fn fill_segments_bridges_the_gap_between_two_disconnected_cached_islands() {
     // Explicit GOP=10: keyframes at 0,10,20,... — it only needs to make
     // one predictable near the start of the requested segment, no
     // other requirement on the distance between the two islands below.
-    let path = make_test_clip_with_short_gop("vv-app-render-ahead-test", "bridge_gap.mp4", 4, 10);
+    let (_dir_path, path) =
+        make_test_clip_with_short_gop("vv-app-render-ahead-test", "bridge_gap.mp4", 4, 10);
     let mut project = Project::default();
     let media_a = project.media_pool.insert(MediaItem {
         path,
@@ -3154,7 +3161,7 @@ fn fill_segments_bridges_the_gap_between_two_disconnected_cached_islands() {
 /// the transit preceding it too must still manage to fill it.
 #[test]
 fn fill_segments_does_not_let_transit_frames_exhaust_the_budget_before_the_wanted_range() {
-    let path = make_test_clip_with_short_gop(
+    let (_dir_path, path) = make_test_clip_with_short_gop(
         "vv-app-render-ahead-test",
         "transit_budget.mp4",
         4,
@@ -3241,7 +3248,7 @@ fn fill_segments_does_not_let_transit_frames_exhaust_the_budget_before_the_wante
 /// estimate of how much transit it takes to get there.
 #[test]
 fn fill_segments_does_not_block_a_reachable_segment_just_because_its_transit_would_be_large() {
-    let path = make_test_clip_with_short_gop(
+    let (_dir_path, path) = make_test_clip_with_short_gop(
         "vv-app-render-ahead-test",
         "transit_estimate_does_not_block.mp4",
         4,
@@ -3349,7 +3356,8 @@ fn fill_segments_does_not_block_a_reachable_segment_just_because_its_transit_wou
 /// exactly there.
 #[test]
 fn walk_and_fill_keeps_the_buffer_front_at_the_playhead_even_without_a_real_reseek() {
-    let path = make_test_clip("vv-app-render-ahead-test", "front_tracks_target.mp4", 20);
+    let (_dir_path, path) =
+        make_test_clip("vv-app-render-ahead-test", "front_tracks_target.mp4", 20);
 
     let mut project = Project::default();
     let media_a = project.media_pool.insert(MediaItem {
@@ -3450,7 +3458,7 @@ fn walk_and_fill_keeps_the_buffer_front_at_the_playhead_even_without_a_real_rese
 /// unless another wanted range (here the window behind) covers it.
 #[test]
 fn fill_segments_caches_only_the_transit_some_window_wants() {
-    let path = make_test_clip_with_short_gop(
+    let (_dir_path, path) = make_test_clip_with_short_gop(
         "vv-app-render-ahead-test",
         "transit_outside_window.mp4",
         4,
@@ -3513,7 +3521,7 @@ fn fill_segments_caches_only_the_transit_some_window_wants() {
 /// it was heading to belong to a position no longer wanted.
 #[test]
 fn fill_segments_is_interrupted_by_a_jump_below_the_seek_threshold() {
-    let path =
+    let (_dir_path, path) =
         make_test_clip_with_short_gop("vv-app-render-ahead-test", "jump_interrupts.mp4", 4, 25);
     let mut project = Project::default();
     let media_a = project.media_pool.insert(MediaItem {
@@ -3568,9 +3576,12 @@ fn fill_segments_is_interrupted_by_a_jump_below_the_seek_threshold() {
     assert!(!caches.covers(media_a, 10, 60));
 }
 
-fn make_color_clip(dir_name: &str, file_name: &str, color: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(dir_name);
-    std::fs::create_dir_all(&dir).unwrap();
+fn make_color_clip(
+    dir_name: &str,
+    file_name: &str,
+    color: &str,
+) -> (vv_media::test_support::TempDir, std::path::PathBuf) {
+    let dir = vv_media::test_support::TempDir::new(dir_name);
     let path = dir.join(file_name);
     vv_media::test_support::ffmpeg(
         &[
@@ -3585,7 +3596,7 @@ fn make_color_clip(dir_name: &str, file_name: &str, color: &str) -> std::path::P
         ],
         &path,
     );
-    path
+    (dir, path)
 }
 
 fn single_media_project(path: std::path::PathBuf) -> (Project, MediaId, TimelineId) {
@@ -3635,8 +3646,8 @@ fn wait_caught_up(render_ahead: &RenderAhead) {
 #[test]
 fn a_replaced_project_never_shows_the_previous_projects_frames() {
     let dir = "vv-app-render-ahead-replace-test";
-    let path_a = make_test_clip(dir, "a.mp4", 2);
-    let path_b = make_color_clip(dir, "b.mp4", "red");
+    let (_dir_path_a, path_a) = make_test_clip(dir, "a.mp4", 2);
+    let (_dir_path_b, path_b) = make_color_clip(dir, "b.mp4", "red");
     let (project_a, media_a, timeline_a) = single_media_project(path_a);
     let (project_b, media_b, timeline_b) = single_media_project(path_b.clone());
     assert_eq!(
@@ -3667,7 +3678,7 @@ fn a_replaced_project_never_shows_the_previous_projects_frames() {
 
 #[test]
 fn a_preview_divisor_caches_smaller_frames_and_a_change_drops_the_old_ones() {
-    let path = make_test_clip("vv-app-render-ahead-divisor-test", "divisor.mp4", 1);
+    let (_dir_path, path) = make_test_clip("vv-app-render-ahead-divisor-test", "divisor.mp4", 1);
     let (project, media, timeline_id) = single_media_project(path);
     let render_ahead = RenderAhead::spawn(project, timeline_id, 100_000_000, None, 1.0, 0.0);
     render_ahead.set_preview_divisor(2);
@@ -3686,7 +3697,7 @@ fn a_preview_divisor_caches_smaller_frames_and_a_change_drops_the_old_ones() {
 /// unchanged window must not undo it, or an idle editor redraws forever.
 #[test]
 fn an_unchanged_window_keeps_render_ahead_caught_up() {
-    let path = make_test_clip("vv-app-render-ahead-idle-test", "idle.mp4", 1);
+    let (_dir_path, path) = make_test_clip("vv-app-render-ahead-idle-test", "idle.mp4", 1);
     let (project, _, timeline_id) = single_media_project(path);
     let render_ahead = RenderAhead::spawn(project, timeline_id, 100_000_000, None, 1.0, 0.5);
     render_ahead.set_target(0);
@@ -3726,7 +3737,7 @@ fn opened_media(
 
 #[test]
 fn an_edit_that_keeps_the_media_keeps_its_decoder_and_frames() {
-    let path = make_test_clip("vv-app-render-ahead-forget-test", "keep.mp4", 1);
+    let (_dir_path, path) = make_test_clip("vv-app-render-ahead-forget-test", "keep.mp4", 1);
     let (old, media, timeline_id) = single_media_project(path.clone());
     let mut new = old.clone();
     new.timelines[timeline_id].tracks[0].clips[0]
@@ -3745,7 +3756,7 @@ fn an_edit_that_keeps_the_media_keeps_its_decoder_and_frames() {
 
 #[test]
 fn a_media_naming_another_file_loses_its_decoder_and_frames() {
-    let path = make_test_clip("vv-app-render-ahead-forget-test", "before.mp4", 1);
+    let (_dir_path, path) = make_test_clip("vv-app-render-ahead-forget-test", "before.mp4", 1);
     let (old, media, _) = single_media_project(path.clone());
     let mut relinked = old.clone();
     relinked.media_pool[media].path = "elsewhere.mp4".into();
@@ -3960,8 +3971,13 @@ fn source_stride_follows_the_clip_rate_and_is_one_without_a_stride() {
 fn project_with_one_clip(
     file_name: &str,
     clip: impl FnOnce(MediaId) -> Clip,
-) -> (Project, TimelineId, MediaId) {
-    let path = make_test_clip("vv-app-render-ahead-test", file_name, 3);
+) -> (
+    Project,
+    TimelineId,
+    MediaId,
+    vv_media::test_support::TempDir,
+) {
+    let (dir, path) = make_test_clip("vv-app-render-ahead-test", file_name, 3);
     let mut project = Project::default();
     let media = project.media_pool.insert(MediaItem {
         path,
@@ -3987,7 +4003,7 @@ fn project_with_one_clip(
         clips: vec![clip],
         ..Track::new(TrackKind::Video)
     }]));
-    (project, timeline_id, media)
+    (project, timeline_id, media, dir)
 }
 
 fn fill_once(
@@ -4024,7 +4040,7 @@ fn strided_target(frame: FrameIdx, stride: FrameIdx) -> LiveTarget {
 
 #[test]
 fn walk_and_fill_with_a_stride_caches_only_its_multiples() {
-    let (project, timeline_id, media) =
+    let (project, timeline_id, media, _dir) =
         project_with_one_clip("stride_multiples.mp4", |m| media_clip(1, m, 0, 60));
     let caches = SharedFrameCache::new();
 
@@ -4047,7 +4063,7 @@ fn walk_and_fill_with_a_stride_caches_only_its_multiples() {
 /// filled and no neighbour stands in for the exact frame any more.
 #[test]
 fn walk_and_fill_fills_the_gaps_when_the_stride_goes_back_to_one() {
-    let (project, timeline_id, media) =
+    let (project, timeline_id, media, _dir) =
         project_with_one_clip("stride_back.mp4", |m| media_clip(1, m, 0, 60));
     let caches = SharedFrameCache::new();
     fill_once(&project, timeline_id, &caches, 0, &strided_target(0, 2));
@@ -4067,7 +4083,7 @@ fn walk_and_fill_fills_the_gaps_when_the_stride_goes_back_to_one() {
 /// decoded, or the layer would vanish during fast playback.
 #[test]
 fn walk_and_fill_with_a_stride_still_decodes_a_freeze_frame() {
-    let (project, timeline_id, media) = project_with_one_clip("stride_freeze.mp4", |m| {
+    let (project, timeline_id, media, _dir) = project_with_one_clip("stride_freeze.mp4", |m| {
         let mut clip = media_clip(1, m, 0, 40);
         clip.freeze = Some(13);
         clip
@@ -4084,16 +4100,17 @@ fn walk_and_fill_with_a_stride_still_decodes_a_freeze_frame() {
 /// 2x every source frame is still shown, none may be skipped.
 #[test]
 fn walk_and_fill_keeps_every_frame_of_a_conformed_clip_at_2x() {
-    let (mut project, timeline_id, media) = project_with_one_clip("stride_conformed.mp4", |m| {
-        Clip::from_source_range(
-            ClipId(1),
-            ClipSource::Media(m),
-            0,
-            40,
-            0,
-            Rational::new(2, 1),
-        )
-    });
+    let (mut project, timeline_id, media, _dir) =
+        project_with_one_clip("stride_conformed.mp4", |m| {
+            Clip::from_source_range(
+                ClipId(1),
+                ClipSource::Media(m),
+                0,
+                40,
+                0,
+                Rational::new(2, 1),
+            )
+        });
     project.timelines[timeline_id].fps = Rational::new(50, 1);
     let caches = SharedFrameCache::new();
 
@@ -4107,9 +4124,10 @@ fn walk_and_fill_keeps_every_frame_of_a_conformed_clip_at_2x() {
 /// or the other clip would miss frames it shows.
 #[test]
 fn walk_and_fill_gives_a_media_the_smallest_stride_of_its_clips() {
-    let (mut project, timeline_id, media) = project_with_one_clip("stride_two_rates.mp4", |m| {
-        media_clip_trimmed(1, m, 0, 0, 20)
-    });
+    let (mut project, timeline_id, media, _dir) =
+        project_with_one_clip("stride_two_rates.mp4", |m| {
+            media_clip_trimmed(1, m, 0, 0, 20)
+        });
     let fast = Clip::from_source_range(
         ClipId(2),
         ClipSource::Media(media),
@@ -4127,8 +4145,15 @@ fn walk_and_fill_gives_a_media_the_smallest_stride_of_its_clips() {
 }
 
 /// 8 s at 25 fps with a keyframe every 25 frames, one clip over all of it.
-fn project_with_gop_25(file_name: &str) -> (Project, TimelineId, MediaId) {
-    let path = make_test_clip_with_short_gop("vv-app-render-ahead-test", file_name, 8, 25);
+fn project_with_gop_25(
+    file_name: &str,
+) -> (
+    Project,
+    TimelineId,
+    MediaId,
+    vv_media::test_support::TempDir,
+) {
+    let (dir, path) = make_test_clip_with_short_gop("vv-app-render-ahead-test", file_name, 8, 25);
     let mut project = Project::default();
     let media = project.media_pool.insert(MediaItem {
         path,
@@ -4153,7 +4178,7 @@ fn project_with_gop_25(file_name: &str) -> (Project, TimelineId, MediaId) {
         clips: vec![media_clip(1, media, 0, 200)],
         ..Track::new(TrackKind::Video)
     }]));
-    (project, timeline_id, media)
+    (project, timeline_id, media, dir)
 }
 
 fn playing_target(frame: FrameIdx, speed: f64) -> LiveTarget {
@@ -4209,7 +4234,7 @@ fn decide(
 
 #[test]
 fn keyframes_only_follows_the_measured_throughput_above_1x() {
-    let (project, timeline_id, media) = project_with_gop_25("kf_throughput.mp4");
+    let (project, timeline_id, media, _dir) = project_with_gop_25("kf_throughput.mp4");
     let caches = SharedFrameCache::new();
     caches.insert(media, 0, Arc::new(dummy_frame()));
     let mut pacing = Pacing::default();
@@ -4266,7 +4291,7 @@ fn missing_all_along(pacing: &mut Pacing, media: MediaId, secs: u64) {
 /// the media to keyframes, and the next playback at that speed starts there.
 #[test]
 fn keyframes_only_starts_when_the_frame_at_the_playhead_stays_missing() {
-    let (project, timeline_id, media) = project_with_gop_25("kf_stall.mp4");
+    let (project, timeline_id, media, _dir) = project_with_gop_25("kf_stall.mp4");
     let caches = SharedFrameCache::new();
     let mut pacing = Pacing::default();
 
@@ -4300,7 +4325,7 @@ fn keyframes_only_starts_when_the_frame_at_the_playhead_stays_missing() {
 /// cut, the disk): keyframes for the rest of it would be worse.
 #[test]
 fn keyframes_only_ignores_a_one_off_freeze() {
-    let (project, timeline_id, media) = project_with_gop_25("kf_one_off.mp4");
+    let (project, timeline_id, media, _dir) = project_with_gop_25("kf_one_off.mp4");
     let caches = SharedFrameCache::new();
     let mut pacing = Pacing::default();
     let now = Instant::now();
@@ -4332,7 +4357,7 @@ fn keyframes_only_ignores_a_one_off_freeze() {
 /// decoder keeping up: 2 s of the media's playback are watched first.
 #[test]
 fn keyframes_only_ignores_a_freeze_at_the_start_of_a_clip() {
-    let (project, timeline_id, media) = project_with_gop_25("kf_clip_start.mp4");
+    let (project, timeline_id, media, _dir) = project_with_gop_25("kf_clip_start.mp4");
     let caches = SharedFrameCache::new();
     let mut pacing = Pacing::default();
     let now = Instant::now();
@@ -4362,7 +4387,7 @@ fn presence_counts_the_time_the_frame_was_missing() {
 /// 2.5 s, so a shorter freeze in normal playback is still the lesser evil.
 #[test]
 fn keyframes_only_waits_for_a_freeze_longer_than_the_gap_between_keyframes() {
-    let (project, timeline_id, media) = project_with_gop_25("kf_long_gop.mp4");
+    let (project, timeline_id, media, _dir) = project_with_gop_25("kf_long_gop.mp4");
     let caches = SharedFrameCache::new();
     let mut pacing = Pacing::default();
     let timeline = &project.timelines[timeline_id];
@@ -4394,7 +4419,7 @@ fn keyframes_only_waits_for_a_freeze_longer_than_the_gap_between_keyframes() {
 
 #[test]
 fn keyframes_only_is_off_when_disabled_and_for_images() {
-    let (project, timeline_id, media) = project_with_gop_25("kf_disabled.mp4");
+    let (project, timeline_id, media, _dir) = project_with_gop_25("kf_disabled.mp4");
     let caches = SharedFrameCache::new();
     let mut pacing = Pacing::default();
     pacing.fell_behind.insert((media, 4.0f64.to_bits()));
@@ -4416,7 +4441,7 @@ fn keyframes_only_is_off_when_disabled_and_for_images() {
         .is_empty()
     );
 
-    let path = make_test_image("vv-app-render-ahead-test", "kf_still.png");
+    let (_dir_path, path) = make_test_image("vv-app-render-ahead-test", "kf_still.png");
     let mut project = Project::default();
     let image = project.media_pool.insert(MediaItem {
         path,
@@ -4449,7 +4474,7 @@ fn keyframes_only_is_off_when_disabled_and_for_images() {
 /// no frame in between; the one before survives the next cycle's eviction.
 #[test]
 fn walk_and_fill_in_keyframe_mode_caches_only_keyframes() {
-    let (project, timeline_id, media) = project_with_gop_25("kf_fill.mp4");
+    let (project, timeline_id, media, _dir) = project_with_gop_25("kf_fill.mp4");
     let caches = SharedFrameCache::new();
     let mut open = HashMap::new();
     let pacing = RefCell::new(Pacing::default());
@@ -4492,12 +4517,24 @@ fn walk_and_fill_in_keyframe_mode_caches_only_keyframes() {
     );
 }
 
-fn landed_at_50(file_name: &str) -> (Project, MediaId, OpenDecoder) {
-    let (project, _, media) = project_with_gop_25(file_name);
+fn landed_at_50(
+    file_name: &str,
+) -> (
+    vv_media::test_support::TempDir,
+    Project,
+    MediaId,
+    OpenDecoder,
+) {
+    let (project, _, media, dir) = project_with_gop_25(file_name);
     let path = project.media_pool[media].path.clone();
     let mut decoder = Decoder::open(&path).unwrap();
     decoder.seek_to_time(70.0 / 25.0).unwrap();
-    (project, media, OpenDecoder::fresh(decoder, path, false))
+    (
+        dir,
+        project,
+        media,
+        OpenDecoder::fresh(decoder, path, false),
+    )
 }
 
 fn paused_context<'a>(
@@ -4528,7 +4565,8 @@ fn paused_context<'a>(
 /// landed on first, as a stand-in.
 #[test]
 fn a_slow_seek_while_paused_shows_its_keyframe_first() {
-    let (project, media, mut od) = landed_at_50("kf_scrub.mp4");
+    // The directory comes first so it drops after the decoder.
+    let (_dir, project, media, mut od) = landed_at_50("kf_scrub.mp4");
     let caches = SharedFrameCache::new();
     let pacing = RefCell::new(Pacing::default());
     pacing.borrow_mut().throughput.insert((media, 1), 10.0);
@@ -4549,7 +4587,8 @@ fn a_slow_seek_while_paused_shows_its_keyframe_first() {
 
 #[test]
 fn a_quick_seek_while_paused_goes_straight_to_the_frame() {
-    let (project, media, mut od) = landed_at_50("kf_scrub_quick.mp4");
+    // The directory comes first so it drops after the decoder.
+    let (_dir, project, media, mut od) = landed_at_50("kf_scrub_quick.mp4");
     let caches = SharedFrameCache::new();
     let pacing = RefCell::new(Pacing::default());
     pacing.borrow_mut().throughput.insert((media, 1), 10_000.0);
@@ -4569,7 +4608,7 @@ fn a_quick_seek_while_paused_goes_straight_to_the_frame() {
 /// Once every frame of the window is there no keyframe stands in any more.
 #[test]
 fn a_settled_window_while_paused_drops_the_stand_in() {
-    let (project, timeline_id, media) = project_with_gop_25("kf_scrub_settled.mp4");
+    let (project, timeline_id, media, _dir) = project_with_gop_25("kf_scrub_settled.mp4");
     let caches = SharedFrameCache::new();
     let mut open = HashMap::new();
     let pacing = RefCell::new(Pacing::default());
@@ -4645,7 +4684,7 @@ fn keyframe_spans_answer_only_where_a_seek_proved_no_keyframe() {
 /// already at 40. Taking it for one sought back a GOP every cycle.
 #[test]
 fn position_decoder_sees_no_hole_in_the_frames_a_stride_skips() {
-    let path = make_test_clip("vv-app-render-ahead-test", "stride_hole.mp4", 3);
+    let (_dir_path, path) = make_test_clip("vv-app-render-ahead-test", "stride_hole.mp4", 3);
     let (media, _) = two_media_ids();
     let caches = SharedFrameCache::new();
     caches.set_stride(media, 4);
