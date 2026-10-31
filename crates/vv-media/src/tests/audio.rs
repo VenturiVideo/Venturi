@@ -238,15 +238,26 @@ const NOISE: &str = "anoisesrc=duration=20:color=white:amplitude=0.5:seed=7:samp
 /// their own (AAC's PNS), different after a seek.
 const CHIRP: &str = "aevalsrc=0.5*sin(2*PI*(100+300*t)*t):duration=20:sample_rate=48000";
 
-fn test_file(
-    name: &str,
-    source: &str,
-    output_args: &[&str],
-    with_video: bool,
-) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("vv-media-seek-test-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join(name);
+/// A generated test file; its directory is removed when the test ends.
+struct SeekTestFile {
+    _dir: crate::test_support::TempDir,
+    path: std::path::PathBuf,
+}
+
+impl std::ops::Deref for SeekTestFile {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+fn test_file(name: &str, source: &str, output_args: &[&str], with_video: bool) -> SeekTestFile {
+    let dir = crate::test_support::TempDir::new("vv-media-seek-test");
+    let file = SeekTestFile {
+        path: dir.join(name),
+        _dir: dir,
+    };
     let mut args = vec!["-f", "lavfi", "-i", source];
     if with_video {
         args.extend([
@@ -266,8 +277,8 @@ fn test_file(
     }
     args.extend(["-ac", "2"]);
     args.extend(output_args);
-    crate::test_support::ffmpeg(&args, &path);
-    path
+    crate::test_support::ffmpeg(&args, &file.path);
+    file
 }
 
 /// The frames `from..from + len` of stream 0 at 48 kHz stereo, by seeking.
