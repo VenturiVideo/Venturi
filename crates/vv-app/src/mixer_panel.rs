@@ -145,23 +145,28 @@ impl MixerPanelState {
 pub(crate) fn show_mixer(
     ctx: &egui::Context,
     open: &mut bool,
+    placement: &mut crate::panel_window::Placement,
     state: &mut MixerPanelState,
     project: &Project,
     timeline_id: Option<TimelineId>,
     meters: Option<&MixMeters>,
-    presets: EffectPresets,
+    mut presets: EffectPresets,
     vst3: &Vst3View,
 ) -> Vec<BoxedCommand> {
     let mut commands: Vec<BoxedCommand> = Vec::new();
-    egui::Window::new(t!("mixer.title"))
-        .id(egui::Id::new("audio_mixer"))
-        .open(open)
-        .default_width(420.0)
-        .show(ctx, |ui| {
+    crate::panel_window::show(
+        ctx,
+        "audio_mixer",
+        &t!("mixer.title"),
+        [420.0, 480.0],
+        open,
+        placement,
+        |ui| {
             let Some((timeline_id, timeline)) =
                 timeline_id.and_then(|id| project.timelines.get(id).map(|t| (id, t)))
             else {
                 ui.label(t!("mixer.no_timeline"));
+                state.open_effect = None;
                 return;
             };
             let mut falling = false;
@@ -220,13 +225,16 @@ pub(crate) fn show_mixer(
                 state.follow_edit(&edit, timeline_id, channel);
                 commands.extend(edit.into_commands(timeline_id, channel));
             }
-        });
-    match timeline_id.and_then(|id| project.timelines.get(id).map(|t| (id, t))) {
-        Some((id, timeline)) => {
-            commands.extend(effect_window(ctx, state, id, timeline, meters, presets));
-        }
-        None => state.open_effect = None,
-    }
+            commands.extend(effect_window(
+                ui.ctx(),
+                state,
+                timeline_id,
+                timeline,
+                meters,
+                &mut presets,
+            ));
+        },
+    );
     commands
 }
 
@@ -408,7 +416,7 @@ fn effect_window(
     timeline_id: TimelineId,
     timeline: &Timeline,
     meters: Option<&MixMeters>,
-    presets: EffectPresets,
+    presets: &mut EffectPresets,
 ) -> Vec<BoxedCommand> {
     let mut commands: Vec<BoxedCommand> = Vec::new();
     let Some((open_timeline, channel, index)) = state.open_effect else {

@@ -158,6 +158,24 @@ fn save_then_load_keeps_custom_panel_layout_and_defaults_it_when_absent() {
         .join("settings.json");
     let mut settings = Settings::default();
     settings.panels = PanelLayout {
+        inspector_window: crate::panel_window::Placement {
+            detached: true,
+            size: [800.0, 600.0],
+        },
+        floating_windows: [
+            crate::panel_window::Placement {
+                detached: true,
+                size: [720.0, 340.0],
+            },
+            crate::panel_window::Placement {
+                detached: false,
+                size: [420.0, 480.0],
+            },
+            crate::panel_window::Placement {
+                detached: true,
+                size: [760.0, 640.0],
+            },
+        ],
         media_pool_open: false,
         effects_open: true,
         inspector_open: false,
@@ -183,6 +201,29 @@ fn save_then_load_keeps_custom_panel_layout_and_defaults_it_when_absent() {
     std::fs::write(&path, "{}").unwrap();
     let loaded = Settings::load(&path);
     assert_eq!(loaded.panels, PanelLayout::default());
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+fn earlier_floating_window_settings_keep_properties_embedded() {
+    let path = std::env::temp_dir()
+        .join(format!("vv-settings-earlier-panels-{}", std::process::id()))
+        .join("settings.json");
+    let mut settings = Settings::default();
+    settings.panels.floating_windows[1] = crate::panel_window::Placement {
+        detached: true,
+        size: [500.0, 560.0],
+    };
+    settings.panels.left_column_width = 345.0;
+    settings.save(&path).unwrap();
+    let mut json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    json["panels"]
+        .as_object_mut()
+        .unwrap()
+        .remove("inspector_window");
+    std::fs::write(&path, json.to_string()).unwrap();
+    assert_eq!(Settings::load(&path), settings);
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 

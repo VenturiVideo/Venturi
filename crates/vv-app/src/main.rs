@@ -28,6 +28,7 @@ mod menu_list;
 mod mix_buffers;
 mod mixer_panel;
 mod new_timeline_dialog;
+mod panel_window;
 mod paste_attributes;
 mod paste_image;
 mod plugin_editors;
@@ -4031,6 +4032,12 @@ fn frame_stride(shown_frames_only: bool, playing: bool, speed: f64) -> FrameIdx 
 impl eframe::App for VenturiApp {
     #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        let (native, source) = panel_window::forward_to_root(ctx, raw_input);
+        if native {
+            self.media_pool_state.focused = false;
+            self.keyframe_editor
+                .set_panel_focus(source == Some("keyframe_editor"));
+        }
         unstick_wheel_modifiers(raw_input);
         self.paste_key_watch.feed(raw_input);
         #[cfg(target_os = "macos")]
@@ -4112,6 +4119,7 @@ impl VenturiApp {
     }
 
     fn frame_ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        panel_window::begin_frame(ui.ctx());
         self.handle_close_request(&ui.ctx().clone());
         self.poll_pending_dialog(&ui.ctx().clone());
         self.poll_dropped_files(&ui.ctx().clone());
@@ -4524,6 +4532,7 @@ impl VenturiApp {
             let editor = keyframe_editor::show_keyframe_editor(
                 ui.ctx(),
                 &mut self.settings.panels.keyframe_editor_open,
+                &mut self.settings.panels.floating_windows[0],
                 &mut self.keyframe_editor,
                 &self.session.project,
                 target,
@@ -4542,6 +4551,7 @@ impl VenturiApp {
             pending_effects.extend(mixer_panel::show_mixer(
                 ui.ctx(),
                 &mut self.settings.panels.mixer_open,
+                &mut self.settings.panels.floating_windows[1],
                 &mut self.mixer_panel,
                 &self.session.project,
                 self.timeline_id,
@@ -4597,6 +4607,7 @@ impl VenturiApp {
             let mut response = color_window::show_color_window(
                 ui.ctx(),
                 &mut self.settings.panels.color_window_open,
+                &mut self.settings.panels.floating_windows[2],
                 &mut self.settings.panels.color_scopes,
                 &mut self.scope_view,
                 grade,
@@ -4641,7 +4652,9 @@ impl VenturiApp {
         // all back together.
         // An open dropdown is applying the preview of its entries:
         // its changes go into a single undo step, like a drag.
-        let holding = ui.input(|i| i.pointer.any_down()) || preview_combo_open(ui.ctx());
+        let holding = ui.input(|i| i.pointer.any_down())
+            || preview_combo_open(ui.ctx())
+            || panel_window::interaction_held(ui.ctx());
         self.apply_effect_changes(pending_effects, holding);
         if let Some(request) = self.mixer_panel.editor_requested.take() {
             let current = self.timeline_id;
@@ -4905,7 +4918,7 @@ impl VenturiApp {
         }
 
         let pointer_down = ui.input(|i| i.pointer.any_down());
-        self.apply_effect_changes(overlay_effects, pointer_down);
+        self.apply_effect_changes(overlay_effects, pointer_down || holding);
         self.update_scopes(ui.ctx());
 
         if transport_action.toggle_play {

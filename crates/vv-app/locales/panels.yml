@@ -1,0 +1,8 @@
+_version: 2
+
+panels.detach:
+  en: Detach
+  it: Separa
+panels.reattach:
+  en: Reattach
+  it: Riaggancia

@@ -73,9 +73,11 @@ pub(crate) struct KeyframeEditorState {
 }
 
 impl KeyframeEditorState {
-    /// Del deletes the selected keyframes only if the editor has the last
-    /// click and something selected; otherwise it stays with the timeline,
-    /// which deletes the clip.
+    pub(crate) fn set_panel_focus(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+    /// Del stays with the timeline unless this editor owns a selection.
     pub(crate) fn owns_delete(&self) -> bool {
         self.focused && !self.selection.is_empty()
     }
@@ -484,6 +486,7 @@ pub(crate) struct KeyframeEditorResponse {
 pub(crate) fn show_keyframe_editor(
     ctx: &egui::Context,
     open: &mut bool,
+    placement: &mut crate::panel_window::Placement,
     state: &mut KeyframeEditorState,
     project: &Project,
     target: Option<(TimelineId, usize, ClipId)>,
@@ -497,12 +500,14 @@ pub(crate) fn show_keyframe_editor(
         playhead: None,
     };
     let mut window_open = *open;
-    let window = egui::Window::new(t!("keyframes.title"))
-        .id(egui::Id::new("keyframe_editor"))
-        .open(&mut window_open)
-        .default_size([720.0, 340.0])
-        .min_width(420.0)
-        .show(ctx, |ui| {
+    let window = crate::panel_window::show(
+        ctx,
+        "keyframe_editor",
+        &t!("keyframes.title"),
+        [720.0, 340.0],
+        &mut window_open,
+        placement,
+        |ui| {
             let clip = target.and_then(|(tl, track, id)| {
                 project.timelines.get(tl).and_then(|t| t.clip(track, id))
             });
@@ -596,17 +601,20 @@ pub(crate) fn show_keyframe_editor(
                         &mut response,
                     );
                 });
-        });
+        },
+    );
     *open = window_open;
     // Whoever got the last click decides who takes Del, as between
     // media pool and timeline.
-    if let Some(pos) = ctx.input(|i| {
-        i.pointer
-            .any_pressed()
-            .then(|| i.pointer.interact_pos())
-            .flatten()
-    }) {
-        state.focused = *open && window.is_some_and(|w| w.response.rect.contains(pos));
+    if !placement.detached
+        && let Some(pos) = ctx.input(|i| {
+            i.pointer
+                .any_pressed()
+                .then(|| i.pointer.interact_pos())
+                .flatten()
+        })
+    {
+        state.focused = *open && window.is_some_and(|rect| rect.contains(pos));
     }
     response
 }

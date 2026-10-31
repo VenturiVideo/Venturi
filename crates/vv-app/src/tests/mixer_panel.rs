@@ -1,6 +1,86 @@
 use super::*;
 
 #[test]
+fn effect_settings_belong_to_the_detached_mixer_viewport() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    let child_has_settings = Arc::new(AtomicBool::new(false));
+    let observed = child_has_settings.clone();
+    egui::Context::set_immediate_viewport_renderer(move |ctx, mut viewport| {
+        let mut input = egui::RawInput {
+            viewport_id: viewport.ids.this,
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 700.0),
+            )),
+            ..Default::default()
+        };
+        input
+            .viewports
+            .insert(viewport.ids.this, Default::default());
+        let mut output = ctx.run_ui(input, |ui| {
+            (viewport.viewport_ui_cb)(ui);
+            observed.store(
+                ui.memory(|m| {
+                    m.area_rect(egui::Id::new("audio_effect_settings"))
+                        .is_some()
+                }),
+                Ordering::SeqCst,
+            );
+        });
+        output.textures_delta.clear();
+    });
+    let ctx = egui::Context::default();
+    ctx.set_embed_viewports(false);
+    let mut project = Project::default();
+    let mut timeline = plugin_timeline();
+    timeline.tracks[0].mix.effects = vec![AudioEffect::new(AudioEffectKind::Mono)];
+    let timeline_id = project.timelines.insert(timeline);
+    let mut state = MixerPanelState {
+        open_effect: Some((timeline_id, MixerChannel::Track(0), 0)),
+        ..Default::default()
+    };
+    let mut open = true;
+    let mut placement = crate::panel_window::Placement {
+        detached: true,
+        size: [500.0, 600.0],
+    };
+    let mut compressor = Vec::new();
+    let mut eq = Vec::new();
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+        show_mixer(
+            ui.ctx(),
+            &mut open,
+            &mut placement,
+            &mut state,
+            &project,
+            Some(timeline_id),
+            None,
+            EffectPresets {
+                compressor: &mut compressor,
+                eq: &mut eq,
+            },
+            &Vst3View {
+                installed: &[],
+                scanning: false,
+                known: &|_| false,
+                latency_ms: &|_| None,
+                failed: &|_| false,
+            },
+        );
+        assert!(ui.memory(|m| {
+            m.area_rect(egui::Id::new("audio_effect_settings"))
+                .is_none()
+        }));
+    });
+    output.textures_delta.clear();
+    assert!(child_has_settings.load(Ordering::SeqCst));
+}
+
+#[test]
 fn fader_curve_puts_unity_at_its_mark_and_spans_the_whole_gain_range() {
     assert_eq!(fader_position(0.0), 0.7);
     assert_eq!(fader_position(vv_core::GAIN_DB_MIN), 0.0);

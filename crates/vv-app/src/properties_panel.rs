@@ -1708,11 +1708,16 @@ impl VenturiApp {
         // playhead: applied after the drawing, like the effect changes.
         let mut pending_playhead: Option<FrameIdx> = None;
 
-        if self.settings.panels.inspector_open {
-            egui::Panel::right("properties")
-                .resizable(true)
-                .default_size(self.settings.panels.inspector_width)
-                .show(ui, |ui| {
+        let mut placement = self.settings.panels.inspector_window;
+        let mut open = self.settings.panels.inspector_open;
+        if open {
+            crate::panel_window::show_right(
+                ui,
+                &t!("menu.inspector"),
+                self.settings.panels.inspector_width,
+                &mut open,
+                &mut placement,
+                |ui| {
                     // Without it, the panel would shrink to its content and its resize
                     // would spring back.
                     ui.set_min_width(ui.available_width());
@@ -2662,11 +2667,16 @@ impl VenturiApp {
                             ui.label(t!("props.import_to_start"));
                         }
                         });
-                });
-            if let Some(state) = egui::PanelState::load(ui.ctx(), egui::Id::new("properties")) {
+                },
+            );
+            if !placement.detached
+                && let Some(state) = egui::PanelState::load(ui.ctx(), egui::Id::new("properties"))
+            {
                 self.settings.panels.inspector_width = state.size().x;
             }
         }
+        self.settings.panels.inspector_open = open;
+        self.settings.panels.inspector_window = placement;
         (pending_effects, pending_playhead)
     }
 }
