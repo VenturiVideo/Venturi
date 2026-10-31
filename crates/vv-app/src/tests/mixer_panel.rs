@@ -132,15 +132,42 @@ fn keys_asked(timeline: &Timeline, known: bool) -> Vec<u64> {
         asked.borrow_mut().push(key);
         None
     };
-    let failed = |_| false;
     let known = |_: &Vst3Effect| known;
-    let view = Vst3View {
+    draw_effects(
+        timeline,
+        &Vst3View {
+            known: &known,
+            latency_ms: &latency,
+            ..view()
+        },
+    );
+    asked.into_inner()
+}
+
+fn view() -> Vst3View<'static> {
+    fn known(_: &Vst3Effect) -> bool {
+        true
+    }
+    fn latency_ms(_: u64) -> Option<f32> {
+        None
+    }
+    fn failed(_: u64) -> bool {
+        false
+    }
+    fn normalize_failed(_: MixerChannel, _: usize) -> Option<String> {
+        None
+    }
+    Vst3View {
         installed: &[],
         scanning: false,
         known: &known,
-        latency_ms: &latency,
+        latency_ms: &latency_ms,
         failed: &failed,
-    };
+        normalize_failed: &normalize_failed,
+    }
+}
+
+fn draw_effects(timeline: &Timeline, view: &Vst3View) {
     let keys = vv_audio::plugin_keys_in(0, timeline);
     let ctx = egui::Context::default();
     let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
@@ -155,13 +182,43 @@ fn keys_asked(timeline: &Timeline, known: bool) -> Vec<u64> {
                 channel,
                 &strip.effects,
                 0,
-                &view,
+                view,
                 &mut StripEdit::default(),
             );
         }
     });
     output.textures_delta.clear();
-    asked.into_inner()
+}
+
+#[test]
+fn an_enabled_normalization_asks_why_its_level_failed_at_its_place() {
+    let normalize = |enabled| AudioEffect {
+        enabled,
+        ..AudioEffect::new(AudioEffectKind::Normalize {
+            target_db: 0.0,
+            mode: NormalizeMode::SamplePeak,
+            set_level: vv_core::SetLevel::Relative,
+        })
+    };
+    let mut timeline = plugin_timeline();
+    timeline.tracks[1].mix.effects = vec![normalize(false), plugin(7), normalize(true)];
+    timeline.master.effects = vec![normalize(true)];
+    let asked = std::cell::RefCell::new(Vec::new());
+    let failed = |channel, insert| {
+        asked.borrow_mut().push((channel, insert));
+        Some("boom".to_owned())
+    };
+    draw_effects(
+        &timeline,
+        &Vst3View {
+            normalize_failed: &failed,
+            ..view()
+        },
+    );
+    assert_eq!(
+        asked.into_inner(),
+        [(MixerChannel::Track(1), 2), (MixerChannel::Master, 0)]
+    );
 }
 
 fn plugin_timeline() -> Timeline {

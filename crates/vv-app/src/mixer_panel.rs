@@ -348,13 +348,16 @@ pub(crate) fn channel_strip(timeline: &Timeline, channel: MixerChannel) -> Optio
     }
 }
 
-/// What the chain needs of the VST3 host: the scan and the live instances.
+/// What the chain needs of the VST3 host (the scan and the live instances)
+/// and of the level measures.
 pub(crate) struct Vst3View<'a> {
     pub(crate) installed: &'a [PluginInfo],
     pub(crate) scanning: bool,
     pub(crate) known: &'a dyn Fn(&Vst3Effect) -> bool,
     pub(crate) latency_ms: &'a dyn Fn(u64) -> Option<f32>,
     pub(crate) failed: &'a dyn Fn(u64) -> bool,
+    /// Why the normalization at `(channel, insert)` could not be measured.
+    pub(crate) normalize_failed: &'a dyn Fn(MixerChannel, usize) -> Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -700,6 +703,12 @@ fn effects(
                 name.push_str(&format!(" {ms:.0} ms"));
                 hover = t!("mixer.vst3_latency", ms = format!("{ms:.1}")).into_owned();
             }
+        } else if matches!(effect.kind, AudioEffectKind::Normalize { .. })
+            && effect.enabled
+            && let Some(error) = (vst3.normalize_failed)(channel, index)
+        {
+            name.insert_str(0, "! ");
+            hover = t!("mixer.normalize_failed", error = error).into_owned();
         }
         let (fill, text) = if effect.enabled {
             (crate::theme::ACCENT_FILL, egui::Color32::WHITE)

@@ -3,6 +3,7 @@
 //! of the mix already stretched in the background. Without an audio device
 //! the clock is wall time and nothing plays.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
@@ -14,9 +15,11 @@ use vv_audio::mixer::{
     timeline_frame_to_sample,
 };
 use vv_audio::{STRETCH_CHUNK_FRAMES, Stretcher};
-use vv_core::{FrameIdx, Keyframed, Project, TimelineId};
+use vv_core::{
+    ClipId, ClipSource, FrameIdx, Keyframed, MixerChannel, Project, TimelineId, TrackKind,
+};
 
-use crate::mix_buffers::MixBufferCache;
+use crate::mix_buffers::{LevelFailure, MixBufferCache};
 
 const SCRUB_SNIPPET: Duration = Duration::from_millis(80);
 
@@ -687,6 +690,33 @@ impl TimelineAudio {
         self.buffers.plugin_failed(key)
     }
 
+    pub fn clip_failures(
+        &self,
+        project: &Project,
+        timeline_id: TimelineId,
+    ) -> HashMap<ClipId, ClipAudioFailure> {
+        let decode: Vec<_> = self.buffers.decode_failures().collect();
+        clip_audio_failures(project, timeline_id, &decode, self.buffers.level_failures())
+    }
+
+    /// Why the normalization at `insert` of `channel` could not be measured,
+    /// for the whole strip or one of its clips.
+    pub fn normalize_failure(
+        &self,
+        timeline: TimelineId,
+        channel: MixerChannel,
+        insert: usize,
+    ) -> Option<&str> {
+        self.buffers
+            .level_failures()
+            .find(|f| {
+                f.timeline == timeline
+                    && f.measured.channel == channel
+                    && f.measured.insert == insert
+            })
+            .map(|f| f.error)
+    }
+
     /// For an editor window; see `MixBufferCache::plugin_instance`.
     pub fn plugin_instance(
         &mut self,
@@ -725,6 +755,55 @@ impl TimelineAudio {
     pub fn meters(&self) -> &MixMeters {
         &self.mix.meters
     }
+}
+
+/// Why an audio clip plays silent or un-normalized.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClipAudioFailure {
+    Decode(String),
+    Level(String),
+}
+
+/// The clips of `timeline_id` hit by `decode` and `levels`. A clip that does
+/// not decode has no level to measure either: its decode error wins.
+fn clip_audio_failures<'a>(
+    project: &Project,
+    timeline_id: TimelineId,
+    decode: &[(&Path, usize, &str)],
+    levels: impl Iterator<Item = LevelFailure<'a>>,
+) -> HashMap<ClipId, ClipAudioFailure> {
+    let mut failures = HashMap::new();
+    let Some(timeline) = project.timelines.get(timeline_id) else {
+        return failures;
+    };
+    if !decode.is_empty() {
+        let audio_tracks = timeline
+            .tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Audio);
+        for clip in audio_tracks.flat_map(|t| &t.clips) {
+            let ClipSource::Media(id) = &clip.source else {
+                continue;
+            };
+            let Some(item) = project.media_pool.get(*id) else {
+                continue;
+            };
+            let failed = decode
+                .iter()
+                .find(|(path, stream, _)| *path == item.path && *stream == clip.audio_stream_index);
+            if let Some((.., error)) = failed {
+                failures.insert(clip.id, ClipAudioFailure::Decode(error.to_string()));
+            }
+        }
+    }
+    for failure in levels.filter(|f| f.timeline == timeline_id) {
+        if let Some(clip) = failure.measured.clip {
+            failures
+                .entry(clip)
+                .or_insert_with(|| ClipAudioFailure::Level(failure.error.to_owned()));
+        }
+    }
+    failures
 }
 
 impl Drop for TimelineAudio {
