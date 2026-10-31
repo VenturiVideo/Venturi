@@ -1,5 +1,28 @@
 use super::*;
 
+#[test]
+fn mark_items_need_markable_content() {
+    let mut app = VenturiApp::default();
+    assert_eq!(app.mark_target_frames(), 0);
+    let timeline = app.ensure_timeline();
+    assert_eq!(app.mark_target_frames(), 0);
+    let id = app.session.project.alloc_clip_id();
+    app.session.project.timelines[timeline].tracks[0]
+        .clips
+        .push(vv_core::Clip::from_source_range(
+            id,
+            vv_core::ClipSource::SolidColor,
+            0,
+            100,
+            0,
+            vv_core::Rational::one(),
+        ));
+    assert_eq!(app.mark_target_frames(), 100);
+    // An active preview without media must not fall back to the timeline.
+    app.browsing = Some(Browsed::Asset(String::new()));
+    assert_eq!(app.mark_target_frames(), 0);
+}
+
 /// Checks that clicking the File menu's Exit item requests a normal close.
 #[test]
 fn exit_menu_item_requests_window_close() {

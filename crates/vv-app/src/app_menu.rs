@@ -526,6 +526,19 @@ impl VenturiApp {
                             self.add_marker_at_playhead();
                             ui.close();
                         }
+                        let can_mark = self.mark_target_frames() > 0;
+                        for (action, is_in) in [(Action::MarkIn, true), (Action::MarkOut, false)] {
+                            if ui
+                                .add_enabled(
+                                    can_mark,
+                                    egui::Button::new(keymap.menu_label(&action.label(), action)),
+                                )
+                                .clicked()
+                            {
+                                self.mark_at_playhead(is_in);
+                                ui.close();
+                            }
+                        }
                     })
                     .response,
                 );

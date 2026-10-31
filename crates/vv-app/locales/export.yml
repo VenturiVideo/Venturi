@@ -1,5 +1,9 @@
 _version: 2
 
+export.range_mark_hint:
+  en: "To export only a range, set In and Out from the Timeline menu."
+  it: "Per esportare solo un intervallo, imposta In e Out dal menu Timeline."
+
 export.title:
   en: "Export"
   it: "Esporta"

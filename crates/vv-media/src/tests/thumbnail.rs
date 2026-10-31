@@ -2,8 +2,7 @@ use super::*;
 
 #[test]
 fn generate_thumbnail_scales_down_preserving_aspect_ratio() {
-    let dir = std::env::temp_dir().join("vv-media-thumbnail-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-media-thumbnail-test");
     let path = dir.join("red.mp4");
     crate::test_support::ffmpeg(
         &[
@@ -35,8 +34,7 @@ fn generate_thumbnail_scales_down_preserving_aspect_ratio() {
 /// it works without needing `Decoder::open_image`.
 #[test]
 fn generate_thumbnail_works_on_a_still_image_despite_the_sentinel_duration() {
-    let dir = std::env::temp_dir().join("vv-media-thumbnail-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-media-thumbnail-test");
     let path = dir.join("red.png");
     crate::test_support::ffmpeg(
         &[

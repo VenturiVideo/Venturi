@@ -975,17 +975,31 @@ impl VenturiApp {
         }
     }
 
-    /// I/O keys: on the preview if active, otherwise on the timeline.
-    fn mark_at_playhead(&mut self, is_in: bool) {
-        let (marks, frame, total) = if self.browsing.is_some() {
-            let total = self.browse_total_frames();
-            (&mut self.browse_marks, self.browse_playhead, total)
-        } else if let Some(timeline_id) = self.timeline_id {
-            let total = self.session.project.timelines[timeline_id].total_frames();
-            let state = &mut self.timeline_state;
-            (&mut state.export_marks, state.playhead, total)
+    /// Length of what the I/O keys mark: the preview if active, otherwise
+    /// the timeline. 0 when there is nothing to mark.
+    fn mark_target_frames(&self) -> FrameIdx {
+        if self.browsing.is_some() {
+            if self.preview_error.is_some() {
+                0
+            } else {
+                self.browse_total_frames()
+            }
         } else {
+            self.timeline_id
+                .map_or(0, |id| self.session.project.timelines[id].total_frames())
+        }
+    }
+
+    fn mark_at_playhead(&mut self, is_in: bool) {
+        let total = self.mark_target_frames();
+        if total <= 0 {
             return;
+        }
+        let (marks, frame) = if self.browsing.is_some() {
+            (&mut self.browse_marks, self.browse_playhead)
+        } else {
+            let state = &mut self.timeline_state;
+            (&mut state.export_marks, state.playhead)
         };
         if is_in {
             marks.set_in(frame, total);
@@ -4148,6 +4162,12 @@ impl VenturiApp {
             }
         }
         self.sync_timeline_audio();
+        if let Some(audio) = &self.timeline_audio
+            && let Some(at) = audio.next_retry()
+        {
+            ui.ctx()
+                .request_repaint_after(at.saturating_duration_since(std::time::Instant::now()));
+        }
         self.sync_window_title(ui.ctx());
 
         self.handle_shortcuts(ui);

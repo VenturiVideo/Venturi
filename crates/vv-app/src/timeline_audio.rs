@@ -354,6 +354,11 @@ impl TimelineAudio {
         self.buffers.has_pending()
     }
 
+    /// See `MixBufferCache::next_retry`.
+    pub fn next_retry(&self) -> Option<Instant> {
+        self.buffers.next_retry()
+    }
+
     /// Forces a snapshot rebuild on the next `sync` (e.g. project replaced
     /// without going through the history).
     pub fn invalidate(&mut self) {
