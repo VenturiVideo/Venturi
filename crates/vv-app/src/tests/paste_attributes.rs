@@ -221,6 +221,107 @@ fn applying_the_dialog_writes_a_single_undoable_step() {
     assert_eq!(zoom_of(&app, target_id), 1.0, "a single undo step");
 }
 
+#[test]
+fn the_visible_fades_option_applies_to_multiple_clips_and_undoes_together() {
+    let mut app = VenturiApp::default();
+    let timeline = app.ensure_timeline();
+    let track = app.session.project.timelines[timeline]
+        .tracks_of_kind(TrackKind::Video)
+        .next()
+        .unwrap()
+        .0;
+    let mut source = source_clip();
+    source.id = app.session.project.alloc_clip_id();
+    source.fade_out = 8;
+    let source_id = source.id;
+    let mut long = clip(0, 0, 40);
+    long.id = app.session.project.alloc_clip_id();
+    long.timeline_start = 40;
+    let long_id = long.id;
+    let mut short = clip(0, 0, 3);
+    short.id = app.session.project.alloc_clip_id();
+    short.timeline_start = 100;
+    let short_id = short.id;
+    for item in [source, long, short] {
+        app.session.project.timelines[timeline].tracks[track].insert_sorted(item);
+    }
+    app.timeline_state.selected.insert((track, source_id));
+    app.copy_selected_clips();
+    app.timeline_state
+        .set_selection(BTreeSet::from([(track, long_id), (track, short_id)]), None);
+    app.open_paste_attributes_dialog();
+    let before = app.session.history.position();
+
+    let ctx = egui::Context::default();
+    let mut time = 0.0;
+    let mut frame = |app: &mut VenturiApp, events| {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 900.0),
+            )),
+            time: Some(time),
+            events,
+            ..Default::default()
+        };
+        time += 1.0 / 60.0;
+        let mut output = ctx.run_ui(input, |_| app.show_paste_attributes_dialog(&ctx));
+        output.textures_delta.clear();
+        output
+    };
+    let position = |output: &egui::FullOutput, label: &str| {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == label => {
+                    let center = text.pos + text.galley.size() / 2.0;
+                    shape.clip_rect.contains(center).then_some(center)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{label:?} is visible in the paste dialog"))
+    };
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    frame(&mut app, vec![]);
+    let output = frame(&mut app, vec![]);
+    let fades = position(&output, &t!("paste_attr.fades"));
+    frame(&mut app, vec![egui::Event::PointerMoved(fades)]);
+    frame(&mut app, vec![button(fades, true)]);
+    let output = frame(&mut app, vec![button(fades, false)]);
+    assert!(
+        app.paste_attributes
+            .as_ref()
+            .unwrap()
+            .selected
+            .contains(&Attribute::Fades)
+    );
+    let apply = position(&output, &t!("paste_attr.apply"));
+    frame(&mut app, vec![egui::Event::PointerMoved(apply)]);
+    frame(&mut app, vec![button(apply, true)]);
+    frame(&mut app, vec![button(apply, false)]);
+    assert!(app.paste_attributes.is_none());
+    let fades_of = |app: &VenturiApp, id| {
+        let clip = app.session.project.timelines[timeline]
+            .clip(track, id)
+            .unwrap();
+        (clip.fade_in, clip.fade_out)
+    };
+    assert_eq!(fades_of(&app, long_id), (4, 8));
+    assert_eq!(fades_of(&app, short_id), (3, 3));
+    assert_eq!(fades_of(&app, source_id), (4, 8));
+    assert_eq!(app.session.history.position(), before + 1);
+    app.undo();
+    assert_eq!(fades_of(&app, long_id), (0, 0));
+    assert_eq!(fades_of(&app, short_id), (0, 0));
+    assert_eq!(fades_of(&app, source_id), (4, 8));
+}
+
 /// The speed goes with the attributes: the target keeps its source range
 /// and changes length, what follows it moves.
 #[test]
