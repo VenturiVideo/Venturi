@@ -72,7 +72,8 @@ impl ProxyQuality {
 }
 
 pub fn proxies_dir() -> PathBuf {
-    crate::cache_dir("proxies")
+    // Older proxies contain unrotated pixels and no display matrix.
+    crate::cache_dir("proxies").join("oriented-v1")
 }
 
 /// Path of the proxy file for this `content_hash`, whether the file exists

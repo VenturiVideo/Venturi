@@ -167,7 +167,9 @@ pub fn probe(path: &Path) -> Result<MediaMeta, crate::MediaError> {
             let decoder = ffmpeg::codec::context::Context::from_parameters(video.parameters())?
                 .decoder()
                 .video()?;
-            Some((fps, decoder.width(), decoder.height()))
+            let (width, height) = crate::orientation::Orientation::from_stream(&video)
+                .dimensions(decoder.width(), decoder.height());
+            Some((fps, width, height))
         }
         None => None,
     };

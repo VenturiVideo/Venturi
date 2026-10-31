@@ -3,6 +3,124 @@ use vv_core::ClipSource;
 use vv_core::{Clip, Keyframed, Rgba, Track, TrackKind};
 use vv_media::test_support::TempDir;
 
+#[test]
+fn export_applies_container_rotation_once() {
+    struct Directory(std::path::PathBuf);
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let path = std::env::temp_dir().join(format!(
+        "vv-export-orientation-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&path).unwrap();
+    let dir = Directory(path);
+    let source = dir.0.join("source.mp4");
+    let rotated = dir.0.join("rotated.mov");
+    let output = dir.0.join("export.mp4");
+    let reference = dir.0.join("reference.yuv");
+    vv_media::test_support::ffmpeg(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "color=red:size=64x48:rate=5:duration=1,drawbox=x=32:y=0:w=32:h=24:color=green:t=fill,drawbox=x=0:y=24:w=32:h=24:color=blue:t=fill,drawbox=x=32:y=24:w=32:h=24:color=white:t=fill",
+            "-c:v",
+            "libx264",
+            "-qp",
+            "0",
+            "-pix_fmt",
+            "yuv420p",
+        ],
+        &source,
+    );
+    vv_media::test_support::ffmpeg(
+        &[
+            "-display_rotation",
+            "90",
+            "-i",
+            source.to_str().unwrap(),
+            "-c",
+            "copy",
+        ],
+        &rotated,
+    );
+    vv_media::test_support::ffmpeg(
+        &[
+            "-i",
+            rotated.to_str().unwrap(),
+            "-vf",
+            "scale=in_color_matrix=bt601:out_color_matrix=bt709:in_range=tv:out_range=tv",
+            "-frames:v",
+            "1",
+            "-pix_fmt",
+            "yuv420p",
+            "-f",
+            "rawvideo",
+        ],
+        &reference,
+    );
+    let mut project = Project::default();
+    let meta = vv_media::probe(&rotated).unwrap();
+    assert_eq!((meta.width, meta.height), (48, 64));
+    let media = project.media_pool.insert(vv_core::MediaItem {
+        path: rotated,
+        meta,
+        content_hash: 82,
+        compound: None,
+        folder: None,
+    });
+    let clip = Clip::from_source_range(
+        ClipId(1),
+        ClipSource::Media(media),
+        0,
+        5,
+        0,
+        vv_core::Rational::one(),
+    );
+    let timeline = project.timelines.insert(Timeline {
+        name: "oriented".into(),
+        fps: vv_core::Rational::new(5, 1),
+        resolution: (48, 64),
+        tracks: vec![Track {
+            clips: vec![clip],
+            ..Track::new(TrackKind::Video)
+        }],
+        markers: Vec::new(),
+        master: Default::default(),
+    });
+    let mut settings = ExportSettings::new(output.clone());
+    settings.audio = None;
+    export_timeline(
+        &project,
+        timeline,
+        &settings,
+        0..5,
+        &Mutex::new(ExportProgress::default()),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let mut decoder = vv_media::Decoder::open(&output).unwrap();
+    let (_, frame) = decoder.next_frame().unwrap().unwrap();
+    assert_eq!((frame.width, frame.height), (48, 64));
+    let expected = std::fs::read(reference).unwrap();
+    for (x, y) in [(12, 16), (36, 16), (12, 48), (36, 48)] {
+        let i = y * 48 + x;
+        assert!(
+            frame.y[i].abs_diff(expected[i]) <= 3,
+            "quadrant {x},{y}: {} != {}",
+            frame.y[i],
+            expected[i]
+        );
+    }
+}
+
 fn solid_color_clip(id: u64, start: FrameIdx, len: FrameIdx, color: Rgba) -> Clip {
     let mut clip = Clip::from_source_range(
         ClipId(id),

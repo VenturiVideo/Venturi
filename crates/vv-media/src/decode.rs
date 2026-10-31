@@ -101,6 +101,7 @@ fn guess_matrix(space: color::Space, height: u32) -> ColorMatrix {
 /// decode thread (e.g. the decode-ahead in `playback`) owns its own
 /// instance.
 pub struct Decoder {
+    orientation: crate::orientation::Orientation,
     path: PathBuf,
     ictx: ffmpeg::format::context::Input,
     decoder: ffmpeg::codec::decoder::Video,
@@ -164,6 +165,7 @@ impl Decoder {
         let video_stream_index = video_stream.index();
         let time_base = video_stream.time_base();
         let fps = crate::probe::media_fps(path, &video_stream);
+        let orientation = crate::orientation::Orientation::from_stream(&video_stream);
 
         let mut decoder_ctx =
             ffmpeg::codec::context::Context::from_parameters(video_stream.parameters())?.decoder();
@@ -191,6 +193,7 @@ impl Decoder {
         let decoder = decoder_ctx.video()?;
 
         Ok(Self {
+            orientation,
             path: path.to_path_buf(),
             ictx,
             decoder,
@@ -229,11 +232,15 @@ impl Decoder {
     }
 
     pub fn width(&self) -> u32 {
-        self.decoder.width()
+        self.orientation
+            .dimensions(self.decoder.width(), self.decoder.height())
+            .0
     }
 
     pub fn height(&self) -> u32 {
-        self.decoder.height()
+        self.orientation
+            .dimensions(self.decoder.width(), self.decoder.height())
+            .1
     }
 
     pub fn fps(&self) -> vv_core::Rational {
@@ -628,6 +635,10 @@ impl Decoder {
         &mut self,
         decoded: &mut ffmpeg::frame::Video,
     ) -> Result<Arc<FrameYuv420>, crate::MediaError> {
+        let orientation = decoded
+            .side_data(ffmpeg::util::frame::side_data::Type::DisplayMatrix)
+            .and_then(|side| crate::orientation::Orientation::from_bytes(side.data()))
+            .unwrap_or(self.orientation);
         let mut downloaded;
         let decoded = if crate::hw::is_hw_frame(decoded) {
             downloaded = crate::hw::download(decoded, &mut self.transfer_time)?;
@@ -645,9 +656,9 @@ impl Decoder {
             && (decoded.color_range() == color::Range::JPEG
                 || without_deprecated_range(format) != format);
         decoded.set_format(without_deprecated_range(format));
-        let frame =
-            yuv420_from_decoded(&mut self.scaler, decoded, matrix, full_range, self.max_size)?;
-        Ok(Arc::new(frame))
+        let max_size = self.max_size.map(|(w, h)| orientation.dimensions(w, h));
+        let frame = yuv420_from_decoded(&mut self.scaler, decoded, matrix, full_range, max_size)?;
+        Ok(Arc::new(orientation.apply(frame)))
     }
 }
 
