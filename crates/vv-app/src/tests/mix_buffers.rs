@@ -324,6 +324,9 @@ fn every_stream_of_a_file_starts_playing_before_any_of_them_is_fully_decoded() {
 
 #[test]
 fn a_stretch_is_computed_in_background_and_dropped_once_unused() {
+    if vv_audio::stretch::skip_without_rubberband() {
+        return;
+    }
     let (_dir_path, path) = sine_wav("stretched.wav", 2);
     let project = Project::default();
     let request = || StretchRequest {

@@ -121,6 +121,10 @@ when run in parallel. Some tests invoke `ffmpeg` from the command line to
 generate synthetic clips in `/tmp`, so the `ffmpeg` binary (not just the
 development libraries) also needs to be in `PATH`.
 
+The time-stretch tests need an FFmpeg built with librubberband
+(`scripts/build-ffmpeg.sh` builds one; Homebrew's does not). Without it they
+are skipped locally, and fail under CI.
+
 ### Where unit tests live
 
 Unlike the usual Rust convention (an inline `mod tests { … }` at the bottom

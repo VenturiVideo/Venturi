@@ -755,6 +755,9 @@ fn a_level_measured_on_several_threads_reads_as_on_one() {
 /// included.
 #[test]
 fn a_pitch_corrected_clip_rendered_in_chunks_equals_its_whole_stretch() {
+    if vv_audio::stretch::skip_without_rubberband() {
+        return;
+    }
     let dir = TempDir::new("vv-audio-render-test");
     let mut project = Project::default();
     let file = media(

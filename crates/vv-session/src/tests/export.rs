@@ -890,6 +890,9 @@ fn preferred_settings_pick_the_faster_encoders_only_when_available() {
 /// correction and at 880 Hz without.
 #[test]
 fn mix_audio_track_plays_a_faster_clip_with_or_without_its_pitch() {
+    if vv_audio::stretch::skip_without_rubberband() {
+        return;
+    }
     let dir = TempDir::new("vv-app-export-test");
     let path = dir.join("speed_source.wav");
     vv_media::test_support::ffmpeg(

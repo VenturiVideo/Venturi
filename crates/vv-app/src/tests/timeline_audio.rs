@@ -50,6 +50,9 @@ fn clock_advances_while_playing_and_stops_on_pause() {
 /// playhead continues from where it got to, not from where it was at the request.
 #[test]
 fn fast_forward_applies_when_the_first_window_is_ready_without_jumping_back() {
+    if vv_audio::stretch::skip_without_rubberband() {
+        return;
+    }
     let mut audio = TimelineAudio::new();
     audio.play();
     std::thread::sleep(Duration::from_millis(100));
@@ -101,11 +104,17 @@ fn assert_window_extends_seamlessly(tempo: f64) {
 
 #[test]
 fn fast_forward_window_extends_seamlessly_at_4x() {
+    if vv_audio::stretch::skip_without_rubberband() {
+        return;
+    }
     assert_window_extends_seamlessly(4.0);
 }
 
 #[test]
 fn fast_forward_window_extends_seamlessly_at_8x() {
+    if vv_audio::stretch::skip_without_rubberband() {
+        return;
+    }
     assert_window_extends_seamlessly(8.0);
 }
 
@@ -113,6 +122,9 @@ fn fast_forward_window_extends_seamlessly_at_8x() {
 /// going back to 1x nor stalling.
 #[test]
 fn seeking_outside_the_window_restarts_fast_forward_from_there() {
+    if vv_audio::stretch::skip_without_rubberband() {
+        return;
+    }
     let mut audio = TimelineAudio::new();
     audio.play();
     audio.request_speed(4.0);
@@ -141,6 +153,9 @@ fn seeking_outside_the_window_restarts_fast_forward_from_there() {
 /// way from there is kept, not thrown away and started again.
 #[test]
 fn seeking_again_to_the_same_place_keeps_the_stretch_in_flight() {
+    if vv_audio::stretch::skip_without_rubberband() {
+        return;
+    }
     let mut audio = TimelineAudio::new();
     audio.play();
     audio.request_speed(2.0);
@@ -159,6 +174,9 @@ fn seeking_again_to_the_same_place_keeps_the_stretch_in_flight() {
 /// The first window is short to sound at once; the extensions double.
 #[test]
 fn fast_forward_windows_start_short_and_double() {
+    if vv_audio::stretch::skip_without_rubberband() {
+        return;
+    }
     let mut audio = TimelineAudio::new();
     audio.play();
     audio.request_speed(2.0);
@@ -186,6 +204,9 @@ fn fast_forward_windows_start_short_and_double() {
 
 #[test]
 fn a_superseded_stretch_result_is_discarded() {
+    if vv_audio::stretch::skip_without_rubberband() {
+        return;
+    }
     let mut audio = TimelineAudio::new();
     audio.play();
     audio.request_speed(2.0);
@@ -287,6 +308,9 @@ fn wait_for_loud_window(
 /// window was stretched from the timeline left, and played it for seconds.
 #[test]
 fn another_timeline_during_a_fast_forward_plays_its_own_audio_at_once() {
+    if vv_audio::stretch::skip_without_rubberband() {
+        return;
+    }
     let mut project = vv_core::Project::default();
     let (quiet, _dir_quiet) = tone_timeline(&mut project, "quiet.wav", 0.05);
     let (loud, _dir_loud) = tone_timeline(&mut project, "loud.wav", 0.8);
@@ -309,6 +333,9 @@ fn another_timeline_during_a_fast_forward_plays_its_own_audio_at_once() {
 /// stretched again once the audio is there, not played out.
 #[test]
 fn a_fast_forward_started_before_the_audio_is_decoded_plays_it_once_decoded() {
+    if vv_audio::stretch::skip_without_rubberband() {
+        return;
+    }
     let mut project = vv_core::Project::default();
     let (timeline, _dir_timeline) = tone_timeline(&mut project, "late.wav", 0.8);
     let mut audio = TimelineAudio::new();
@@ -337,6 +364,9 @@ fn fast_forward_on(project: &vv_core::Project, timeline: TimelineId) -> Timeline
 /// A drag changes the project every frame.
 #[test]
 fn a_drag_during_a_fast_forward_stretches_one_window_at_a_time() {
+    if vv_audio::stretch::skip_without_rubberband() {
+        return;
+    }
     let mut project = vv_core::Project::default();
     let (timeline, _dir_timeline) = tone_timeline(&mut project, "drag.wav", 0.8);
     let mut audio = fast_forward_on(&project, timeline);
@@ -361,6 +391,9 @@ fn a_drag_during_a_fast_forward_stretches_one_window_at_a_time() {
 
 #[test]
 fn an_edit_while_paused_in_fast_forward_stretches_on_resume() {
+    if vv_audio::stretch::skip_without_rubberband() {
+        return;
+    }
     let mut project = vv_core::Project::default();
     let (timeline, _dir_timeline) = tone_timeline(&mut project, "paused.wav", 0.8);
     let mut audio = fast_forward_on(&project, timeline);
@@ -383,6 +416,9 @@ fn an_edit_while_paused_in_fast_forward_stretches_on_resume() {
 
 #[test]
 fn a_failed_stretch_is_not_retried_every_frame() {
+    if vv_audio::stretch::skip_without_rubberband() {
+        return;
+    }
     let mut project = vv_core::Project::default();
     let (timeline, _dir_timeline) = tone_timeline(&mut project, "failed.wav", 0.8);
     let mut audio = fast_forward_on(&project, timeline);

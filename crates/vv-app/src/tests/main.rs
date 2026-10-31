@@ -2522,6 +2522,9 @@ fn wait_for_playback_speed(app: &mut VenturiApp, speed: f64) {
 /// space bar always pauses and brings it back to 1x.
 #[test]
 fn fast_playback_key_cycles_speed_and_space_always_resets_it() {
+    if vv_audio::stretch::skip_without_rubberband() {
+        return;
+    }
     let mut app = VenturiApp::default();
     make_timeline_with_clip(&mut app, 0, 0, 5000);
 
@@ -2547,6 +2550,9 @@ fn fast_playback_key_cycles_speed_and_space_always_resets_it() {
 
 #[test]
 fn fast_playback_advances_the_playhead_faster() {
+    if vv_audio::stretch::skip_without_rubberband() {
+        return;
+    }
     let mut app = VenturiApp::default();
     make_timeline_with_clip(&mut app, 0, 0, 5000);
     app.toggle_playback();
@@ -2565,6 +2571,9 @@ fn fast_playback_advances_the_playhead_faster() {
 /// (the audio always came from the media of the video clip).
 #[test]
 fn preview_mix_follows_audio_clip_edits() {
+    if vv_audio::stretch::skip_without_rubberband() {
+        return;
+    }
     let dir = vv_media::test_support::TempDir::new("vv-app-preview-mix-test");
     let path = dir.join("clip.mp4");
     vv_media::test_support::ffmpeg(
