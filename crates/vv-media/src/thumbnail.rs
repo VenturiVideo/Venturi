@@ -18,9 +18,14 @@ pub fn generate_thumbnail(
     max_width: u32,
 ) -> Result<Thumbnail, crate::MediaError> {
     crate::probe::ensure_init();
-    let mut decoder = Decoder::open(path)?;
+    let is_image = crate::probe::is_image_path(path);
+    let mut decoder = if is_image {
+        Decoder::open_image(path)?
+    } else {
+        Decoder::open(path)?
+    };
     let target = (duration_secs / 2.0).min(1.0);
-    if target > 0.0 {
+    if !is_image && target > 0.0 {
         decoder.seek_to_time(target)?;
     }
     let (_, frame) = decoder
