@@ -418,3 +418,90 @@ fn shared_cache_keyframe_ranges_join_the_keyframes_of_a_media_in_keyframe_mode()
     cache.set_keyframes_only(media_a, true);
     assert_eq!(cache.keyframe_ranges(media_a), [(250, 750), (5000, 5000)]);
 }
+
+#[test]
+#[ignore = "manual measurement, not a correctness assertion"]
+fn bench_shared_cache_lookups() {
+    use std::hint::black_box;
+    let (a, b) = two_media_ids();
+    let cache = SharedFrameCache::new();
+    let frame = frame_of_size(4);
+    for index in 0..10_000 {
+        cache.insert(a, index * 100, frame.clone());
+        cache.insert(b, index, frame.clone());
+    }
+    cache.set_keyframes_only(a, true);
+    for (name, at, distance) in [
+        ("exact", 500_000, 1200),
+        ("near", 500_050, 1200),
+        ("miss", 1_002_000, 1200),
+    ] {
+        let start = std::time::Instant::now();
+        for _ in 0..20_000 {
+            black_box(cache.get_near(
+                black_box(a),
+                black_box(at),
+                black_box(at - distance),
+                black_box(at + distance),
+            ));
+        }
+        eprintln!("cache {name}, 20000 lookups: {:?}", start.elapsed());
+    }
+    let start = std::time::Instant::now();
+    for _ in 0..200 {
+        black_box(cache.cached_ranges(black_box(a)));
+    }
+    eprintln!("cache ranges, 200 queries: {:?}", start.elapsed());
+}
+
+#[test]
+fn ordered_cache_neighbours_match_the_probe_order() {
+    let (media, _) = two_media_ids();
+    let cache = SharedFrameCache::new();
+    let indices = [-3, 0, 6, 10, 17, 31, 90];
+    for (n, &index) in indices.iter().enumerate() {
+        cache.insert(media, index, frame_of_size(n + 1));
+    }
+    for stride in [1, 2, 10] {
+        cache.set_stride(media, stride);
+        for keyframes in [false, true] {
+            cache.set_keyframes_only(media, keyframes);
+            for (lo, hi) in [(-5, 100), (5, 12), (20, 80), (80, 120)] {
+                for idx in -5..100 {
+                    let cached = |at| {
+                        (lo.min(idx)..=hi.max(idx))
+                            .contains(&at)
+                            .then(|| indices.iter().position(|&i| i == at).map(|i| i + 1))
+                            .flatten()
+                    };
+                    let expected = cached(idx)
+                        .map(|bytes| (bytes, Served::Exact))
+                        .or_else(|| {
+                            (1..stride)
+                                .flat_map(|d| [idx - d, idx + d])
+                                .find_map(cached)
+                                .map(|bytes| (bytes, Served::Neighbour))
+                        })
+                        .or_else(|| {
+                            keyframes
+                                .then(|| {
+                                    (1..=MAX_KEYFRAME_DISTANCE)
+                                        .map(|d| idx - d)
+                                        .chain((1..=MAX_KEYFRAME_DISTANCE).map(|d| idx + d))
+                                        .find_map(cached)
+                                        .map(|bytes| (bytes, Served::Keyframe))
+                                })
+                                .flatten()
+                        });
+                    let actual = cache
+                        .get_near(media, idx, lo, hi)
+                        .map(|(f, served)| (f.byte_len(), served));
+                    assert_eq!(
+                        actual, expected,
+                        "idx={idx}, stride={stride}, bounds={lo}..={hi}, keyframes={keyframes}"
+                    );
+                }
+            }
+        }
+    }
+}

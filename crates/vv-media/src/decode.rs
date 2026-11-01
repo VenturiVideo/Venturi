@@ -773,6 +773,9 @@ fn yuv420_from_decoded(
         let h = scaled.plane_height(index) as usize;
         let stride = scaled.stride(index);
         let plane = scaled.data(index);
+        if stride == w {
+            return plane[..w * h].to_vec();
+        }
         let mut out = Vec::with_capacity(w * h);
         for row in 0..h {
             let start = row * stride;
