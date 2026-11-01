@@ -1,0 +1,186 @@
+{
+  "app-id": "io.github.VenturiVideo.Venturi",
+  "runtime": "org.freedesktop.Platform",
+  "runtime-version": "26.08",
+  "sdk": "org.freedesktop.Sdk",
+  "sdk-extensions": [
+    "org.freedesktop.Sdk.Extension.rust-stable",
+    "org.freedesktop.Sdk.Extension.llvm22"
+  ],
+  "command": "venturi",
+  "finish-args": [
+    "--env=LD_LIBRARY_PATH=/app/lib",
+    "--socket=wayland",
+    "--socket=fallback-x11",
+    "--share=ipc",
+    "--device=dri",
+    "--socket=pulseaudio",
+    "--share=network",
+    "--filesystem=home",
+    "--filesystem=/media",
+    "--filesystem=/run/media"
+  ],
+  "cleanup": [
+    "/include",
+    "/lib/pkgconfig",
+    "/lib/*.a",
+    "/lib/*.la",
+    "/share/man",
+    "/share/doc"
+  ],
+  "modules": [
+    {
+      "name": "x264",
+      "buildsystem": "simple",
+      "build-commands": [
+        "./configure --prefix=/app --enable-shared --disable-cli --enable-pic",
+        "make -j\"${FLATPAK_BUILDER_N_JOBS}\"",
+        "make install"
+      ],
+      "sources": [
+        {
+          "type": "git",
+          "url": "https://code.videolan.org/videolan/x264.git",
+          "commit": "b35605ace3ddf7c1a5d67a2eb553f034aef41d55"
+        }
+      ]
+    },
+    {
+      "name": "rubberband",
+      "buildsystem": "meson",
+      "config-opts": [
+        "-Ddefault_library=shared",
+        "-Dresampler=builtin",
+        "-Djni=disabled",
+        "-Dladspa=disabled",
+        "-Dvamp=disabled",
+        "-Dcmdline=disabled",
+        "-Dtests=disabled"
+      ],
+      "sources": [
+        {
+          "type": "archive",
+          "url": "https://github.com/breakfastquay/rubberband/archive/refs/tags/v4.0.0.tar.gz",
+          "sha256": "24300f48a8014b7c863b573a9647e61b1b19b37875e2cdd92005e64c6424d266"
+        }
+      ]
+    },
+    {
+      "name": "lame",
+      "buildsystem": "autotools",
+      "config-opts": [
+        "--disable-static",
+        "--enable-shared",
+        "--disable-frontend",
+        "--disable-decoder"
+      ],
+      "sources": [
+        {
+          "type": "archive",
+          "url": "https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz",
+          "sha256": "ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e"
+        }
+      ]
+    },
+    {
+      "name": "ogg",
+      "buildsystem": "autotools",
+      "config-opts": [
+        "--disable-static",
+        "--enable-shared"
+      ],
+      "sources": [
+        {
+          "type": "archive",
+          "url": "https://github.com/xiph/ogg/archive/refs/tags/v1.3.5.tar.gz",
+          "sha256": "f6f1b04cfa4e98b70ffe775d5e302d9c6b98541f05159af6de2d6617817ed7d6"
+        }
+      ]
+    },
+    {
+      "name": "vorbis",
+      "buildsystem": "autotools",
+      "config-opts": [
+        "--disable-static",
+        "--enable-shared",
+        "--disable-examples"
+      ],
+      "sources": [
+        {
+          "type": "archive",
+          "url": "https://github.com/xiph/vorbis/archive/refs/tags/v1.3.7.tar.gz",
+          "sha256": "270c76933d0934e42c5ee0a54a36280e2d87af1de3cc3e584806357e237afd13"
+        }
+      ]
+    },
+    {
+      "name": "opus",
+      "buildsystem": "autotools",
+      "config-opts": [
+        "--disable-static",
+        "--enable-shared",
+        "--disable-doc",
+        "--disable-extra-programs"
+      ],
+      "sources": [
+        {
+          "type": "archive",
+          "url": "https://github.com/xiph/opus/releases/download/v1.5.2/opus-1.5.2.tar.gz",
+          "sha256": "65c1d2f78b9f2fb20082c38cbe47c951ad5839345876e46941612ee87f9a7ce1"
+        }
+      ]
+    },
+    {
+      "name": "ffmpeg",
+      "buildsystem": "simple",
+      "build-commands": [
+        "./configure --prefix=/app --libdir=/app/lib --enable-shared --disable-static --disable-doc --disable-debug --disable-autodetect --enable-gpl --enable-libx264 --enable-librubberband --enable-libmp3lame --enable-libopus --enable-libvorbis --enable-zlib",
+        "make -j\"${FLATPAK_BUILDER_N_JOBS}\"",
+        "make install"
+      ],
+      "sources": [
+        {
+          "type": "archive",
+          "url": "https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n9.0.1.tar.gz",
+          "sha256": "195d54bebe1a27f84d77f4b989d193466f305b355da92292766a69f16880b18a"
+        }
+      ]
+    },
+    {
+      "name": "venturi",
+      "buildsystem": "simple",
+      "build-options": {
+        "append-path": "/usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/llvm22/bin",
+        "env": {
+          "CARGO_HOME": "/run/build/venturi/cargo",
+          "CARGO_NET_OFFLINE": "true",
+          "LIBCLANG_PATH": "/usr/lib/sdk/llvm22/lib",
+          "PKG_CONFIG_PATH": "/app/lib/pkgconfig"
+        }
+      },
+      "build-commands": [
+        "cargo build --frozen --offline --release -p vv-app --jobs \"${FLATPAK_BUILDER_N_JOBS}\"",
+        "install -Dm755 target/release/vv-app /app/bin/venturi",
+        "install -Dm644 media/icons/linux/hicolor/scalable/apps/venturi-video.svg /app/share/icons/hicolor/scalable/apps/io.github.VenturiVideo.Venturi.svg",
+        "install -Dm644 packaging/appimage/venturi.desktop /app/share/applications/io.github.VenturiVideo.Venturi.desktop",
+        "desktop-file-edit --set-key=Exec --set-value=\"venturi %f\" --set-icon=io.github.VenturiVideo.Venturi /app/share/applications/io.github.VenturiVideo.Venturi.desktop",
+        "install -Dm644 io.github.VenturiVideo.Venturi.metainfo.xml /app/share/metainfo/io.github.VenturiVideo.Venturi.metainfo.xml",
+        "install -Dm644 packaging/venturi-mime.xml /app/share/mime/packages/io.github.VenturiVideo.Venturi.xml",
+        "sed -i 's|<icon name=\"venturi\"/>|<icon name=\"io.github.VenturiVideo.Venturi\"/>|' /app/share/mime/packages/io.github.VenturiVideo.Venturi.xml",
+        "install -Dm644 LICENSE /app/share/licenses/venturi/LICENSE"
+      ],
+      "sources": [
+        {
+          "type": "git",
+          "url": "https://github.com/VenturiVideo/Venturi.git",
+          "commit": "be441521db65d2c28356de8f81bb5cdb03b73e67"
+        },
+        "cargo-sources.json",
+        {
+          "type": "file",
+          "path": "io.github.VenturiVideo.Venturi.metainfo.xml"
+        }
+      ]
+    }
+  ]
+}
