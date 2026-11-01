@@ -210,7 +210,7 @@ Must run on a Mac with the Xcode command line tools, `pkgconf`, `meson` and
 VideoToolbox) bundled in
 `Contents/Frameworks`.
 
-The `Release` GitHub Actions workflow runs the same script on a `macos-14`
+The `Release` GitHub Actions workflow runs the same script on a `macos-15`
 runner, see [Releases](#releases).
 
 #### Opening the app on another Mac
