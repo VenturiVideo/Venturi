@@ -28,10 +28,7 @@ fn generate_thumbnail_scales_down_preserving_aspect_ratio() {
     );
 }
 
-/// A still image passes the `duration_frames`/`fps` sentinel (see
-/// `vv_core::IMAGE_DURATION_FRAMES`) as `duration_secs` — huge, but
-/// `generate_thumbnail` clamps the seek target to `<= 1.0` anyway, so
-/// it works without needing `Decoder::open_image`.
+/// Still-image thumbnails must work with the sentinel duration used by the pool.
 #[test]
 fn generate_thumbnail_works_on_a_still_image_despite_the_sentinel_duration() {
     let dir = crate::test_support::TempDir::new("vv-media-thumbnail-test");
@@ -58,4 +55,47 @@ fn generate_thumbnail_works_on_a_still_image_despite_the_sentinel_duration() {
         center[0] > 200 && center[1] < 60 && center[2] < 60,
         "{center:?}"
     );
+}
+
+#[test]
+fn generate_thumbnail_reads_a_jpeg_without_seeking_past_its_only_frame() {
+    struct Fixture(std::path::PathBuf);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let dir = Fixture(
+        std::env::temp_dir().join(format!("vv-jpeg-thumbnail-test-{}", std::process::id(),)),
+    );
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let path = dir.0.join("01.jpg");
+    // Not a flat or tiny image: a 1.6 KB solid JPEG does not fail the seek of
+    // issue #61, so it would pass without the fix.
+    crate::test_support::ffmpeg(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=1024x768",
+            "-frames:v",
+            "1",
+            "-c:v",
+            "mjpeg",
+            "-q:v",
+            "2",
+            "-pix_fmt",
+            "yuvj420p",
+            "-update",
+            "1",
+        ],
+        &path,
+    );
+    let sentinel = vv_core::IMAGE_DURATION_FRAMES as f64 / crate::probe::IMAGE_FPS.as_f64();
+    let thumb = generate_thumbnail(&path, sentinel, 96).unwrap();
+    assert_eq!((thumb.width, thumb.height), (96, 72));
+    assert_eq!(thumb.rgba.len(), 96 * 72 * 4);
+    let pixels = thumb.rgba.as_chunks::<4>().0;
+    assert!(pixels.iter().all(|pixel| pixel[3] == 255));
+    assert!(pixels.iter().any(|pixel| pixel != &pixels[0]));
 }
