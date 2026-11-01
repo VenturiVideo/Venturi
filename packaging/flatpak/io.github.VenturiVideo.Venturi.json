@@ -173,7 +173,7 @@
         {
           "type": "git",
           "url": "https://github.com/VenturiVideo/Venturi.git",
-          "commit": "be441521db65d2c28356de8f81bb5cdb03b73e67"
+          "commit": "f6160685eae36afa8fc16b7a1287e15765864a94"
         },
         "cargo-sources.json",
         {
