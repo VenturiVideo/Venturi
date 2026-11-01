@@ -159,7 +159,7 @@
         }
       },
       "build-commands": [
-        "cargo build --frozen --offline --release -p vv-app --jobs \"${FLATPAK_BUILDER_N_JOBS}\"",
+        "cargo rustc --frozen --offline --release -p vv-app --jobs \"${FLATPAK_BUILDER_N_JOBS}\" -- -L native=/app/lib",
         "install -Dm755 target/release/vv-app /app/bin/venturi",
         "install -Dm644 media/icons/linux/hicolor/scalable/apps/venturi-video.svg /app/share/icons/hicolor/scalable/apps/io.github.VenturiVideo.Venturi.svg",
         "install -Dm644 packaging/appimage/venturi.desktop /app/share/applications/io.github.VenturiVideo.Venturi.desktop",

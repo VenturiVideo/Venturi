@@ -5,7 +5,7 @@
   <project_license>GPL-3.0-or-later</project_license>
   <name>Venturi</name>
   <summary>Edit videos with a multitrack timeline</summary>
-  <developer id="io.github.VenturiVideo"><name>Venturi contributors</name></developer>
+  <developer id="io.github.venturivideo"><name>Venturi contributors</name></developer>
   <description>
     <p>Venturi is a video editor with multitrack editing, keyframes, audio mixing,
     effects, titles and GPU compositing.</p>

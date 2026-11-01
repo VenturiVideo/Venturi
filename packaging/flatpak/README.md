@@ -57,6 +57,8 @@ and DRM devices for the compositor; it does not grant arbitrary devices.
 The bundled FFmpeg configuration guarantees CPU encode/decode and Rubber Band.
 The runtime library search path puts `/app/lib` first so an optional runtime
 codec extension cannot replace the bundled FFmpeg without Rubber Band support.
+The final Rust link also puts `/app/lib` before the SDK libraries, matching the
+headers and libraries selected by `pkg-config` during the build.
 NVENC/NVDEC and Vulkan-video FFmpeg backends are not enabled by this initial
 manifest; compositor rendering still uses Vulkan. Native third-party plugins,
 microphones, hardware acceleration and desktop portals require runtime tests.

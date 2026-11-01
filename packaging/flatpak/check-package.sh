@@ -4,16 +4,16 @@ set -eu
 flatpak run --command=sh io.github.VenturiVideo.Venturi -c '
 set -eu
 libraries=$(ldd /app/bin/venturi)
-if printf "%s\n" "$libraries" | grep -q "not found"; then
+if printf "%s\n" "$libraries" | grep "not found" >/dev/null; then
     printf "%s\n" "$libraries" >&2
     exit 1
 fi
-printf "%s\n" "$libraries" | grep -q "libavfilter.* /app/lib/"
+printf "%s\n" "$libraries" | grep "libavfilter.* /app/lib/" >/dev/null
 filters=$(ffmpeg -hide_banner -filters 2>&1)
-printf "%s\n" "$filters" | grep -q rubberband
+printf "%s\n" "$filters" | grep rubberband >/dev/null
 encoders=$(ffmpeg -hide_banner -encoders 2>&1)
 for codec in libx264 aac libmp3lame libopus libvorbis; do
-    printf "%s\n" "$encoders" | grep -q "$codec"
+    printf "%s\n" "$encoders" | grep "$codec" >/dev/null
 done
 test -f /app/share/applications/io.github.VenturiVideo.Venturi.desktop
 test -f /app/share/metainfo/io.github.VenturiVideo.Venturi.metainfo.xml
