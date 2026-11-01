@@ -28,6 +28,7 @@ mod menu_list;
 mod mix_buffers;
 mod mixer_panel;
 mod new_timeline_dialog;
+mod panel_drag;
 mod panel_window;
 mod paste_attributes;
 mod paste_image;
@@ -4034,7 +4035,7 @@ impl eframe::App for VenturiApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         let (native, source) = panel_window::forward_to_root(ctx, raw_input);
         if native {
-            self.media_pool_state.focused = false;
+            self.media_pool_state.focused = source == Some("media_pool");
             self.keyframe_editor
                 .set_panel_focus(source == Some("keyframe_editor"));
         }
@@ -4118,12 +4119,39 @@ impl VenturiApp {
         }
     }
 
+    fn draw_pool_panel(&mut self, ui: &mut egui::Ui, preview_action: &mut Option<Browsed>) {
+        let pool = ui
+            .scope(|ui| self.show_media_pool(ui, preview_action))
+            .response;
+        if let Some(pos) = ui.input(|i| {
+            i.pointer
+                .any_pressed()
+                .then(|| i.pointer.interact_pos())
+                .flatten()
+        }) {
+            self.media_pool_state.focused = pool.rect.contains(pos);
+        }
+        if ui.input(|i| !i.raw.hovered_files.is_empty()) {
+            ui.ctx()
+                .layer_painter(egui::LayerId::new(
+                    egui::Order::Foreground,
+                    egui::Id::new("media_pool_drop_highlight"),
+                ))
+                .rect_stroke(
+                    pool.rect,
+                    4.0,
+                    egui::Stroke::new(2.0, ui.visuals().selection.bg_fill),
+                    egui::StrokeKind::Inside,
+                );
+        }
+    }
+
     fn frame_ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        panel_window::begin_frame(ui.ctx());
         self.handle_close_request(&ui.ctx().clone());
         self.poll_pending_dialog(&ui.ctx().clone());
         self.poll_dropped_files(&ui.ctx().clone());
         self.poll_clipboard_image();
+        panel_window::begin_frame(ui.ctx());
         self.poll_plugin_scan();
         self.follow_hw_decode_fallback();
         // What the session applies would land inside the open group.
@@ -4318,55 +4346,86 @@ impl VenturiApp {
         }
 
         let mut preview_action = None;
-        if self.settings.panels.media_pool_open || self.settings.panels.effects_open {
+        let pool_native =
+            self.settings.panels.docked_windows[0].detached && !ui.ctx().embed_viewports();
+        let effects_native =
+            self.settings.panels.docked_windows[1].detached && !ui.ctx().embed_viewports();
+        if pool_native && self.settings.panels.media_pool_open {
+            let mut placement = self.settings.panels.docked_windows[0];
+            let mut open = self.settings.panels.media_pool_open;
+            panel_window::show_native(
+                ui.ctx(),
+                "media_pool",
+                &t!("toolbar.media_pool"),
+                [360.0, 600.0],
+                &mut open,
+                &mut placement,
+                |ui| self.draw_pool_panel(ui, &mut preview_action),
+            );
+            self.settings.panels.media_pool_open = open;
+            self.settings.panels.docked_windows[0] = placement;
+        } else if ui.ctx().embed_viewports() {
+            self.settings.panels.docked_windows[0].detached = false;
+        }
+        if effects_native && self.settings.panels.effects_open {
+            let mut placement = self.settings.panels.docked_windows[1];
+            let mut open = self.settings.panels.effects_open;
+            panel_window::show_native(
+                ui.ctx(),
+                "effects",
+                &t!("toolbar.effects"),
+                [320.0, 560.0],
+                &mut open,
+                &mut placement,
+                |ui| self.show_effects_list(ui),
+            );
+            self.settings.panels.effects_open = open;
+            self.settings.panels.docked_windows[1] = placement;
+        } else if ui.ctx().embed_viewports() {
+            self.settings.panels.docked_windows[1].detached = false;
+        }
+        let show_pool = self.settings.panels.media_pool_open && !pool_native;
+        let show_effects = self.settings.panels.effects_open && !effects_native;
+        if show_pool || show_effects {
             egui::Panel::left("left_column")
                 .default_size(self.settings.panels.left_column_width)
                 .show(ui, |ui| {
                     let mut effects_rect = None;
-                    if self.settings.panels.media_pool_open {
-                        let pool = if self.settings.panels.effects_open {
+                    if show_pool {
+                        if show_effects {
                             let (pool_rect, rest) = split_left_column(
                                 ui,
                                 &mut self.settings.panels.media_pool_fraction,
                             );
                             effects_rect = Some(rest);
                             ui.scope_builder(egui::UiBuilder::new().max_rect(pool_rect), |ui| {
-                                self.show_media_pool(ui, &mut preview_action)
-                            })
-                            .response
-                        } else {
-                            ui.scope(|ui| self.show_media_pool(ui, &mut preview_action))
-                                .response
-                        };
-                        // Whoever got the last click decides who gets Del/Backspace.
-                        if let Some(pos) = ui.ctx().input(|i| {
-                            i.pointer
-                                .any_pressed()
-                                .then(|| i.pointer.interact_pos())
-                                .flatten()
-                        }) {
-                            self.media_pool_state.focused = pool.rect.contains(pos);
-                        }
-                        // Highlights the pool while a file is dragged from the file manager.
-                        if ui.ctx().input(|i| !i.raw.hovered_files.is_empty()) {
-                            ui.ctx()
-                                .layer_painter(egui::LayerId::new(
-                                    egui::Order::Foreground,
-                                    egui::Id::new("media_pool_drop_highlight"),
-                                ))
-                                .rect_stroke(
-                                    pool.rect,
-                                    4.0,
-                                    egui::Stroke::new(2.0, ui.visuals().selection.bg_fill),
-                                    egui::StrokeKind::Inside,
+                                panel_window::detach_button(
+                                    ui,
+                                    &mut self.settings.panels.docked_windows[0],
                                 );
+                                self.draw_pool_panel(ui, &mut preview_action);
+                            });
+                        } else {
+                            panel_window::detach_button(
+                                ui,
+                                &mut self.settings.panels.docked_windows[0],
+                            );
+                            self.draw_pool_panel(ui, &mut preview_action);
                         }
                     }
                     if let Some(rect) = effects_rect {
                         ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-                            self.show_effects_list(ui)
+                            panel_window::detach_button(
+                                ui,
+                                &mut self.settings.panels.docked_windows[1],
+                            );
+                            self.show_effects_list(ui);
                         });
-                    } else if self.settings.panels.effects_open {
+                    } else if show_effects {
+                        panel_window::detach_button(
+                            ui,
+                            &mut self.settings.panels.docked_windows[1],
+                        );
                         self.show_effects_list(ui);
                     }
                 });
@@ -4388,10 +4447,19 @@ impl VenturiApp {
             timeline_ui::MediaDropTarget,
         )> = None;
         let mut dropped_on_empty_timeline: Option<timeline_ui::TimelineDrag> = None;
-        egui::Panel::bottom("timeline")
-            .default_size(self.settings.panels.timeline_height)
-            .resizable(true)
-            .show(ui, |ui| {
+        let mut timeline_placement = self.settings.panels.docked_windows[2];
+        let mut timeline_open = true;
+        panel_window::docked(
+            ui,
+            panel_window::DockedPanel {
+                id: "timeline",
+                title: &t!("menu.timeline"),
+                size: [1100.0, 400.0],
+                dock: panel_window::Dock::Bottom(self.settings.panels.timeline_height),
+            },
+            &mut timeline_open,
+            &mut timeline_placement,
+            |ui| {
                 if self.audiometer_enabled {
                     // Narrow band on the right, carved out *before*
                     // showing the timeline: it steals only this fixed
@@ -4474,8 +4542,16 @@ impl VenturiApp {
                     dropped_on_empty_timeline = timeline_ui::TimelineDrag::released(&drop_resp);
                     ui.label(t!("timeline.empty_hint"));
                 }
-            });
-        if let Some(state) = egui::PanelState::load(ui.ctx(), egui::Id::new("timeline")) {
+            },
+        );
+        if !timeline_open {
+            timeline_placement.detached = false;
+            ui.ctx().request_repaint();
+        }
+        self.settings.panels.docked_windows[2] = timeline_placement;
+        if !timeline_placement.detached
+            && let Some(state) = egui::PanelState::load(ui.ctx(), egui::Id::new("timeline"))
+        {
             self.settings.panels.timeline_height = state.size().y;
         }
         if let Some(drag) = dropped_on_empty_timeline {
@@ -4647,15 +4723,6 @@ impl VenturiApp {
             self.timeline_state.playhead = frame.max(0);
         }
 
-        // A change from the panel can touch several clips (multiple
-        // selection): a single composite command, so the undo brings them
-        // all back together.
-        // An open dropdown is applying the preview of its entries:
-        // its changes go into a single undo step, like a drag.
-        let holding = ui.input(|i| i.pointer.any_down())
-            || preview_combo_open(ui.ctx())
-            || panel_window::interaction_held(ui.ctx());
-        self.apply_effect_changes(pending_effects, holding);
         if let Some(request) = self.mixer_panel.editor_requested.take() {
             let current = self.timeline_id;
             self.timeline_audio();
@@ -4672,253 +4739,289 @@ impl VenturiApp {
         // edge of the frame must stay grabbable outside too.
         let mut viewer_area = None;
         let mut overlay_effects: Vec<BoxedCommand> = Vec::new();
-        egui::CentralPanel::default().show(ui, |ui| {
-            // Inside the CentralPanel: it occupies only the viewer column.
-            egui::Panel::bottom("view_toggles")
-                .default_size(28.0)
-                .resizable(false)
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        magnet_toggle(ui, &mut self.snapping_enabled)
-                            .on_hover_text(t!("toolbar.snapping"));
-                        transform_overlay_toggle(ui, &mut self.show_transform_overlay)
-                            .on_hover_text(t!("toolbar.transform_overlay"));
-                        ui.separator();
-                        let keymap = &self.settings.keymap;
-                        let tool = &mut self.timeline_state.tool;
-                        timeline_tool_button(ui, tool, timeline_ui::TimelineTool::Select)
-                            .on_hover_text(
-                                keymap.menu_label(&t!("toolbar.select_tool"), Action::SelectTool),
-                            );
-                        timeline_tool_button(ui, tool, timeline_ui::TimelineTool::Slip)
-                            .on_hover_text(
-                                keymap.menu_label(&t!("toolbar.slip_tool"), Action::SlipTool),
-                            );
+        let mut viewer_placement = self.settings.panels.docked_windows[3];
+        let viewer_native = viewer_placement.detached && !ui.ctx().embed_viewports();
+        let mut viewer_open = true;
+        panel_window::docked(
+            ui,
+            panel_window::DockedPanel {
+                id: "viewer",
+                title: &t!("panels.viewer"),
+                size: [900.0, 640.0],
+                dock: panel_window::Dock::Central,
+            },
+            &mut viewer_open,
+            &mut viewer_placement,
+            |ui| {
+                // Inside the CentralPanel: it occupies only the viewer column.
+                egui::Panel::bottom("view_toggles")
+                    .default_size(28.0)
+                    .resizable(false)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            magnet_toggle(ui, &mut self.snapping_enabled)
+                                .on_hover_text(t!("toolbar.snapping"));
+                            transform_overlay_toggle(ui, &mut self.show_transform_overlay)
+                                .on_hover_text(t!("toolbar.transform_overlay"));
+                            ui.separator();
+                            let keymap = &self.settings.keymap;
+                            let tool = &mut self.timeline_state.tool;
+                            timeline_tool_button(ui, tool, timeline_ui::TimelineTool::Select)
+                                .on_hover_text(
+                                    keymap
+                                        .menu_label(&t!("toolbar.select_tool"), Action::SelectTool),
+                                );
+                            timeline_tool_button(ui, tool, timeline_ui::TimelineTool::Slip)
+                                .on_hover_text(
+                                    keymap.menu_label(&t!("toolbar.slip_tool"), Action::SlipTool),
+                                );
+                        });
                     });
-                });
-            let (total, playhead, marks, playing) = self.transport_state();
-            egui::Panel::bottom("transport")
-                .resizable(false)
-                .show(ui, |ui| {
-                    transport_action =
-                        transport::show_transport(ui, total, playhead, marks, playing);
-                });
-            egui::Panel::top("viewer_zoom_bar")
-                .resizable(false)
-                .show(ui, |ui| self.show_viewer_zoom_bar(ui));
-            let slip_split = self.slip_split_layers();
-            if slip_split.is_some() {
-                // The buffers of the two ends fill on their own threads.
-                ui.ctx().request_repaint();
-            }
-            let media_offline = slip_split.is_none() && self.active_clip_media_offline();
-            // Browsing a "raw" media from the media pool there is no
-            // timeline to compose: a single layer, its frame as it is.
-            let layers = if let Some(split) = slip_split {
-                self.viewer_keyframe = false;
-                split
-            } else if media_offline || self.browsing.is_some() {
-                self.viewer_keyframe = false;
-                None
-            } else {
-                let layers = self.timeline_video_layers(None);
-                let served_keyframe = self
-                    .render_ahead
-                    .as_mut()
-                    .is_some_and(|r| r.take_served_keyframe());
-                // No layers: the frame already shown stays, and its badge.
-                if layers.is_some() {
-                    self.viewer_keyframe = served_keyframe;
+                let (total, playhead, marks, playing) = self.transport_state();
+                egui::Panel::bottom("transport")
+                    .resizable(false)
+                    .show(ui, |ui| {
+                        transport_action =
+                            transport::show_transport(ui, total, playhead, marks, playing);
+                    });
+                egui::Panel::top("viewer_zoom_bar")
+                    .resizable(false)
+                    .show(ui, |ui| self.show_viewer_zoom_bar(ui));
+                let slip_split = self.slip_split_layers();
+                if slip_split.is_some() {
+                    // The buffers of the two ends fill on their own threads.
+                    ui.ctx().request_repaint();
                 }
-                layers
-            };
-
-            if media_offline {
-                self.last_viewer_frame_kind = Some(ViewerFrameKind::Offline);
-            } else if self.browsing.is_some() {
-                if self.preview_meta.as_ref().is_some_and(|m| !m.has_video) {
-                    self.last_viewer_frame_kind = None;
-                } else if let Some(frame) = self.browsing_video_frame() {
-                    let output = vv_render::OutputFrame::exact(frame.width, frame.height);
-                    let layer = frame_provider::OwnedLayer {
-                        content: frame_provider::OwnedContent::Video {
-                            source_size: (frame.width, frame.height),
-                            frame,
-                        },
-                        transform: vv_core::Transform::default(),
-                        opacity: 1.0,
-                        filters: Vec::new(),
-                        blend: vv_core::BlendMode::Normal,
-                        masks: Vec::new(),
-                    };
-                    self.show_composited(vec![layer], output);
-                }
-            } else if let Some(layers) = layers {
-                let output = self.viewer_output(&layers);
-                self.show_composited(layers, output);
-            }
-
-            match self.last_viewer_frame_kind {
-                Some(ViewerFrameKind::Video) => {
-                    if let (Some(id), Some(tex_size)) =
-                        (self.video_texture_id, self.video_display_size)
-                    {
-                        let (area, _) =
-                            ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
-                        self.viewer_zoom.handle_input(ui, area, tex_size);
-                        let ppp = ui.ctx().pixels_per_point();
-                        let rect = self.viewer_zoom.frame_rect(area, tex_size, ppp);
-                        ui.painter().with_clip_rect(area).image(
-                            id,
-                            rect,
-                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                            egui::Color32::WHITE,
-                        );
-                        if self.viewer_keyframe {
-                            paint_keyframes_badge(ui.painter(), rect.intersect(area));
-                        }
-                        self.viewer_geometry = Some((area, tex_size));
-                        viewer_area = Some(area);
-                        viewer_rect = Some(rect);
+                let media_offline = slip_split.is_none() && self.active_clip_media_offline();
+                // Browsing a "raw" media from the media pool there is no
+                // timeline to compose: a single layer, its frame as it is.
+                let layers = if let Some(split) = slip_split {
+                    self.viewer_keyframe = false;
+                    split
+                } else if media_offline || self.browsing.is_some() {
+                    self.viewer_keyframe = false;
+                    None
+                } else {
+                    let layers = self.timeline_video_layers(None);
+                    let served_keyframe = self
+                        .render_ahead
+                        .as_mut()
+                        .is_some_and(|r| r.take_served_keyframe());
+                    // No layers: the frame already shown stays, and its badge.
+                    if layers.is_some() {
+                        self.viewer_keyframe = served_keyframe;
                     }
-                }
-                Some(ViewerFrameKind::Offline) => {
-                    ui.centered_and_justified(|ui| {
-                        ui.colored_label(
-                            theme::ERROR,
-                            egui::RichText::new(t!("viewer.media_offline")).size(24.0),
-                        );
-                    });
-                }
-                None => {
-                    if let Some(err) = &self.preview_error {
-                        ui.colored_label(
-                            egui::Color32::RED,
-                            t!("viewer.player_error", error = err),
-                        );
-                    } else if self.browsing_audio_only() {
-                        let (rect, _) =
-                            ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
-                        let total = self.browse_total_frames();
-                        let keys = self.browsed_waveform_keys();
-                        // Loaded here too: the timeline loads them before the
-                        // double click that opened this media.
-                        for &key in &keys {
-                            self.load_waveform(key);
-                        }
-                        if keys.iter().any(|k| !self.waveform_cache.contains_key(k)) {
-                            // The worker wakes no one when it is done.
-                            ui.ctx()
-                                .request_repaint_after(std::time::Duration::from_millis(200));
-                        }
-                        let preview = viewer_waveform::AudioPreview {
-                            waveforms: keys.iter().map(|k| self.waveform_cache.get(k)).collect(),
-                            total_frames: total,
-                            fps: self.browse_fps(),
-                            playhead: self.browse_playhead,
-                            marks: self.browse_marks.resolve(total),
+                    layers
+                };
+
+                if media_offline {
+                    self.last_viewer_frame_kind = Some(ViewerFrameKind::Offline);
+                } else if self.browsing.is_some() {
+                    if self.preview_meta.as_ref().is_some_and(|m| !m.has_video) {
+                        self.last_viewer_frame_kind = None;
+                    } else if let Some(frame) = self.browsing_video_frame() {
+                        let output = vv_render::OutputFrame::exact(frame.width, frame.height);
+                        let layer = frame_provider::OwnedLayer {
+                            content: frame_provider::OwnedContent::Video {
+                                source_size: (frame.width, frame.height),
+                                frame,
+                            },
+                            transform: vv_core::Transform::default(),
+                            opacity: 1.0,
+                            filters: Vec::new(),
+                            blend: vv_core::BlendMode::Normal,
+                            masks: Vec::new(),
                         };
-                        viewer_waveform::paint(ui, rect, &preview);
-                        // Dragged onto the timeline like a frame, clicked to seek.
-                        viewer_rect = Some(rect);
-                    } else {
+                        self.show_composited(vec![layer], output);
+                    }
+                } else if let Some(layers) = layers {
+                    let output = self.viewer_output(&layers);
+                    self.show_composited(layers, output);
+                }
+
+                match self.last_viewer_frame_kind {
+                    Some(ViewerFrameKind::Video) => {
+                        if let (Some(id), Some(tex_size)) =
+                            (self.video_texture_id, self.video_display_size)
+                        {
+                            let (area, _) =
+                                ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
+                            self.viewer_zoom.handle_input(ui, area, tex_size);
+                            let ppp = ui.ctx().pixels_per_point();
+                            let rect = self.viewer_zoom.frame_rect(area, tex_size, ppp);
+                            ui.painter().with_clip_rect(area).image(
+                                id,
+                                rect,
+                                egui::Rect::from_min_max(
+                                    egui::pos2(0.0, 0.0),
+                                    egui::pos2(1.0, 1.0),
+                                ),
+                                egui::Color32::WHITE,
+                            );
+                            if self.viewer_keyframe {
+                                paint_keyframes_badge(ui.painter(), rect.intersect(area));
+                            }
+                            self.viewer_geometry = Some((area, tex_size));
+                            viewer_area = Some(area);
+                            viewer_rect = Some(rect);
+                        }
+                    }
+                    Some(ViewerFrameKind::Offline) => {
                         ui.centered_and_justified(|ui| {
-                            ui.label(if self.browsing.is_some() || self.active_clip.is_some() {
-                                t!("viewer.decoding")
-                            } else {
-                                t!("viewer.empty_hint")
-                            })
+                            ui.colored_label(
+                                theme::ERROR,
+                                egui::RichText::new(t!("viewer.media_offline")).size(24.0),
+                            );
                         });
                     }
-                }
-            }
-
-            let Some(rect) = viewer_rect else {
-                return;
-            };
-            let area = viewer_area.unwrap_or(rect);
-            let ui = &mut self.viewer_zoom.tools_ui(ui, area);
-            if viewer_area.is_some() {
-                self.show_viewer_overlay(ui, rect, area, &video_targets, &mut overlay_effects);
-            }
-
-            if let Some(browsed) = self.browsing.clone() {
-                let rect = rect.intersect(area);
-                let (source_in, source_out) = self.browse_marks.resolve(self.browse_total_frames());
-                let drag_id = ui.id().with("viewer_media_drag");
-                let audio_only = self.browsing_audio_only();
-                let sense = if audio_only {
-                    egui::Sense::click_and_drag()
-                } else {
-                    egui::Sense::drag()
-                };
-                let hint = if audio_only {
-                    t!("viewer.waveform_hint")
-                } else {
-                    t!("viewer.drag_in_out")
-                };
-                let resp = ui.interact(rect, drag_id, sense).on_hover_text(hint);
-                if audio_only
-                    && resp.clicked()
-                    && let Some(pos) = resp.interact_pointer_pos()
-                {
-                    let total = self.browse_total_frames();
-                    self.seek_browse(viewer_waveform::frame_at(rect, pos.x, total));
-                }
-                let mut drags = vec![(resp, timeline_ui::DragStreams::All)];
-                if self
-                    .preview_meta
-                    .as_ref()
-                    .is_some_and(|m| m.has_video && m.has_audio)
-                {
-                    drags.extend(show_stream_drag_handles(ui, rect));
-                }
-                for (resp, streams) in drags {
-                    // A library asset joins the project only once it is dragged.
-                    let media_id = match &browsed {
-                        Browsed::Media(id) => Some(*id),
-                        Browsed::Asset(id) if resp.drag_started() => {
-                            self.import_library_asset(id).first().copied()
+                    None => {
+                        if let Some(err) = &self.preview_error {
+                            ui.colored_label(
+                                egui::Color32::RED,
+                                t!("viewer.player_error", error = err),
+                            );
+                        } else if self.browsing_audio_only() {
+                            let (rect, _) =
+                                ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
+                            let total = self.browse_total_frames();
+                            let keys = self.browsed_waveform_keys();
+                            // Loaded here too: the timeline loads them before the
+                            // double click that opened this media.
+                            for &key in &keys {
+                                self.load_waveform(key);
+                            }
+                            if keys.iter().any(|k| !self.waveform_cache.contains_key(k)) {
+                                // The worker wakes no one when it is done.
+                                ui.ctx()
+                                    .request_repaint_after(std::time::Duration::from_millis(200));
+                            }
+                            let preview = viewer_waveform::AudioPreview {
+                                waveforms: keys
+                                    .iter()
+                                    .map(|k| self.waveform_cache.get(k))
+                                    .collect(),
+                                total_frames: total,
+                                fps: self.browse_fps(),
+                                playhead: self.browse_playhead,
+                                marks: self.browse_marks.resolve(total),
+                            };
+                            viewer_waveform::paint(ui, rect, &preview);
+                            // Dragged onto the timeline like a frame, clicked to seek.
+                            viewer_rect = Some(rect);
+                        } else {
+                            ui.centered_and_justified(|ui| {
+                                ui.label(if self.browsing.is_some() || self.active_clip.is_some() {
+                                    t!("viewer.decoding")
+                                } else {
+                                    t!("viewer.empty_hint")
+                                })
+                            });
                         }
-                        Browsed::Asset(_) => None,
-                    };
-                    match media_id {
-                        Some(media_id) => resp.dnd_set_drag_payload(
-                            timeline_ui::MediaDragSet::one(timeline_ui::MediaDrag {
-                                media_id,
-                                source_in,
-                                source_out,
-                                streams,
-                            }),
-                        ),
-                        None if resp.hovered() => ui.ctx().set_cursor_icon(egui::CursorIcon::Grab),
-                        None => {}
-                    }
-                    if resp.dragged()
-                        && let Some(item) = self.browsed_item(&browsed)
-                    {
-                        let name = file_label(&item.path);
-                        let ghost = match streams {
-                            timeline_ui::DragStreams::All => name,
-                            timeline_ui::DragStreams::VideoOnly => {
-                                t!("viewer.ghost_video_only", name = name).into_owned()
-                            }
-                            timeline_ui::DragStreams::AudioOnly => {
-                                t!("viewer.ghost_audio_only", name = name).into_owned()
-                            }
-                        };
-                        show_drag_ghost(ui, resp.id, &ghost);
                     }
                 }
-            }
-        });
 
-        if self.viewer_fullscreen {
+                let Some(rect) = viewer_rect else {
+                    return;
+                };
+                let area = viewer_area.unwrap_or(rect);
+                let ui = &mut self.viewer_zoom.tools_ui(ui, area);
+                if viewer_area.is_some() {
+                    self.show_viewer_overlay(ui, rect, area, &video_targets, &mut overlay_effects);
+                }
+
+                if let Some(browsed) = self.browsing.clone() {
+                    let rect = rect.intersect(area);
+                    let (source_in, source_out) =
+                        self.browse_marks.resolve(self.browse_total_frames());
+                    let drag_id = ui.id().with("viewer_media_drag");
+                    let audio_only = self.browsing_audio_only();
+                    let sense = if audio_only {
+                        egui::Sense::click_and_drag()
+                    } else {
+                        egui::Sense::drag()
+                    };
+                    let hint = if audio_only {
+                        t!("viewer.waveform_hint")
+                    } else {
+                        t!("viewer.drag_in_out")
+                    };
+                    let resp = ui.interact(rect, drag_id, sense).on_hover_text(hint);
+                    if audio_only
+                        && resp.clicked()
+                        && let Some(pos) = resp.interact_pointer_pos()
+                    {
+                        let total = self.browse_total_frames();
+                        self.seek_browse(viewer_waveform::frame_at(rect, pos.x, total));
+                    }
+                    let mut drags = vec![(resp, timeline_ui::DragStreams::All)];
+                    if self
+                        .preview_meta
+                        .as_ref()
+                        .is_some_and(|m| m.has_video && m.has_audio)
+                    {
+                        drags.extend(show_stream_drag_handles(ui, rect));
+                    }
+                    for (resp, streams) in drags {
+                        // A library asset joins the project only once it is dragged.
+                        let media_id = match &browsed {
+                            Browsed::Media(id) => Some(*id),
+                            Browsed::Asset(id) if resp.drag_started() => {
+                                self.import_library_asset(id).first().copied()
+                            }
+                            Browsed::Asset(_) => None,
+                        };
+                        match media_id {
+                            Some(media_id) => resp.dnd_set_drag_payload(
+                                timeline_ui::MediaDragSet::one(timeline_ui::MediaDrag {
+                                    media_id,
+                                    source_in,
+                                    source_out,
+                                    streams,
+                                }),
+                            ),
+                            None if resp.hovered() => {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab)
+                            }
+                            None => {}
+                        }
+                        if resp.dragged()
+                            && let Some(item) = self.browsed_item(&browsed)
+                        {
+                            let name = file_label(&item.path);
+                            let ghost = match streams {
+                                timeline_ui::DragStreams::All => name,
+                                timeline_ui::DragStreams::VideoOnly => {
+                                    t!("viewer.ghost_video_only", name = name).into_owned()
+                                }
+                                timeline_ui::DragStreams::AudioOnly => {
+                                    t!("viewer.ghost_audio_only", name = name).into_owned()
+                                }
+                            };
+                            show_drag_ghost(ui, resp.id, &ghost);
+                        }
+                    }
+                }
+            },
+        );
+
+        if !viewer_open || (viewer_native && !viewer_placement.detached) {
+            viewer_placement.detached = false;
+            self.viewer_fullscreen = false;
+            ui.ctx().request_repaint();
+        }
+        self.settings.panels.docked_windows[3] = viewer_placement;
+        if viewer_placement.detached {
+            panel_window::fullscreen(ui.ctx(), "viewer", self.viewer_fullscreen);
+        } else if self.viewer_fullscreen {
             transport_action = self.show_fullscreen_viewer(ui.ctx());
         }
 
-        let pointer_down = ui.input(|i| i.pointer.any_down());
-        self.apply_effect_changes(overlay_effects, pointer_down || holding);
+        // Collect every viewport before deciding whether the drag has ended.
+        let holding = ui.input(|i| i.pointer.any_down())
+            || preview_combo_open(ui.ctx())
+            || panel_window::interaction_held(ui.ctx());
+        pending_effects.extend(overlay_effects);
+        self.apply_effect_changes(pending_effects, holding);
         self.update_scopes(ui.ctx());
 
         if transport_action.toggle_play {
@@ -5021,6 +5124,7 @@ fn main() -> eframe::Result<()> {
         "venturi",
         options,
         Box::new(move |cc| {
+            cc.egui_ctx.add_plugin(panel_drag::NativeDrag::default());
             // Timeline zoom with Alt+scroll instead of the default Ctrl.
             // Shift+scroll is left free for the vertical zoom of the tracks,
             // so the horizontal scroll moves to Ctrl+scroll.

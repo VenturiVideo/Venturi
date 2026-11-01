@@ -1711,10 +1711,14 @@ impl VenturiApp {
         let mut placement = self.settings.panels.inspector_window;
         let mut open = self.settings.panels.inspector_open;
         if open {
-            crate::panel_window::show_right(
+            crate::panel_window::docked(
                 ui,
-                &t!("menu.inspector"),
-                self.settings.panels.inspector_width,
+                crate::panel_window::DockedPanel {
+                    id: "properties",
+                    title: &t!("menu.inspector"),
+                    size: [420.0, 700.0],
+                    dock: crate::panel_window::Dock::Right(self.settings.panels.inspector_width),
+                },
                 &mut open,
                 &mut placement,
                 |ui| {

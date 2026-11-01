@@ -83,6 +83,15 @@ A working graphics backend is required at runtime (Vulkan on Linux, through
 `mesa-vulkan-drivers` or the proprietary GPU driver): without one, `wgpu`
 finds no adapter and the window does not open.
 
+On Wayland, pointer focus and keyboard focus are separate. The
+[keyboard protocol](https://wayland.freedesktop.org/docs/html/apa.html#protocol-spec-wl_keyboard)
+allows compositors to send modifiers without keyboard focus, but does not
+require it. If scrolling over an unfocused Venturi window does not recognize
+Alt or Ctrl, focus the window before using the modified scroll gesture. The
+Timeline menu's Zoom in and Zoom out actions provide an alternative. A problem
+that persists with keyboard focus needs a separate reproduction; this does
+not establish the cause of every compositor-specific modifier issue.
+
 `vv-app mcp` runs the MCP server for AI agents instead of the window, and
 `vv-app --mcp` opens the window with it on: see [MCP.md](MCP.md).
 
@@ -111,6 +120,10 @@ the graphics tests share headless GPU resources and SIGSEGV intermittently
 when run in parallel. Some tests invoke `ffmpeg` from the command line to
 generate synthetic clips in `/tmp`, so the `ffmpeg` binary (not just the
 development libraries) also needs to be in `PATH`.
+
+The time-stretch tests need an FFmpeg built with librubberband
+(`scripts/build-ffmpeg.sh` builds one; Homebrew's does not). Without it they
+are skipped locally, and fail under CI.
 
 ### Where unit tests live
 

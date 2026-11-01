@@ -78,12 +78,11 @@ the part that has to be perfect.
 - **Linux first.** Developed and tested on Linux, not ported to it. Also runs
   on Apple Silicon Macs, and possibly Windows.
 
-Mixer, Color, Curves and Properties can open as separate native windows: open the panel
-from **View**, then choose **Detach**. Use **Reattach** to return it to the
-editor. Closing a panel window leaves the project open; reopen it from View.
-Window sizes and detached state are saved. Window placement is chosen by the
-desktop on reopening. Backends without native windows keep these panels inside
-the editor. Media, Effects, timeline and viewer remain in the main window.
+Media, Effects, Timeline, Viewer, Mixer, Color, Animation Curves and Properties
+can open as separate native windows. Use **Detach** and **Reattach** to move
+panels between their original locations and native windows. See
+[panel windows](docs/PANELS.md) for input handling, saved settings and current
+backend limitations.
 
 ## Install
 

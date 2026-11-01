@@ -14,26 +14,37 @@ impl egui::DroppedFile for DroppedClip {
 }
 
 #[test]
-fn properties_remain_visible_on_embedded_backends() {
-    let ctx = Context::default();
-    let mut placement = Placement {
-        detached: true,
-        size: [640.0, 480.0],
-    };
-    let mut open = true;
-    let mut drawn = false;
-    let mut output = ctx.run_ui(RawInput::default(), |ui| {
-        assert!(
-            show_right(ui, "Properties", 300.0, &mut open, &mut placement, |ui| {
-                ui.label("Shared content");
-                drawn = true;
-            })
-            .is_some()
-        );
-    });
-    output.textures_delta.clear();
-    assert!(drawn && open);
-    assert!(!placement.detached);
+fn docked_panels_remain_visible_on_embedded_backends() {
+    for dock in [Dock::Right(300.0), Dock::Bottom(250.0), Dock::Central] {
+        let ctx = Context::default();
+        let mut placement = Placement {
+            detached: true,
+            size: [640.0, 480.0],
+        };
+        let mut open = true;
+        let mut drawn = false;
+        let mut output = ctx.run_ui(RawInput::default(), |ui| {
+            let rect = docked(
+                ui,
+                DockedPanel {
+                    id: "viewer",
+                    title: "Viewer",
+                    size: [640.0, 480.0],
+                    dock,
+                },
+                &mut open,
+                &mut placement,
+                |ui| {
+                    ui.label("Shared content");
+                    drawn = true;
+                },
+            );
+            assert!(rect.is_some());
+        });
+        output.textures_delta.clear();
+        assert!(drawn && open);
+        assert!(!placement.detached);
+    }
 }
 
 #[test]
@@ -47,8 +58,8 @@ fn child_file_drops_reach_the_root_once_even_without_keyboard_focus() {
             ..Default::default()
         },
         |ui| {
-            record_input(ui, "properties");
-            record_input(ui, "properties");
+            record_input(ui, "media_pool");
+            record_input(ui, "media_pool");
         },
     );
     output.textures_delta.clear();

@@ -1,4 +1,5 @@
 use super::*;
+use vv_media::test_support::TempDir;
 
 #[test]
 fn shortcuts_round_trip_through_the_config_format() {
@@ -52,9 +53,8 @@ fn assigning_a_shortcut_takes_it_away_from_other_actions() {
 
 #[test]
 fn save_then_load_keeps_custom_shortcuts_and_defaults_for_the_rest() {
-    let path = std::env::temp_dir()
-        .join(format!("vv-settings-{}", std::process::id()))
-        .join("settings.json");
+    let dir = TempDir::new("vv-settings");
+    let path = dir.join("missing-parent").join("settings.json");
     let mut settings = Settings::default();
     settings
         .keymap
@@ -108,20 +108,55 @@ fn save_then_load_keeps_custom_shortcuts_and_defaults_for_the_rest() {
         loaded.hw_decode_budget_bytes, None,
         "follows the RAM until set"
     );
-    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+/// Ensures saved shortcuts keep priority over conflicting defaults during migration.
+#[test]
+fn loading_legacy_shortcuts_prioritizes_saved_bindings_over_defaults() {
+    let dir = TempDir::new("vv-settings-shortcut-migration");
+    let path = dir.join("settings.json");
+    std::fs::write(&path, r#"{"shortcuts":{"cut":["Alt+V"]}}"#).unwrap();
+
+    let loaded = Settings::load(&path);
+    let alt_v = Shortcut {
+        alt: true,
+        ..Shortcut::plain(egui::Key::V)
+    };
+
+    assert_eq!(loaded.keymap.shortcuts(Action::Cut), &[alt_v]);
+    assert!(loaded.keymap.shortcuts(Action::PasteAttributes).is_empty());
+    for action in Action::ALL
+        .into_iter()
+        .filter(|action| *action != Action::Cut)
+    {
+        assert!(
+            !loaded.keymap.shortcuts(action).contains(&alt_v),
+            "{action:?} also uses {alt_v}"
+        );
+    }
+    assert_eq!(
+        loaded.keymap.shortcuts(Action::SelectFromPlayhead),
+        &[Shortcut {
+            alt: true,
+            ..Shortcut::plain(egui::Key::Y)
+        }]
+    );
 }
 
 #[test]
 fn save_then_load_keeps_custom_panel_layout_and_defaults_it_when_absent() {
-    let path = std::env::temp_dir()
-        .join(format!("vv-settings-panels-{}", std::process::id()))
-        .join("settings.json");
+    let dir = TempDir::new("vv-settings-panels");
+    let path = dir.join("settings.json");
     let mut settings = Settings::default();
     settings.panels = PanelLayout {
         inspector_window: crate::panel_window::Placement {
             detached: true,
             size: [800.0, 600.0],
         },
+        docked_windows: [crate::panel_window::Placement {
+            detached: true,
+            size: [800.0, 600.0],
+        }; 4],
         floating_windows: [
             crate::panel_window::Placement {
                 detached: true,
@@ -161,7 +196,6 @@ fn save_then_load_keeps_custom_panel_layout_and_defaults_it_when_absent() {
     std::fs::write(&path, "{}").unwrap();
     let loaded = Settings::load(&path);
     assert_eq!(loaded.panels, PanelLayout::default());
-    let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
 #[test]
@@ -182,6 +216,29 @@ fn earlier_floating_window_settings_keep_properties_embedded() {
         .as_object_mut()
         .unwrap()
         .remove("inspector_window");
+    std::fs::write(&path, json.to_string()).unwrap();
+    assert_eq!(Settings::load(&path), settings);
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+fn earlier_floating_window_settings_keep_new_docked_panels_embedded() {
+    let path = std::env::temp_dir()
+        .join(format!("vv-settings-earlier-panels-{}", std::process::id()))
+        .join("settings.json");
+    let mut settings = Settings::default();
+    settings.panels.floating_windows[1] = crate::panel_window::Placement {
+        detached: true,
+        size: [500.0, 560.0],
+    };
+    settings.panels.left_column_width = 345.0;
+    settings.save(&path).unwrap();
+    let mut json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    json["panels"]
+        .as_object_mut()
+        .unwrap()
+        .remove("docked_windows");
     std::fs::write(&path, json.to_string()).unwrap();
     assert_eq!(Settings::load(&path), settings);
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
@@ -220,9 +277,8 @@ fn shift_is_ignored_on_symbols_but_not_on_letters() {
 
 #[test]
 fn effect_presets_are_saved_and_a_broken_one_is_dropped_alone() {
-    let path = std::env::temp_dir()
-        .join(format!("vv-settings-presets-{}", std::process::id()))
-        .join("settings.json");
+    let dir = TempDir::new("vv-settings-presets");
+    let path = dir.join("settings.json");
     let mut settings = Settings::default();
     let mut params = vv_core::MultibandCompressor::DEFAULT;
     params.bands[1].ratio = 5.0;
@@ -258,28 +314,22 @@ fn effect_presets_are_saved_and_a_broken_one_is_dropped_alone() {
     assert_eq!(loaded.compressor_presets, settings.compressor_presets);
     assert_eq!(loaded.eq_presets, settings.eq_presets);
     assert!(!loaded.kinetic_scroll, "the rest of the file still reads");
-    let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
 #[test]
 fn an_audio_budget_out_of_range_in_the_file_is_clamped() {
-    let path = std::env::temp_dir()
-        .join(format!("vv-settings-audio-{}", std::process::id()))
-        .join("settings.json");
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let dir = TempDir::new("vv-settings-audio");
+    let path = dir.join("settings.json");
     for (mb, bytes) in [(0, 100_000_000), (99_999, 32_000_000_000)] {
         std::fs::write(&path, format!(r#"{{"audio_budget_mb": {mb}}}"#)).unwrap();
         assert_eq!(Settings::load(&path).audio_budget_bytes, bytes);
     }
-    let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
 #[test]
 fn fast_playback_shown_frames_only_is_on_by_default_and_saved() {
-    let path = std::env::temp_dir()
-        .join(format!("vv-settings-stride-{}", std::process::id()))
-        .join("settings.json");
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let dir = TempDir::new("vv-settings-stride");
+    let path = dir.join("settings.json");
     std::fs::write(&path, "{}").unwrap();
     assert!(Settings::load(&path).fast_playback_shown_frames_only);
 
@@ -287,15 +337,12 @@ fn fast_playback_shown_frames_only_is_on_by_default_and_saved() {
     settings.fast_playback_shown_frames_only = false;
     settings.save(&path).unwrap();
     assert!(!Settings::load(&path).fast_playback_shown_frames_only);
-    let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
 #[test]
 fn keyframes_when_behind_is_on_by_default_and_saved() {
-    let path = std::env::temp_dir()
-        .join(format!("vv-settings-keyframes-{}", std::process::id()))
-        .join("settings.json");
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let dir = TempDir::new("vv-settings-keyframes");
+    let path = dir.join("settings.json");
     std::fs::write(&path, "{}").unwrap();
     assert!(Settings::load(&path).keyframes_when_behind);
 
@@ -303,7 +350,6 @@ fn keyframes_when_behind_is_on_by_default_and_saved() {
     settings.keyframes_when_behind = false;
     settings.save(&path).unwrap();
     assert!(!Settings::load(&path).keyframes_when_behind);
-    let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
 #[test]
@@ -326,14 +372,10 @@ fn capture_waits_past_a_lone_modifier_for_the_whole_combination() {
 }
 
 fn load_json(tag: &str, json: &str) -> Settings {
-    let path = std::env::temp_dir()
-        .join(format!("vv-settings-{tag}-{}", std::process::id()))
-        .join("settings.json");
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let dir = TempDir::new(&format!("vv-settings-{tag}"));
+    let path = dir.join("settings.json");
     std::fs::write(&path, json).unwrap();
-    let settings = Settings::load(&path);
-    let _ = std::fs::remove_dir_all(path.parent().unwrap());
-    settings
+    Settings::load(&path)
 }
 
 #[test]
@@ -343,10 +385,8 @@ fn a_scan_that_found_nothing_is_not_scanned_again_at_startup() {
     settings.vst3_plugins = Some(Vec::new());
     assert!(!settings.needs_plugin_scan());
 
-    let path = std::env::temp_dir()
-        .join(format!("vv-settings-scanned-{}", std::process::id()))
-        .join("settings.json");
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let dir = TempDir::new("vv-settings-scanned");
+    let path = dir.join("settings.json");
     settings.vst3_blocklist = vec![
         legacy("/x/Bad.vst3"),
         Blocked {
@@ -356,7 +396,6 @@ fn a_scan_that_found_nothing_is_not_scanned_again_at_startup() {
     ];
     settings.save(&path).unwrap();
     let loaded = Settings::load(&path);
-    let _ = std::fs::remove_dir_all(path.parent().unwrap());
     assert_eq!(loaded.vst3_plugins, Some(Vec::new()));
     assert!(!loaded.needs_plugin_scan());
     assert_eq!(loaded.vst3_blocklist, settings.vst3_blocklist);
@@ -372,8 +411,7 @@ fn settings_from_before_the_flag_count_as_scanned_only_with_a_cached_list() {
 
 #[test]
 fn crashing_rescans_accumulate_the_blocklist() {
-    let dir = std::env::temp_dir().join(format!("vv-settings-rescan-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("vv-settings-rescan");
     let marker = dir.join("scan.marker");
     let (x, y) = (PathBuf::from("/x/X.vst3"), PathBuf::from("/x/Y.vst3"));
     let mut settings = Settings::default();
@@ -386,7 +424,6 @@ fn crashing_rescans_accumulate_the_blocklist() {
     std::fs::write(&marker, b"/x/Y.vst3").unwrap();
     settings.prepare_plugin_scan(true, &marker);
     settings.prepare_plugin_scan(true, &marker);
-    let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(settings.blocked_paths(), vec![x, y]);
 }
 
@@ -399,7 +436,7 @@ fn legacy(path: impl Into<PathBuf>) -> Blocked {
 
 #[test]
 fn a_blocked_bundle_is_retried_only_once_it_changed_on_disk() {
-    let dir = std::env::temp_dir().join(format!("vv-settings-retry-{}", std::process::id()));
+    let dir = TempDir::new("vv-settings-retry");
     let bundle = dir.join("Crash.vst3");
     #[cfg(target_os = "macos")]
     let binary = bundle.join("Contents/MacOS/Crash");
@@ -428,7 +465,6 @@ fn a_blocked_bundle_is_retried_only_once_it_changed_on_disk() {
     settings.prepare_plugin_scan(false, &marker);
     assert_eq!(settings.vst3_blocklist.len(), 2);
     settings.prepare_plugin_scan(true, &marker);
-    let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(settings.vst3_blocklist, vec![legacy("/x/Old.vst3")]);
 }
 
@@ -473,12 +509,10 @@ fn a_non_utf8_plugin_path_does_not_fail_the_save() {
     ]);
     settings.vst3_blocklist = vec![legacy(bad), legacy("/x/Bad.vst3")];
 
-    let path = std::env::temp_dir()
-        .join(format!("vv-settings-nonutf8-{}", std::process::id()))
-        .join("settings.json");
+    let dir = TempDir::new("vv-settings-nonutf8");
+    let path = dir.join("settings.json");
     settings.save(&path).unwrap();
     let loaded = Settings::load(&path);
-    let _ = std::fs::remove_dir_all(path.parent().unwrap());
     assert!(!loaded.kinetic_scroll);
     assert_eq!(
         loaded.vst3_plugins,
@@ -533,9 +567,8 @@ fn the_scanned_state_loads_as_before_from_every_file_shape() {
 
 #[test]
 fn the_scanned_state_is_written_as_before() {
-    let path = std::env::temp_dir()
-        .join(format!("vv-settings-written-{}", std::process::id()))
-        .join("settings.json");
+    let dir = TempDir::new("vv-settings-written");
+    let path = dir.join("settings.json");
     let written = |plugins| {
         let settings = Settings {
             vst3_plugins: plugins,
@@ -554,5 +587,4 @@ fn the_scanned_state_is_written_as_before() {
         written(Some(Vec::new())),
         (serde_json::json!([]), serde_json::json!(true))
     );
-    let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }

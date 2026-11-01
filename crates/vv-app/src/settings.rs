@@ -546,6 +546,7 @@ const MAX_RECENT_PROJECTS: usize = 10;
 pub struct PanelLayout {
     pub floating_windows: [crate::panel_window::Placement; 3],
     pub inspector_window: crate::panel_window::Placement,
+    pub docked_windows: [crate::panel_window::Placement; 4],
     pub media_pool_open: bool,
     pub effects_open: bool,
     pub inspector_open: bool,
@@ -569,6 +570,7 @@ impl Default for PanelLayout {
         Self {
             floating_windows: Default::default(),
             inspector_window: Default::default(),
+            docked_windows: Default::default(),
             media_pool_open: true,
             effects_open: false,
             inspector_open: true,
@@ -805,6 +807,8 @@ struct PanelLayoutFile {
     #[serde(default)]
     inspector_window: Option<crate::panel_window::Placement>,
     #[serde(default)]
+    docked_windows: Option<[crate::panel_window::Placement; 4]>,
+    #[serde(default)]
     media_pool_open: Option<bool>,
     #[serde(default)]
     effects_open: Option<bool>,
@@ -923,7 +927,7 @@ impl Settings {
     }
 
     /// Missing or unreadable file = default settings; actions absent from
-    /// the file keep the default shortcuts.
+    /// the file keep unclaimed default shortcuts.
     pub fn load(path: &Path) -> Self {
         let Ok(text) = std::fs::read_to_string(path) else {
             return Self::default();
@@ -996,6 +1000,7 @@ impl Settings {
         settings.panels = PanelLayout {
             floating_windows: file.panels.floating_windows.unwrap_or_default(),
             inspector_window: file.panels.inspector_window.unwrap_or_default(),
+            docked_windows: file.panels.docked_windows.unwrap_or_default(),
             media_pool_open: file
                 .panels
                 .media_pool_open
@@ -1034,15 +1039,30 @@ impl Settings {
             media_pool_layout: file.panels.media_pool_layout.unwrap_or_default(),
             library_layout: file.panels.library_layout.unwrap_or_default(),
         };
-        for (id, shortcuts) in file.shortcuts {
-            let Some(action) = Action::from_id(&id) else {
+        let saved_bindings: BTreeMap<_, _> = file
+            .shortcuts
+            .into_iter()
+            .filter_map(|(id, shortcuts)| {
+                Action::from_id(&id).map(|action| {
+                    let shortcuts = shortcuts
+                        .iter()
+                        .filter_map(|s| Shortcut::from_config(s))
+                        .collect::<Vec<_>>();
+                    (action, shortcuts)
+                })
+            })
+            .collect();
+        let saved_shortcuts: Vec<_> = saved_bindings.values().flatten().copied().collect();
+        for (&action, shortcuts) in &saved_bindings {
+            settings.keymap.bindings.insert(action, shortcuts.clone());
+        }
+        for action in Action::ALL {
+            if saved_bindings.contains_key(&action) {
                 continue;
-            };
-            let parsed = shortcuts
-                .iter()
-                .filter_map(|s| Shortcut::from_config(s))
-                .collect();
-            settings.keymap.bindings.insert(action, parsed);
+            }
+            if let Some(shortcuts) = settings.keymap.bindings.get_mut(&action) {
+                shortcuts.retain(|shortcut| !saved_shortcuts.contains(shortcut));
+            }
         }
         settings
     }
@@ -1081,6 +1101,7 @@ impl Settings {
             panels: PanelLayoutFile {
                 floating_windows: Some(self.panels.floating_windows),
                 inspector_window: Some(self.panels.inspector_window),
+                docked_windows: Some(self.panels.docked_windows),
                 media_pool_open: Some(self.panels.media_pool_open),
                 effects_open: Some(self.panels.effects_open),
                 inspector_open: Some(self.panels.inspector_open),

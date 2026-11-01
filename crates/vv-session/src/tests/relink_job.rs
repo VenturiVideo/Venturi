@@ -1,4 +1,5 @@
 use super::*;
+use vv_media::test_support::TempDir;
 
 fn media_ids(n: usize) -> Vec<MediaId> {
     let mut project = vv_core::Project::default();
@@ -19,7 +20,8 @@ fn media_ids(n: usize) -> Vec<MediaId> {
 
 #[test]
 fn by_name_prepares_the_offline_media_and_reports_the_missing_ones() {
-    let dir = std::env::temp_dir().join(format!("vv-app-relink-job-{}", std::process::id()));
+    let temp = TempDir::new("vv-app-relink-job");
+    let dir = temp.to_path_buf();
     std::fs::create_dir_all(dir.join("sub")).unwrap();
     let found = dir.join("sub/a.mp4");
     std::fs::write(&found, b"a").unwrap();
@@ -47,7 +49,6 @@ fn by_name_prepares_the_offline_media_and_reports_the_missing_ones() {
     assert_eq!(outcome.not_found, Some((dir.clone(), vec![ids[2]])));
     assert_eq!(progress.done.load(Ordering::Relaxed), 1);
     assert_eq!(progress.total.load(Ordering::Relaxed), 1);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]

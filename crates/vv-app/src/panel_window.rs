@@ -2,11 +2,15 @@ use egui::{Context, Event, Id, Key, Modifiers, RawInput, Rect, Ui, ViewportClass
 use rust_i18n::t;
 use serde::{Deserialize, Serialize};
 
-const INPUT_PANELS: [&str; 4] = [
+const INPUT_PANELS: [&str; 8] = [
     "audio_mixer",
     "color_window",
     "keyframe_editor",
+    "media_pool",
+    "effects",
     "properties",
+    "timeline",
+    "viewer",
 ];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -269,40 +273,88 @@ pub(crate) fn show_native(
     Some(rect)
 }
 
-pub(crate) fn show_right(
+#[derive(Clone, Copy)]
+pub(crate) enum Dock {
+    Right(f32),
+    Bottom(f32),
+    Central,
+}
+
+pub(crate) struct DockedPanel<'a> {
+    pub id: &'static str,
+    pub title: &'a str,
+    pub size: [f32; 2],
+    pub dock: Dock,
+}
+
+pub(crate) fn docked(
     ui: &mut Ui,
-    title: &str,
-    width: f32,
+    panel: DockedPanel<'_>,
     open: &mut bool,
     placement: &mut Placement,
     mut contents: impl FnMut(&mut Ui),
 ) -> Option<Rect> {
-    if !*open {
-        return None;
-    }
-    if placement.detached && !ui.ctx().embed_viewports() {
+    let ctx = ui.ctx().clone();
+    if placement.detached && !ctx.embed_viewports() {
+        if matches!(panel.dock, Dock::Central) {
+            egui::CentralPanel::default().show(ui, |ui| {
+                ui.label(t!("panels.detached", panel = panel.title));
+                if ui.button(t!("panels.reattach")).clicked() {
+                    placement.detached = false;
+                    ctx.request_repaint();
+                }
+            });
+        }
         show_native(
-            ui.ctx(),
-            "properties",
-            title,
-            [width, 700.0],
+            &ctx,
+            panel.id,
+            panel.title,
+            panel.size,
             open,
             placement,
             contents,
         )
     } else {
         placement.detached = false;
-        Some(
-            egui::Panel::right("properties")
-                .resizable(true)
-                .default_size(width)
-                .show(ui, |ui| {
-                    detach_button(ui, placement);
-                    contents(ui);
-                })
-                .response
-                .rect,
-        )
+        let mut draw = |ui: &mut Ui| {
+            detach_button(ui, placement);
+            contents(ui);
+        };
+        Some(match panel.dock {
+            Dock::Right(width) => {
+                egui::Panel::right(panel.id)
+                    .resizable(true)
+                    .default_size(width)
+                    .show(ui, &mut draw)
+                    .response
+                    .rect
+            }
+            Dock::Bottom(height) => {
+                egui::Panel::bottom(panel.id)
+                    .resizable(true)
+                    .default_size(height)
+                    .show(ui, &mut draw)
+                    .response
+                    .rect
+            }
+            Dock::Central => {
+                egui::CentralPanel::default()
+                    .show(ui, &mut draw)
+                    .response
+                    .rect
+            }
+        })
+    }
+}
+
+pub(crate) fn fullscreen(ctx: &Context, id: &'static str, fullscreen: bool) {
+    let key = Id::new(("panel-fullscreen", id));
+    if ctx.data(|d| d.get_temp::<bool>(key)) != Some(fullscreen) {
+        ctx.send_viewport_cmd_to(
+            ViewportId::from_hash_of(("detached-panel", id)),
+            egui::ViewportCommand::Fullscreen(fullscreen),
+        );
+        ctx.data_mut(|d| d.insert_temp(key, fullscreen));
     }
 }
 

@@ -39,38 +39,17 @@ fn effect_settings_belong_to_the_detached_mixer_viewport() {
     let mut timeline = plugin_timeline();
     timeline.tracks[0].mix.effects = vec![AudioEffect::new(AudioEffectKind::Mono)];
     let timeline_id = project.timelines.insert(timeline);
-    let mut state = MixerPanelState {
-        open_effect: Some((timeline_id, MixerChannel::Track(0), 0)),
-        ..Default::default()
-    };
-    let mut open = true;
-    let mut placement = crate::panel_window::Placement {
+    let mut app = crate::VenturiApp::default();
+    app.session.project = project;
+    app.timeline_id = Some(timeline_id);
+    app.mixer_panel.open_effect = Some((timeline_id, MixerChannel::Track(0), 0));
+    app.settings.panels.mixer_open = true;
+    app.settings.panels.floating_windows[1] = crate::panel_window::Placement {
         detached: true,
         size: [500.0, 600.0],
     };
-    let mut compressor = Vec::new();
-    let mut eq = Vec::new();
     let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-        show_mixer(
-            ui.ctx(),
-            &mut open,
-            &mut placement,
-            &mut state,
-            &project,
-            Some(timeline_id),
-            None,
-            EffectPresets {
-                compressor: &mut compressor,
-                eq: &mut eq,
-            },
-            &Vst3View {
-                installed: &[],
-                scanning: false,
-                known: &|_| false,
-                latency_ms: &|_| None,
-                failed: &|_| false,
-            },
-        );
+        app.frame_ui(ui, &mut eframe::Frame::_new_kittest());
         assert!(ui.memory(|m| {
             m.area_rect(egui::Id::new("audio_effect_settings"))
                 .is_none()

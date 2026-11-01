@@ -6,3 +6,9 @@ panels.detach:
 panels.reattach:
   en: Reattach
   it: Riaggancia
+panels.detached:
+  en: "%{panel} is open in a separate window."
+  it: "%{panel} è aperto in una finestra separata."
+panels.viewer:
+  en: Viewer
+  it: Monitor
