@@ -62,7 +62,7 @@ jobs:
   # The macOS loader, the native editor and the fixture bundle: the Linux job
   # covers the rest of the workspace.
   vv-plugin-macos:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
 
