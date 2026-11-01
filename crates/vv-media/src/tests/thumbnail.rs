@@ -1,31 +1,6 @@
 use super::*;
 
 #[test]
-fn reported_jpeg_generates_a_thumbnail() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("src/tests/fixtures/issue-61-original.jpg");
-    let thumb = generate_thumbnail(&path, 40_000_000.0, 96).unwrap();
-    assert_eq!((thumb.width, thumb.height), (96, 72));
-    assert_eq!(thumb.rgba.len(), 96 * 72 * 4);
-    assert!(
-        thumb
-            .rgba
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .all(|pixel| pixel[3] == 255)
-    );
-    assert!(
-        thumb
-            .rgba
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .any(|pixel| pixel != &thumb.rgba[..4])
-    );
-}
-
-#[test]
 fn generate_thumbnail_scales_down_preserving_aspect_ratio() {
     let dir = std::env::temp_dir().join("vv-media-thumbnail-test");
     std::fs::create_dir_all(&dir).unwrap();
@@ -97,16 +72,20 @@ fn generate_thumbnail_reads_a_jpeg_without_seeking_past_its_only_frame() {
     );
     std::fs::create_dir_all(&dir.0).unwrap();
     let path = dir.0.join("01.jpg");
+    // Not a flat or tiny image: a 1.6 KB solid JPEG does not fail the seek of
+    // issue #61, so it would pass without the fix.
     crate::test_support::ffmpeg(
         &[
             "-f",
             "lavfi",
             "-i",
-            "color=c=red:size=640x360:rate=1:duration=1",
+            "testsrc2=size=1024x768",
             "-frames:v",
             "1",
             "-c:v",
             "mjpeg",
+            "-q:v",
+            "2",
             "-pix_fmt",
             "yuvj420p",
             "-update",
@@ -116,11 +95,9 @@ fn generate_thumbnail_reads_a_jpeg_without_seeking_past_its_only_frame() {
     );
     let sentinel = vv_core::IMAGE_DURATION_FRAMES as f64 / crate::probe::IMAGE_FPS.as_f64();
     let thumb = generate_thumbnail(&path, sentinel, 96).unwrap();
-    assert_eq!((thumb.width, thumb.height), (96, 54));
-    assert_eq!(thumb.rgba.len(), 96 * 54 * 4);
-    let center = &thumb.rgba[(27 * 96 + 48) * 4..][..3];
-    assert!(
-        center[0] > 200 && center[1] < 60 && center[2] < 60,
-        "{center:?}"
-    );
+    assert_eq!((thumb.width, thumb.height), (96, 72));
+    assert_eq!(thumb.rgba.len(), 96 * 72 * 4);
+    let pixels = thumb.rgba.as_chunks::<4>().0;
+    assert!(pixels.iter().all(|pixel| pixel[3] == 255));
+    assert!(pixels.iter().any(|pixel| pixel != &pixels[0]));
 }

@@ -11,7 +11,8 @@ pub struct Thumbnail {
 }
 
 /// Frame at ~1s (or at the midpoint, for shorter clips): the very first
-/// frame is often black because of a fade-in.
+/// frame is often black because of a fade-in. An image has a single frame:
+/// `duration_secs` is ignored.
 pub fn generate_thumbnail(
     path: &Path,
     duration_secs: f64,
