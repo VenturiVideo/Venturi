@@ -5,9 +5,6 @@ use super::*;
 const DISCORD_INVITE: &str = "https://discord.gg/3v2xjXFnZv";
 
 impl VenturiApp {
-    /// Handles configured keyboard shortcuts using the current UI frame.
-    ///
-    /// In/out actions operate on the media preview when active, or the timeline otherwise.
     pub(crate) fn handle_shortcuts(&mut self, ui: &mut egui::Ui) {
         // Copy/paste are handled outside `ui.input`: `ctx.copy_text` takes
         // the same lock and would deadlock inside it.
@@ -537,7 +534,10 @@ impl VenturiApp {
                             self.add_marker_at_playhead();
                             ui.close();
                         }
-                        let can_mark = self.mark_target_frames() > 0;
+                        let (can_mark, marks) = self
+                            .mark_target()
+                            .map(|target| (target.total > 0, Some(*target.marks)))
+                            .unwrap_or((false, None));
                         for (action, is_in) in [(Action::MarkIn, true), (Action::MarkOut, false)] {
                             if ui
                                 .add_enabled(
@@ -550,7 +550,6 @@ impl VenturiApp {
                                 ui.close();
                             }
                         }
-                        let marks = self.mark_target().copied();
                         if ui
                             .add_enabled(
                                 marks.is_some_and(|marks| marks.mark_in.is_some()),

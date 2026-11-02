@@ -12,7 +12,6 @@ use vv_media::proxy::ProxyQuality;
 
 use crate::i18n::Language;
 
-/// Identifies a keyboard action, including commands for clearing In and Out points.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Action {
     TogglePlayback,
@@ -21,11 +20,8 @@ pub enum Action {
     StepForward,
     MarkIn,
     MarkOut,
-    /// Clears In and expands the range to the first content frame.
     ClearIn,
-    /// Clears Out and expands the range to the content end.
     ClearOut,
-    /// Clears both endpoints and restores the full content range.
     ClearInOut,
     FullscreenViewer,
     ViewerZoomFit,

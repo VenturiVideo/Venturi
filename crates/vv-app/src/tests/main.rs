@@ -4119,7 +4119,7 @@ fn in_out_marks_on_the_preview_trim_the_clip_dropped_on_the_timeline() {
 
 #[test]
 fn clearing_preview_marks_uses_the_active_valid_preview() {
-    let (mut app, _) = browse_fixture("marks.mp4");
+    let (_dir, mut app, _) = browse_fixture("marks.mp4");
     let total = app.browse_total_frames();
     app.browse_marks.set_in(10, total);
     app.browse_marks.set_out(29, total);
@@ -4191,6 +4191,30 @@ fn clearing_in_out_actions_restore_the_timeline_export_range() {
     app.mark_at_playhead(false);
     app.clear_in_and_out();
     assert_eq!(app.timeline_state.export_marks.resolve(100), (0, 100));
+}
+
+#[test]
+fn clearing_marks_works_on_an_empty_timeline() {
+    let mut app = VenturiApp::default();
+    app.ensure_timeline();
+    app.timeline_state.export_marks.mark_in = Some(10);
+    app.timeline_state.export_marks.mark_out = Some(20);
+
+    app.mark_at_playhead(true);
+    assert_eq!(
+        app.timeline_state.export_marks,
+        transport::MarkRange {
+            mark_in: Some(10),
+            mark_out: Some(20),
+        }
+    );
+
+    app.clear_in_and_out();
+
+    assert_eq!(
+        app.timeline_state.export_marks,
+        transport::MarkRange::default()
+    );
 }
 
 /// End-to-end test of the reported bug ("the buffer always stops at the
