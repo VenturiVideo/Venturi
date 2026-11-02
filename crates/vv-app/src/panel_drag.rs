@@ -46,11 +46,86 @@ struct Drag {
     modifiers: egui::Modifiers,
     released: bool,
     delivered: Option<ViewportId>,
+    #[cfg(target_os = "linux")]
+    wayland: Option<u64>,
+    #[cfg(target_os = "linux")]
+    candidate: Option<ViewportId>,
 }
 
 #[derive(Default)]
 pub(crate) struct NativeDrag {
     drag: Option<Drag>,
+    #[cfg(target_os = "linux")]
+    pointer: Option<crate::wayland_dnd::PointerBridge>,
+}
+
+impl NativeDrag {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn with_wayland(pointer: crate::wayland_dnd::PointerBridge) -> Self {
+        Self {
+            pointer: Some(pointer),
+            ..Default::default()
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wayland_input(&mut self, ctx: &Context, raw: &mut RawInput) -> bool {
+        use crate::wayland_dnd::PointerDrop;
+        let Some(drag) = &mut self.drag else {
+            return false;
+        };
+        let (Some(pointer), Some(token)) = (&self.pointer, drag.wayland) else {
+            return false;
+        };
+        for event in &raw.events {
+            if let Event::ModifiersChanged(modifiers) | Event::PointerButton { modifiers, .. } =
+                event
+            {
+                drag.modifiers = *modifiers;
+            }
+        }
+        if raw.viewport_id != drag.source {
+            let entered = raw.events.iter().rev().find_map(|event| match event {
+                Event::PointerMoved(_) => Some(true),
+                Event::PointerGone => Some(false),
+                _ => None,
+            });
+            match entered {
+                Some(true) => drag.candidate = Some(raw.viewport_id),
+                Some(false) if drag.candidate == Some(raw.viewport_id) => drag.candidate = None,
+                _ => {}
+            }
+        }
+        match pointer.drop_position(token) {
+            PointerDrop::Pending => {}
+            PointerDrop::Cancelled => self.drag = None,
+            PointerDrop::Dropped(point) => {
+                if let Some(target) = drag.candidate {
+                    if raw
+                        .viewports
+                        .get(&target)
+                        .is_none_or(|v| v.close_requested())
+                    {
+                        self.drag = None;
+                    } else if target == raw.viewport_id && drag.delivered.is_none() {
+                        let point = point / ctx.zoom_factor();
+                        raw.events.push(Event::PointerMoved(point));
+                        raw.events.push(Event::PointerButton {
+                            pos: point,
+                            button: PointerButton::Primary,
+                            pressed: false,
+                            modifiers: drag.modifiers,
+                        });
+                        drag.delivered = Some(target);
+                        drag.payload.restore(ctx);
+                    } else {
+                        ctx.request_repaint_of(target);
+                    }
+                }
+            }
+        }
+        true
+    }
 }
 
 fn pixels_per_point(zoom: f32, raw: &RawInput, id: ViewportId) -> f32 {
@@ -99,6 +174,11 @@ impl Plugin for NativeDrag {
             egui::DragAndDrop::clear_payload(ctx);
             return;
         }
+        #[cfg(target_os = "linux")]
+        if self.wayland_input(ctx, raw) {
+            return;
+        }
+        let Some(drag) = &mut self.drag else { return };
         if raw.viewport_id == drag.source && !drag.released {
             for event in &raw.events {
                 match event {
@@ -179,15 +259,13 @@ impl Plugin for NativeDrag {
 
     fn on_end_pass(&mut self, ui: &mut Ui) {
         let id = ui.ctx().viewport_id();
-        if self
-            .drag
-            .as_ref()
-            .is_some_and(|drag| drag.delivered == Some(id))
-        {
-            self.drag = None;
-            return;
-        }
-        if self.drag.is_some() {
+        if let Some(drag) = &self.drag {
+            if drag.delivered == Some(id) {
+                self.drag = None;
+            } else if drag.delivered.is_some() {
+                // An immediate child can clear egui's payload before its parent consumes it.
+                drag.payload.restore(ui.ctx());
+            }
             return;
         }
         let Some(payload) = Payload::capture(ui.ctx()) else {
@@ -199,6 +277,14 @@ impl Plugin for NativeDrag {
         let zoom = ui.ctx().zoom_factor();
         let position =
             ui.input(|input| desktop_position(zoom, &input.raw, input.pointer.interact_pos()?));
+        #[cfg(target_os = "linux")]
+        let wayland = self.pointer.as_ref().map(|pointer| pointer.begin_drag());
+        #[cfg(target_os = "linux")]
+        let position = if wayland.is_some() {
+            Some(Pos2::ZERO)
+        } else {
+            position
+        };
         if let Some(position) = position {
             self.drag = Some(Drag {
                 source: id,
@@ -207,6 +293,10 @@ impl Plugin for NativeDrag {
                 modifiers: ui.input(|i| i.modifiers),
                 released: false,
                 delivered: None,
+                #[cfg(target_os = "linux")]
+                wayland,
+                #[cfg(target_os = "linux")]
+                candidate: None,
             });
         }
     }

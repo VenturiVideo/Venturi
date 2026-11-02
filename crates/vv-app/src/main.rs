@@ -5124,7 +5124,6 @@ fn main() -> eframe::Result<()> {
         "venturi",
         options,
         Box::new(move |cc| {
-            cc.egui_ctx.add_plugin(panel_drag::NativeDrag::default());
             // Timeline zoom with Alt+scroll instead of the default Ctrl.
             // Shift+scroll is left free for the vertical zoom of the tracks,
             // so the horizontal scroll moves to Ctrl+scroll.
@@ -5168,6 +5167,15 @@ fn main() -> eframe::Result<()> {
             {
                 app.wayland_dnd = wayland_dnd::WaylandDnd::start(cc);
             }
+            #[cfg(target_os = "linux")]
+            let native_drag = app
+                .wayland_dnd
+                .as_ref()
+                .map(|dnd| panel_drag::NativeDrag::with_wayland(dnd.pointer_bridge()))
+                .unwrap_or_default();
+            #[cfg(not(target_os = "linux"))]
+            let native_drag = panel_drag::NativeDrag::default();
+            cc.egui_ctx.add_plugin(native_drag);
             app.open_paths(startup_paths);
             app.apply_mcp_setting(&cc.egui_ctx);
             Ok(Box::new(app))

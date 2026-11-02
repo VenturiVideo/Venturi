@@ -1,13 +1,15 @@
 //! Dropping files from the file manager on Wayland, where winit 0.30 does not
 //! handle it (X11 only), and reading images from the clipboard, which
-//! egui-winit reads only as text. A thread with its own queue on winit's
-//! connection, like smithay-clipboard does; the files reach egui in
+//! egui-winit reads only as text. Native panel drags also use pointer focus
+//! and surface-local coordinates after the implicit grab ends. A thread with
+//! its own queue on winit's connection, like smithay-clipboard does; files reach egui in
 //! `raw_input_hook`.
 
 use std::ffi::OsString;
 use std::io::Read;
 use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
@@ -16,19 +18,146 @@ use sctk::data_device_manager::data_offer::{DataOfferHandler, DragOffer, Selecti
 use sctk::data_device_manager::data_source::DataSourceHandler;
 use sctk::data_device_manager::{DataDeviceManagerState, ReadPipe, WritePipe};
 use sctk::reexports::client::globals::registry_queue_init;
+use sctk::reexports::client::protocol::wl_callback::{self, WlCallback};
 use sctk::reexports::client::protocol::wl_data_device::WlDataDevice;
 use sctk::reexports::client::protocol::wl_data_device_manager::DndAction;
 use sctk::reexports::client::protocol::wl_data_source::WlDataSource;
+use sctk::reexports::client::protocol::wl_pointer::WlPointer;
 use sctk::reexports::client::protocol::wl_seat::WlSeat;
 use sctk::reexports::client::protocol::wl_surface::WlSurface;
-use sctk::reexports::client::{Connection, QueueHandle, backend::Backend};
+use sctk::reexports::client::{Connection, Dispatch, Proxy, QueueHandle, backend::Backend};
 use sctk::registry::{ProvidesRegistryState, RegistryState};
+use sctk::seat::pointer::{BTN_LEFT, PointerEvent, PointerEventKind, PointerHandler};
 use sctk::seat::{Capability, SeatHandler, SeatState};
-use sctk::{delegate_data_device, delegate_registry, delegate_seat, registry_handlers};
+use sctk::{
+    delegate_data_device, delegate_pointer, delegate_registry, delegate_seat, registry_handlers,
+};
 
 use crate::paste_image::IMAGE_MIME_TYPES;
 
 const URI_LIST: &str = "text/uri-list";
+
+#[derive(Clone, Copy)]
+struct SurfacePoint {
+    surface: u32,
+    point: egui::Pos2,
+}
+
+#[derive(Default)]
+struct PointerState {
+    generation: u64,
+    owner: Option<u32>,
+    origin: Option<u32>,
+    focus: Option<SurfacePoint>,
+    held: bool,
+    cancelled: bool,
+    binding: Option<(u64, u64)>,
+    released: Option<Option<SurfacePoint>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum PointerDrop {
+    Pending,
+    Cancelled,
+    Dropped(egui::Pos2),
+}
+
+impl PointerState {
+    fn press(&mut self, pointer: u32, position: SurfacePoint) {
+        self.generation = self.generation.wrapping_add(1);
+        self.owner = Some(pointer);
+        self.origin = Some(position.surface);
+        self.focus = Some(position);
+        self.held = true;
+        self.cancelled = false;
+        self.released = None;
+    }
+
+    fn enter(&mut self, pointer: u32, position: SurfacePoint) {
+        if self.owner == Some(pointer) {
+            self.focus = Some(position);
+        }
+    }
+
+    fn leave(&mut self, pointer: u32, surface: u32) {
+        if self.owner == Some(pointer) && self.focus.is_some_and(|p| p.surface == surface) {
+            self.focus = None;
+            if self.released.is_some() {
+                self.released = Some(None);
+            }
+        }
+    }
+
+    fn release(&mut self, pointer: u32) -> Option<u64> {
+        if self.owner != Some(pointer) {
+            return None;
+        }
+        self.held = false;
+        Some(self.generation)
+    }
+
+    fn finish_release(&mut self, generation: u64) {
+        if generation == self.generation && !self.held {
+            self.released = Some(self.focus.filter(|p| Some(p.surface) != self.origin));
+        }
+    }
+
+    fn bind(&mut self, token: u64) {
+        self.binding = Some((token, self.generation));
+    }
+
+    fn cancel(&mut self) {
+        self.cancelled = true;
+        self.held = false;
+        self.released = Some(None);
+    }
+
+    fn drop_position(&self, token: u64) -> PointerDrop {
+        if self.cancelled {
+            return PointerDrop::Cancelled;
+        }
+        let Some((bound, generation)) = self.binding else {
+            return PointerDrop::Pending;
+        };
+        if bound != token {
+            return PointerDrop::Pending;
+        }
+        if generation == 0 || generation != self.generation {
+            return PointerDrop::Cancelled;
+        }
+        match self.released {
+            None => PointerDrop::Pending,
+            Some(Some(position)) if self.focus.is_some_and(|p| p.surface == position.surface) => {
+                PointerDrop::Dropped(position.point)
+            }
+            Some(_) => PointerDrop::Cancelled,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct PointerBridge {
+    state: Arc<Mutex<PointerState>>,
+    bind: Arc<dyn Fn(u64) + Send + Sync>,
+    token: Arc<AtomicU64>,
+}
+
+impl PointerBridge {
+    pub(crate) fn begin_drag(&self) -> u64 {
+        let token = self.token.fetch_add(1, Ordering::Relaxed);
+        (self.bind)(token);
+        token
+    }
+
+    pub(crate) fn drop_position(&self, token: u64) -> PointerDrop {
+        self.state.lock().unwrap().drop_position(token)
+    }
+}
+
+enum PointerSync {
+    Bind(u64),
+    Release(u64),
+}
 
 #[derive(Default)]
 struct Shared {
@@ -43,6 +172,7 @@ struct Shared {
 pub struct WaylandDnd {
     shared: Arc<Mutex<Shared>>,
     conn: Connection,
+    pointer: PointerBridge,
 }
 
 impl WaylandDnd {
@@ -57,11 +187,26 @@ impl WaylandDnd {
         let (globals, mut queue) = registry_queue_init::<State>(&conn).ok()?;
         let qh = queue.handle();
         let shared = Arc::new(Mutex::new(Shared::default()));
+        let pointer_state = Arc::new(Mutex::new(PointerState::default()));
+        let bind_conn = conn.clone();
+        let bind_queue = qh.clone();
+        let pointer = PointerBridge {
+            state: pointer_state.clone(),
+            bind: Arc::new(move |token| {
+                bind_conn
+                    .display()
+                    .sync(&bind_queue, PointerSync::Bind(token));
+                let _ = bind_conn.flush();
+            }),
+            token: Arc::new(AtomicU64::new(1)),
+        };
         let mut state = State {
             registry: RegistryState::new(&globals),
             seats: SeatState::new(&globals, &qh),
             manager: DataDeviceManagerState::bind(&globals, &qh).ok()?,
             devices: Vec::new(),
+            pointers: Vec::new(),
+            pointer_state,
             conn: conn.clone(),
             shared: shared.clone(),
             ctx: cc.egui_ctx.clone(),
@@ -74,13 +219,23 @@ impl WaylandDnd {
             .spawn(move || {
                 loop {
                     if let Err(e) = queue.blocking_dispatch(&mut state) {
+                        state.pointer_state.lock().unwrap().cancel();
+                        state.ctx.request_repaint();
                         eprintln!("wayland-dnd: {e}");
                         return;
                     }
                 }
             })
             .ok()?;
-        Some(Self { shared, conn })
+        Some(Self {
+            shared,
+            conn,
+            pointer,
+        })
+    }
+
+    pub(crate) fn pointer_bridge(&self) -> PointerBridge {
+        self.pointer.clone()
     }
 
     /// The pipe the clipboard's image arrives from, and its extension;
@@ -133,6 +288,8 @@ struct State {
     seats: SeatState,
     manager: DataDeviceManagerState,
     devices: Vec<DataDevice>,
+    pointers: Vec<(WlSeat, WlPointer)>,
+    pointer_state: Arc<Mutex<PointerState>>,
     conn: Connection,
     shared: Arc<Mutex<Shared>>,
     ctx: egui::Context,
@@ -141,6 +298,32 @@ struct State {
 impl State {
     fn add_device(&mut self, qh: &QueueHandle<Self>, seat: &WlSeat) {
         self.devices.push(self.manager.get_data_device(qh, seat));
+        self.add_pointer(qh, seat);
+    }
+
+    fn add_pointer(&mut self, qh: &QueueHandle<Self>, seat: &WlSeat) {
+        if !self.pointers.iter().any(|(s, _)| s == seat)
+            && let Ok(pointer) = self.seats.get_pointer(qh, seat)
+        {
+            self.pointers.push((seat.clone(), pointer));
+        }
+    }
+
+    fn remove_pointer(&mut self, seat: &WlSeat) {
+        self.pointers.retain(|(s, pointer)| {
+            if s != seat {
+                return true;
+            }
+            let mut state = self.pointer_state.lock().unwrap();
+            if state.owner == Some(pointer.id().protocol_id()) {
+                state.cancel();
+            }
+            if pointer.version() >= 3 {
+                pointer.release();
+            }
+            false
+        });
+        self.ctx.request_repaint();
     }
 
     fn drag_offer(&self, device: &WlDataDevice) -> Option<DragOffer> {
@@ -154,6 +337,63 @@ impl State {
     fn set_hovering(&self, hovering: bool) {
         self.shared.lock().unwrap().hovering = hovering;
         self.ctx.request_repaint();
+    }
+}
+
+impl PointerHandler for State {
+    fn pointer_frame(
+        &mut self,
+        conn: &Connection,
+        qh: &QueueHandle<Self>,
+        pointer: &WlPointer,
+        events: &[PointerEvent],
+    ) {
+        let id = pointer.id().protocol_id();
+        let mut state = self.pointer_state.lock().unwrap();
+        for event in events {
+            let position = SurfacePoint {
+                surface: event.surface.id().protocol_id(),
+                point: egui::pos2(event.position.0 as f32, event.position.1 as f32),
+            };
+            match event.kind {
+                PointerEventKind::Press {
+                    button: BTN_LEFT, ..
+                } => state.press(id, position),
+                PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
+                    state.enter(id, position);
+                }
+                PointerEventKind::Leave { .. } => state.leave(id, position.surface),
+                PointerEventKind::Release {
+                    button: BTN_LEFT, ..
+                } => {
+                    if let Some(generation) = state.release(id) {
+                        // The implicit grab ends before the compositor sends the destination enter.
+                        conn.display().sync(qh, PointerSync::Release(generation));
+                    }
+                }
+                _ => {}
+            }
+        }
+        let _ = conn.flush();
+        self.ctx.request_repaint();
+    }
+}
+
+impl Dispatch<WlCallback, PointerSync> for State {
+    fn event(
+        state: &mut Self,
+        _: &WlCallback,
+        _: wl_callback::Event,
+        action: &PointerSync,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let mut pointer = state.pointer_state.lock().unwrap();
+        match action {
+            PointerSync::Bind(token) => pointer.bind(*token),
+            PointerSync::Release(generation) => pointer.finish_release(*generation),
+        }
+        state.ctx.request_repaint();
     }
 }
 
@@ -278,17 +518,31 @@ impl SeatHandler for State {
     fn new_seat(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: WlSeat) {
         self.add_device(qh, &seat);
     }
-    fn new_capability(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlSeat, _: Capability) {}
+    fn new_capability(
+        &mut self,
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+        seat: WlSeat,
+        capability: Capability,
+    ) {
+        if capability == Capability::Pointer {
+            self.add_pointer(qh, &seat);
+        }
+    }
     fn remove_capability(
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: WlSeat,
-        _: Capability,
+        seat: WlSeat,
+        capability: Capability,
     ) {
+        if capability == Capability::Pointer {
+            self.remove_pointer(&seat);
+        }
     }
     fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: WlSeat) {
         self.devices.retain(|d| d.data().seat() != &seat);
+        self.remove_pointer(&seat);
     }
 }
 
@@ -300,6 +554,7 @@ impl ProvidesRegistryState for State {
 }
 
 delegate_data_device!(State);
+delegate_pointer!(State);
 delegate_seat!(State);
 delegate_registry!(State);
 
