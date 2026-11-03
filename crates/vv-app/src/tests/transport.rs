@@ -34,3 +34,40 @@ fn marks_are_clamped_when_the_content_shrinks() {
     marks.set_in(80, 100);
     assert_eq!(marks.resolve(50), (50, 50));
 }
+
+#[test]
+fn clearing_in_restores_the_start_of_the_content() {
+    let mut marks = MarkRange::default();
+    marks.set_in(10, 100);
+    marks.set_out(29, 100);
+
+    marks.clear_in();
+
+    assert_eq!(marks.mark_in, None);
+    assert_eq!(marks.resolve(100), (0, 30));
+}
+
+#[test]
+fn clearing_out_restores_the_end_of_the_content() {
+    let mut marks = MarkRange::default();
+    marks.set_in(10, 100);
+    marks.set_out(29, 100);
+
+    marks.clear_out();
+
+    assert_eq!(marks.mark_out, None);
+    assert_eq!(marks.resolve(100), (10, 100));
+}
+
+#[test]
+fn clearing_both_marks_restores_the_full_content_range() {
+    let mut marks = MarkRange::default();
+    marks.set_in(10, 100);
+    marks.set_out(29, 100);
+
+    marks.clear_all();
+
+    assert_eq!(marks.mark_in, None);
+    assert_eq!(marks.mark_out, None);
+    assert_eq!(marks.resolve(100), (0, 100));
+}

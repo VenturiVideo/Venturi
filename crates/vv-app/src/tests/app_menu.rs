@@ -3,9 +3,9 @@ use super::*;
 #[test]
 fn mark_items_need_markable_content() {
     let mut app = VenturiApp::default();
-    assert_eq!(app.mark_target_frames(), 0);
+    assert_eq!(app.mark_target().map(|target| target.total), None);
     let timeline = app.ensure_timeline();
-    assert_eq!(app.mark_target_frames(), 0);
+    assert_eq!(app.mark_target().map(|target| target.total), Some(0));
     let id = app.session.project.alloc_clip_id();
     app.session.project.timelines[timeline].tracks[0]
         .clips
@@ -17,10 +17,10 @@ fn mark_items_need_markable_content() {
             0,
             vv_core::Rational::one(),
         ));
-    assert_eq!(app.mark_target_frames(), 100);
+    assert_eq!(app.mark_target().map(|target| target.total), Some(100));
     // An active preview without media must not fall back to the timeline.
     app.browsing = Some(Browsed::Asset(String::new()));
-    assert_eq!(app.mark_target_frames(), 0);
+    assert_eq!(app.mark_target().map(|target| target.total), Some(0));
 }
 
 /// Checks that clicking the File menu's Exit item requests a normal close.
