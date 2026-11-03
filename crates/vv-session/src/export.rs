@@ -24,11 +24,21 @@ const RENDER_AHEAD_FRAMES: usize = 8;
 /// Mixed audio chunks (a few seconds each) ready ahead of the encoder.
 const AUDIO_AHEAD_CHUNKS: usize = 2;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AspectMode {
+    #[default]
+    Fit,
+    Fill,
+    Stretch,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExportSettings {
     pub output_path: PathBuf,
     /// Percentage of the timeline resolution.
     pub scale_percent: u32,
+    pub custom_size: Option<(u32, u32)>,
+    pub aspect: AspectMode,
     pub video: vv_media::VideoSettings,
     /// `None` = export without audio.
     pub audio: Option<vv_media::AudioSettings>,
@@ -38,11 +48,14 @@ pub struct ExportSettings {
 
 impl ExportSettings {
     pub const SCALE_CHOICES: [u32; 4] = [100, 75, 50, 25];
+    pub const MIN_DIMENSION: u32 = 2;
 
     pub fn new(output_path: PathBuf) -> Self {
         Self {
             output_path,
             scale_percent: 100,
+            custom_size: None,
+            aspect: AspectMode::Fit,
             video: vv_media::VideoSettings::default(),
             audio: Some(vv_media::AudioSettings::default()),
             hw_decode: Vec::new(),
@@ -74,11 +87,35 @@ impl ExportSettings {
     /// Reduced to even dimensions (required by the encoders' 4:2:0);
     /// at 100% it stays exactly the timeline's.
     pub fn output_size(&self, timeline_size: (u32, u32)) -> (u32, u32) {
+        if let Some(size) = self.custom_size {
+            return size;
+        }
         if self.scale_percent >= 100 {
             return timeline_size;
         }
-        let scale = |v: u32| ((v * self.scale_percent / 100) & !1).max(2);
+        let scale = |v: u32| ((v * self.scale_percent / 100) & !1).max(Self::MIN_DIMENSION);
         (scale(timeline_size.0), scale(timeline_size.1))
+    }
+
+    pub fn valid_output_size(&self, timeline_size: (u32, u32)) -> bool {
+        let (width, height) = self.output_size(timeline_size);
+        [width, height]
+            .into_iter()
+            .all(|value| value >= Self::MIN_DIMENSION && value % 2 == 0)
+    }
+
+    fn needs_timeline_texture(&self, timeline_size: (u32, u32)) -> bool {
+        let (width, height) = self.output_size(timeline_size);
+        self.custom_size.is_some()
+            && u64::from(width) * u64::from(timeline_size.1)
+                != u64::from(height) * u64::from(timeline_size.0)
+    }
+
+    fn valid_render_size(&self, timeline_size: (u32, u32), texture_limit: u32) -> bool {
+        let fits = |(width, height)| width <= texture_limit && height <= texture_limit;
+        self.valid_output_size(timeline_size)
+            && fits(self.output_size(timeline_size))
+            && (!self.needs_timeline_texture(timeline_size) || fits(timeline_size))
     }
 }
 
@@ -338,6 +375,13 @@ pub fn export_timeline(
         .get(timeline_id)
         .ok_or(ExportError::TimelineNotFound)?;
 
+    if !settings.valid_output_size(timeline.resolution) {
+        return Err(ExportError::failed(format!(
+            "output dimensions must be even and at least {} pixels",
+            ExportSettings::MIN_DIMENSION,
+        )));
+    }
+
     let range = range.start.max(0)..range.end.min(timeline.total_frames());
     let total_frames = (range.end - range.start).max(0);
     progress.lock().unwrap().total_frames = total_frames;
@@ -353,6 +397,14 @@ pub fn export_timeline(
     let has_audio_track = audio_settings.is_some();
 
     let (out_w, out_h) = settings.output_size(timeline.resolution);
+    // Compound decode and composition must share the same GPU device.
+    let compositor = vv_render::Compositor::new_headless_with_precision(project.precision);
+    let texture_limit = compositor.device().limits().max_texture_dimension_2d;
+    if !settings.valid_render_size(timeline.resolution, texture_limit) {
+        return Err(ExportError::failed(format!(
+            "output or intermediate dimensions exceed the GPU's {texture_limit}-pixel texture limit"
+        )));
+    }
     let mut encoder = vv_media::Encoder::new(
         &settings.output_path,
         out_w,
@@ -371,11 +423,6 @@ pub fn export_timeline(
         std::sync::mpsc::sync_channel::<Result<Vec<u8>, ExportError>>(RENDER_AHEAD_FRAMES);
     let resolution = timeline.resolution;
     let output = vv_render::OutputFrame::scaled(out_w, out_h, resolution);
-    // A single one for the two GPU stages: the texture of a compound clip is born
-    // in the decode stage and sampled in the composition one,
-    // so they must be on the same device. Headless, so as not to contend
-    // with the UI's.
-    let compositor = vv_render::Compositor::new_headless_with_precision(project.precision);
     {
         let mut p = progress.lock().unwrap();
         p.output_path = settings.output_path.clone();
@@ -435,8 +482,8 @@ pub fn export_timeline(
         scope.spawn(move || {
             for decoded in decoded_rx {
                 let t = std::time::Instant::now();
-                let composed =
-                    decoded.map(|layers| compose_video_frame(compositor, &layers, output));
+                let composed = decoded
+                    .map(|layers| compose_export_frame(compositor, &layers, output, settings));
                 progress.lock().unwrap().compose.add(t.elapsed());
                 let failed = composed.is_err();
                 if composed_tx.send(composed).is_err() || failed {
@@ -572,6 +619,43 @@ fn compose_video_frame(
 ) -> Vec<u8> {
     let layers: Vec<vv_render::Layer> = layers.iter().map(OwnedLayer::as_render).collect();
     compositor.render_layers_i420(&layers, output)
+}
+
+fn compose_export_frame(
+    compositor: &vv_render::Compositor,
+    layers: &[OwnedLayer],
+    output: vv_render::OutputFrame,
+    settings: &ExportSettings,
+) -> Vec<u8> {
+    let (width, height) = output.timeline_size;
+    if !settings.needs_timeline_texture(output.timeline_size) {
+        return compose_video_frame(compositor, layers, output);
+    }
+    // Resize the completed timeline so clip positions, masks and effects keep their geometry.
+    let layers: Vec<_> = layers.iter().map(OwnedLayer::as_render).collect();
+    let texture = compositor.render_layers_to_owned_texture_transparent(
+        &layers,
+        vv_render::OutputFrame::exact(width, height),
+    );
+    let sx = output.width as f32 / width.max(1) as f32;
+    let sy = output.height as f32 / height.max(1) as f32;
+    let scale = sx.min(sy);
+    let zoom = match settings.aspect {
+        AspectMode::Fit => [1.0; 2],
+        AspectMode::Fill => [sx.max(sy) / scale; 2],
+        AspectMode::Stretch => [sx / scale, sy / scale],
+    };
+    let layer = vv_render::Layer::new(
+        vv_render::LayerContent::Texture {
+            texture: &texture,
+            source_size: (width, height),
+        },
+        vv_core::Transform {
+            zoom,
+            ..Default::default()
+        },
+    );
+    compositor.render_layers_i420(&[layer], output)
 }
 
 /// Writes the audio mix to the encoder as it arrives, aligned to the video

@@ -1,5 +1,33 @@
 _version: 2
 
+export.custom_size:
+  en: "Custom dimensions"
+  it: "Dimensioni personalizzate"
+
+export.dimensions:
+  en: "Width × height"
+  it: "Larghezza × altezza"
+
+export.aspect_mode:
+  en: "Aspect ratio"
+  it: "Proporzioni"
+
+export.aspect_fit:
+  en: "Fit with black bars"
+  it: "Adatta con bande nere"
+
+export.aspect_fill:
+  en: "Fill and crop"
+  it: "Riempi e ritaglia"
+
+export.aspect_stretch:
+  en: "Stretch"
+  it: "Deforma"
+
+export.error_dimensions:
+  en: "Use even dimensions of at least %{min} pixels. Larger sizes depend on the GPU."
+  it: "Usa dimensioni pari di almeno %{min} pixel. Le dimensioni maggiori dipendono dalla GPU."
+
 export.range_mark_hint:
   en: "To export only a range, set In and Out from the Timeline menu."
   it: "Per esportare solo un intervallo, imposta In e Out dal menu Timeline."

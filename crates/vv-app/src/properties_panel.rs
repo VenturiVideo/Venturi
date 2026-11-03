@@ -981,7 +981,7 @@ pub(crate) fn preview_combo<T>(
 where
     T: Clone + PartialEq + Send + Sync + 'static,
 {
-    let button_id = ui.make_persistent_id(id_salt);
+    let button_id = ui.make_persistent_id(egui::IdSalt::new(id_salt));
     let original_id = button_id.with("preview_original");
     let was_open = egui::ComboBox::is_open(ui.ctx(), button_id);
     let before = value.clone();
