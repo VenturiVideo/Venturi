@@ -550,44 +550,31 @@ impl VenturiApp {
                                 ui.close();
                             }
                         }
-                        if ui
-                            .add_enabled(
-                                marks.is_some_and(|marks| marks.mark_in.is_some()),
-                                egui::Button::new(
-                                    keymap.menu_label(&t!("action.clear_in"), Action::ClearIn),
-                                ),
-                            )
-                            .clicked()
-                        {
-                            self.clear_in_point();
-                            ui.close();
-                        }
-                        if ui
-                            .add_enabled(
-                                marks.is_some_and(|marks| marks.mark_out.is_some()),
-                                egui::Button::new(
-                                    keymap.menu_label(&t!("action.clear_out"), Action::ClearOut),
-                                ),
-                            )
-                            .clicked()
-                        {
-                            self.clear_out_point();
-                            ui.close();
-                        }
-                        if ui
-                            .add_enabled(
-                                marks.is_some_and(|marks| {
-                                    marks.mark_in.is_some() || marks.mark_out.is_some()
-                                }),
-                                egui::Button::new(
-                                    keymap
-                                        .menu_label(&t!("action.clear_in_out"), Action::ClearInOut),
-                                ),
-                            )
-                            .clicked()
-                        {
-                            self.clear_in_and_out();
-                            ui.close();
+                        let has_in = marks.is_some_and(|m| m.mark_in.is_some());
+                        let has_out = marks.is_some_and(|m| m.mark_out.is_some());
+                        for (action, enabled, clear) in [
+                            (
+                                Action::ClearIn,
+                                has_in,
+                                Self::clear_in_point as fn(&mut Self),
+                            ),
+                            (Action::ClearOut, has_out, Self::clear_out_point),
+                            (
+                                Action::ClearInOut,
+                                has_in || has_out,
+                                Self::clear_in_and_out,
+                            ),
+                        ] {
+                            if ui
+                                .add_enabled(
+                                    enabled,
+                                    egui::Button::new(keymap.menu_label(&action.label(), action)),
+                                )
+                                .clicked()
+                            {
+                                clear(self);
+                                ui.close();
+                            }
                         }
                     })
                     .response,
