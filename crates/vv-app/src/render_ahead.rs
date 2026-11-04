@@ -599,6 +599,10 @@ fn worker_loop(
         if shown != sizes.shown {
             for (media_id, _) in &project.media_pool {
                 if shown.get(&media_id) != sizes.shown.get(&media_id) {
+                    // The decoding cost was learned at the other size.
+                    let mut pacing = pacing.borrow_mut();
+                    pacing.fell_behind.retain(|(m, _)| *m != media_id);
+                    pacing.throughput.retain(|(m, _), _| *m != media_id);
                     shared.caches.remove_media(media_id);
                     open.remove(&media_id);
                     open_behind.remove(&media_id);
@@ -1697,10 +1701,7 @@ fn shown_sizes_within(
         timeline.resolution.0.max(1) as f64,
         timeline.resolution.1.max(1) as f64,
     );
-    let clips = timeline
-        .tracks_of_kind(vv_core::TrackKind::Video)
-        .flat_map(|(_, t)| &t.clips);
-    for clip in clips {
+    for (_, clip) in timeline.visible_video_clips() {
         let ClipSource::Media(media_id) = clip.source else {
             continue;
         };
@@ -1708,7 +1709,7 @@ fn shown_sizes_within(
             continue;
         };
         if let Some(nested) = item.compound {
-            if walked.insert(nested) {
+            if depth + 1 < vv_core::MAX_COMPOUND_DEPTH && walked.insert(nested) {
                 shown_sizes_within(project, nested, 1.0, depth + 1, walked, sizes);
             }
             continue;

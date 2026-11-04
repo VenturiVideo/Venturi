@@ -4556,6 +4556,15 @@ impl VenturiApp {
         self.drive_take();
         // The timeline buffer stays warm during the pool preview too.
         self.sync_render_ahead();
+        // The check above ran before the sync: a setting changed by it
+        // would otherwise wait for an unrelated repaint.
+        if self
+            .render_ahead
+            .as_ref()
+            .is_some_and(|r| !r.is_caught_up())
+        {
+            ui.ctx().request_repaint();
+        }
         self.sync_root_timeline_media();
 
         let (mut pending_effects, mut pending_playhead) =
@@ -4815,7 +4824,11 @@ impl VenturiApp {
                             paint_keyframes_badge(ui.painter(), rect.intersect(area));
                         }
                         self.viewer_geometry = Some((area, tex_size));
-                        self.viewer_scale = f64::from(self.viewer_zoom.scale(area, tex_size, ppp));
+                        let scale = f64::from(self.viewer_zoom.scale(area, tex_size, ppp));
+                        if scale != self.viewer_scale {
+                            self.viewer_scale = scale;
+                            ui.ctx().request_repaint();
+                        }
                         viewer_area = Some(area);
                         viewer_rect = Some(rect);
                     }
