@@ -108,8 +108,9 @@ if [ ! -x "$TOOL" ]; then
     chmod +x "$TOOL"
 fi
 # No FUSE in containers: appimagetool extracts itself.
-UPDATE_INFO="$(bash scripts/appimage-update-info.sh "$ARCH")"
+UPDATE_INFO="gh-releases-zsync|VenturiVideo|Venturi|latest|Venturi-$ARCH.AppImage.zsync"
 (
+    # appimagetool writes the .zsync sidecar in its working directory.
     cd "$(dirname "$OUT")"
     APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" "$TOOL" -u "$UPDATE_INFO" "$APPDIR" "$OUT"
 )
