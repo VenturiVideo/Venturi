@@ -1065,17 +1065,18 @@ fn collect_clips(
             let Some(item) = project.media_pool.get(*media_id) else {
                 continue;
             };
-            let pitch_corrected = clip.pitch_correction && !clip.speed().is_one();
+            let shifted = clip.effects.pitch_shift.is_active();
+            let processed = (clip.pitch_correction && !clip.speed().is_one()) || shifted;
             let span = ClipSpan::new(clip, fps, sample_rate);
             // The stretch starts from the start of the clip.
-            let mixed = range.as_ref().filter(|_| !pitch_corrected);
+            let mixed = range.as_ref().filter(|_| !processed);
             let Some(needed) = span.media_frames(mixed) else {
                 continue;
             };
             let into_clip = needed.start.saturating_sub(span.source_offset) as f64 / span.step;
             let plays_at = (placement + span.start as i64 + into_clip as i64).max(0) as u64;
             let nested_placement = placement + span.start as i64 - span.source_offset as i64;
-            let input = if pitch_corrected {
+            let input = if processed {
                 let nested = item.compound.and_then(|id| project.timelines.get(id));
                 if nested.is_some() && depth + 1 >= vv_core::MAX_COMPOUND_DEPTH {
                     cyclic = true;
@@ -1112,17 +1113,28 @@ fn collect_clips(
                         stable_hash((item.content_hash, clip.audio_stream_index)),
                     ),
                 };
+                let pitch = clip.effects.pitch_shift.ratio();
+                let tempo = if clip.pitch_correction {
+                    span.step
+                } else {
+                    1.0
+                };
+                let preserve_formants = shifted && clip.effects.pitch_shift.preserve_formants;
                 let key = stable_hash((
                     content,
                     (frames.start, frames.end),
                     span.step.to_bits(),
+                    tempo.to_bits(),
+                    (pitch.to_bits(), preserve_formants),
                     (sample_rate, channels),
                 ));
                 let request = StretchRequest {
                     project,
                     input,
                     frames,
-                    tempo: span.step,
+                    tempo,
+                    pitch,
+                    preserve_formants,
                     sample_rate,
                     channels,
                     key,
@@ -1164,7 +1176,7 @@ fn collect_clips(
             };
             let clip_fps = item.meta.fps.as_f64().max(1e-9);
             let readable_to = match &input {
-                ClipInput::Blocks(buffer) if !pitch_corrected => {
+                ClipInput::Blocks(buffer) if !processed => {
                     (buffer.end() < needed.end).then_some(buffer.end())
                 }
                 ClipInput::Nested(_) => item
@@ -1180,11 +1192,17 @@ fn collect_clips(
                 continue;
             };
             mix_clip.track = track_index;
-            if pitch_corrected && let ClipInput::Blocks(stretched) = &mix_clip.input {
-                // Already at the clip's speed, from its first frame.
-                mix_clip.len = mix_clip.len.min(stretched.end());
+            if processed && let ClipInput::Blocks(stretched) = &mix_clip.input {
+                // Without pitch correction, keep the mixer's original varispeed read.
+                mix_clip.step = if clip.pitch_correction {
+                    1.0
+                } else {
+                    span.step
+                };
+                mix_clip.len = mix_clip
+                    .len
+                    .min((stretched.end() as f64 / mix_clip.step).floor() as u64);
                 mix_clip.source_offset = 0;
-                mix_clip.step = 1.0;
             }
             clips.push(mix_clip);
         }

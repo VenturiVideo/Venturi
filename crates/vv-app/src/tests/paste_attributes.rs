@@ -1,6 +1,33 @@
 use super::*;
 use vv_core::{ClipSource, Interpolation, Rational};
 
+#[test]
+fn pitch_shift_is_pasted_only_when_selected() {
+    let mut source = source_clip();
+    source.effects.pitch_shift = vv_core::PitchShift {
+        semitones: 7.0,
+        cents: -15.0,
+        preserve_formants: true,
+        ..Default::default()
+    };
+    let target = clip(2, 100, 120);
+    let pasted = merged_attributes(
+        &source,
+        &target,
+        &HashSet::from([Attribute::Volume]),
+        KeyframeMode::MaintainTiming,
+    );
+    assert_eq!(pasted.effects.pitch_shift, target.effects.pitch_shift);
+    let pasted = merged_attributes(
+        &source,
+        &target,
+        &HashSet::from([Attribute::PitchShift]),
+        KeyframeMode::StretchToFit,
+    );
+    assert_eq!(pasted.effects.pitch_shift, source.effects.pitch_shift);
+    assert_eq!(pasted.effects.gain_db, target.effects.gain_db);
+}
+
 fn clip(id: u64, source_in: FrameIdx, source_out: FrameIdx) -> Clip {
     Clip::from_source_range(
         ClipId(id),

@@ -948,6 +948,12 @@ fn a_clip_speed_round_trips_with_and_without_our_metadata() {
     );
     clip.set_speed(Rational::from_percent(250.0), Rational::one());
     clip.pitch_correction = true;
+    clip.effects.pitch_shift = crate::PitchShift {
+        semitones: -7.0,
+        cents: 25.0,
+        preserve_formants: true,
+        ..Default::default()
+    };
     clip.source_offset = clip.rate().scale_round(100);
     clip.timeline_len = 40;
     project.timelines[timeline_id].tracks[0].clips.push(clip);
@@ -965,6 +971,7 @@ fn a_clip_speed_round_trips_with_and_without_our_metadata() {
     };
     let mut otio = timeline_to_otio(&project, timeline_id, None);
     let ours = import(&otio);
+    assert_eq!(ours.effects.pitch_shift, original.effects.pitch_shift);
     assert_eq!(span(&ours), span(&original));
     assert_eq!(
         (ours.speed(), ours.pitch_correction),

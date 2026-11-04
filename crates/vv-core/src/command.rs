@@ -56,6 +56,7 @@ pub enum CommandLabel {
     Flip,
     Gain,
     ResetGain,
+    PitchShift,
     Title,
     ResetTransform,
     ClipColor,
@@ -1941,6 +1942,22 @@ pub fn set_clip_gain(
         CommandLabel::Gain,
         value,
         |c| &mut c.effects.gain_db.default,
+    )
+}
+
+pub fn set_clip_pitch_shift(
+    timeline: TimelineId,
+    track_index: usize,
+    clip_id: ClipId,
+    value: crate::PitchShift,
+) -> SetClipValue<crate::PitchShift> {
+    SetClipValue::new(
+        timeline,
+        track_index,
+        clip_id,
+        CommandLabel::PitchShift,
+        value.sanitized(),
+        |c| &mut c.effects.pitch_shift,
     )
 }
 
