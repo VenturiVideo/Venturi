@@ -265,7 +265,8 @@ pipeline's alpha blending; the other 14 modes copy the stack composed so far
   Audio is held in blocks of 64k frames (`vv_audio::SampleBlocks`), only
   those the clips read (`mix_buffers.rs`): decoded in the background by
   seeking (`vv_media::decode_audio_streams_from`, sample-exact against a
-  decode from the start; a resampled file seeks onto an input frame that
+  decode from the start for streams whose timestamps follow the sample
+  count; a resampled file seeks onto an input frame that
   falls on an output frame, which keeps the resampler in phase; a jump in
   the timestamps over 5 ms is placed by timestamp, like the video, by both),
   the job closest to the playhead first, within a
@@ -273,6 +274,17 @@ pipeline's alpha blending; the other 14 modes copy the stack composed so far
   cache, 512 MB by default). A missing block plays as silence and the
   clock keeps advancing: after a jump the audio may start a moment late,
   never out of sync.
+- **Gradually drifting audio timestamps** ([#19](https://github.com/VenturiVideo/Venturi/issues/19)):
+  decoding from the start counts samples until their position differs from
+  timestamp placement by more than `DISCONTINUITY_SECS` (5 ms), then re-places
+  the frame. A seek initially places by timestamp, so the paths can differ
+  by the tolerated drift of up to 5 ms before re-placement. Preview, export
+  and level analysis can therefore disagree on placement for such a stream.
+  This current limitation does not guarantee identical sample values or
+  bound errors from missing timestamps, overlaps or
+  codec priming. No drift compensation or time stretching is applied;
+  same-rate audio bypasses rate resampling, and seek preroll remains 0.5 s,
+  including for Matroska. Distinct timestamp gaps keep timestamp placement.
 - **Compound clips** are mixed live in the same pass as their parent
   (`ClipInput::Nested`): the mix state is a tree, each compound clip with
   its own effects' state, carried across snapshots by clip id.

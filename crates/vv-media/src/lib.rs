@@ -57,6 +57,56 @@ pub fn cache_dir(name: &str) -> std::path::PathBuf {
 /// Test fixture (vv-app's too): generates `output` with the ffmpeg CLI.
 #[doc(hidden)]
 pub mod test_support {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Unique per-test directory, removed on drop.
+    pub struct TempDir(PathBuf);
+
+    impl TempDir {
+        pub fn new(prefix: &str) -> Self {
+            static SEQ: AtomicU64 = AtomicU64::new(0);
+            // `create_dir`, not `create_dir_all`: drop must only remove a
+            // directory this guard made, never a stale one from a reused PID.
+            loop {
+                let dir = std::env::temp_dir().join(format!(
+                    "{prefix}-{}-{}",
+                    std::process::id(),
+                    SEQ.fetch_add(1, Ordering::Relaxed)
+                ));
+                match std::fs::create_dir(&dir) {
+                    Ok(()) => return Self(dir),
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(e) => panic!("temp dir {}: {e}", dir.display()),
+                }
+            }
+        }
+
+        pub fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl std::ops::Deref for TempDir {
+        type Target = Path;
+
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<Path> for TempDir {
+        fn as_ref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     pub fn ffmpeg(args: &[&str], output: &std::path::Path) {
         let status = std::process::Command::new("ffmpeg")
             .args(["-y", "-loglevel", "error"])

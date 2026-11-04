@@ -2,9 +2,11 @@ use super::*;
 
 /// Generates a real x264 file with AAC audio (a sine) via the ffmpeg CLI —
 /// the primary use case (compressed x264 + audio), not a mock.
-fn make_test_clip(file_name: &str, duration_secs: u32) -> PathBuf {
-    let dir = std::env::temp_dir().join("vv-media-waveform-test");
-    std::fs::create_dir_all(&dir).unwrap();
+fn make_test_clip(
+    file_name: &str,
+    duration_secs: u32,
+) -> (crate::test_support::TempDir, std::path::PathBuf) {
+    let dir = crate::test_support::TempDir::new("vv-media-waveform-test");
     let path = dir.join(file_name);
     crate::test_support::ffmpeg(
         &[
@@ -25,7 +27,7 @@ fn make_test_clip(file_name: &str, duration_secs: u32) -> PathBuf {
         ],
         &path,
     );
-    path
+    (dir, path)
 }
 
 #[test]
@@ -75,7 +77,7 @@ fn peaks_file_rejects_bad_magic_and_version() {
 
 #[test]
 fn generate_waveform_produces_normalized_peaks_and_caches_to_disk() {
-    let path = make_test_clip("source.mp4", 2);
+    let (_dir, path) = make_test_clip("source.mp4", 2);
     let content_hash = 0xCAFEBABE;
     let _ = std::fs::remove_file(waveform_path_for(content_hash, 0));
 
@@ -117,8 +119,7 @@ fn stereo_audio_peaks_are_not_compressed_into_the_first_half_of_bins() {
     // and the tone (which starts at the middle of the real duration)
     // appeared already at 3/4 of the width instead of in the last
     // quarter — "the waveform runs ahead of the sound".
-    let dir = std::env::temp_dir().join("vv-media-waveform-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-media-waveform-test");
     let path = dir.join("stereo_half_silent.mp4");
     crate::test_support::ffmpeg(
         &[
@@ -166,8 +167,7 @@ fn stereo_audio_peaks_are_not_compressed_into_the_first_half_of_bins() {
 /// not slide along the file.
 #[test]
 fn peaks_stay_aligned_when_samples_per_bin_is_fractional() {
-    let dir = std::env::temp_dir().join("vv-media-waveform-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-media-waveform-test");
     let path = dir.join("tone_at_8s.wav");
     crate::test_support::ffmpeg(
         &[
@@ -202,8 +202,7 @@ fn peaks_stay_aligned_when_samples_per_bin_is_fractional() {
 
 #[test]
 fn six_channel_audio_peaks_are_not_compressed_into_the_first_half_of_bins() {
-    let dir = std::env::temp_dir().join("vv-media-waveform-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-media-waveform-test");
     let path = dir.join("six_channel_half_silent.mp4");
     let tone = "if(lt(t,2),0,sin(2*PI*440*t))";
     crate::test_support::ffmpeg(
@@ -239,8 +238,7 @@ fn six_channel_audio_peaks_are_not_compressed_into_the_first_half_of_bins() {
 
 #[test]
 fn generate_waveform_returns_none_for_a_video_without_audio() {
-    let dir = std::env::temp_dir().join("vv-media-waveform-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-media-waveform-test");
     let path = dir.join("silent.mp4");
     crate::test_support::ffmpeg(
         &[
@@ -265,8 +263,7 @@ fn generate_waveform_returns_none_for_a_video_without_audio() {
 /// the one of the *second* signal, not always fall back to the first.
 #[test]
 fn generate_waveform_selects_the_requested_stream_index() {
-    let dir = std::env::temp_dir().join("vv-media-waveform-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-media-waveform-test");
     let path = dir.join("two_streams.mp4");
     crate::test_support::ffmpeg(
         &[

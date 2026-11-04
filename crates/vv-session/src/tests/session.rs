@@ -6,12 +6,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use vv_core::edit::{self, MediaInsert, RangeDelete, TargetTracks};
 use vv_core::{AddEntities, CommandLabel, FrameIdx, MediaId, Rational, Timeline, Track, TrackKind};
+use vv_media::test_support::TempDir;
 
-fn test_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("vv-session-{name}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn test_dir(name: &str) -> TempDir {
+    TempDir::new(&format!("vv-session-{name}"))
 }
 
 /// 2 s of 64x48 video at 25 fps with a sine track.
@@ -375,7 +373,7 @@ fn relink_by_name_is_one_undo_step() {
 
     let job = session
         .relink(RelinkRequest::ByName {
-            base_dir: dir.clone(),
+            base_dir: dir.to_path_buf(),
             targets: vec![(media, a.clone())],
         })
         .unwrap();

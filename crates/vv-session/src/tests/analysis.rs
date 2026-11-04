@@ -1,10 +1,9 @@
 use super::*;
 use vv_core::{Clip, ClipSource, MediaItem, MediaMeta, Timeline, Track, TrackKind};
+use vv_media::test_support::TempDir;
 
 /// 1 s of silence, then 1 s of a sine at 440 Hz (peak 0.5).
-fn silence_then_tone(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join("vv-session-analysis");
-    std::fs::create_dir_all(&dir).unwrap();
+fn silence_then_tone(dir: &TempDir, name: &str) -> std::path::PathBuf {
     let path = dir.join(name);
     vv_media::test_support::ffmpeg(
         &[
@@ -26,7 +25,8 @@ fn silence_then_tone(name: &str) -> std::path::PathBuf {
 
 #[test]
 fn media_levels_tell_silence_from_sound_window_by_window() {
-    let path = silence_then_tone("media.wav");
+    let dir = TempDir::new("vv-session-analysis");
+    let path = silence_then_tone(&dir, "media.wav");
     let levels = media_audio_levels(&path, 0, Rational::new(25, 1), 0..60, 25).unwrap();
 
     assert_eq!(levels.len(), 3, "the last window is the 10 frames left");
@@ -38,14 +38,16 @@ fn media_levels_tell_silence_from_sound_window_by_window() {
 
 #[test]
 fn media_levels_of_a_missing_stream_are_an_error() {
-    let path = silence_then_tone("missing-stream.wav");
+    let dir = TempDir::new("vv-session-analysis");
+    let path = silence_then_tone(&dir, "missing-stream.wav");
     let error = media_audio_levels(&path, 3, Rational::new(25, 1), 0..25, 25).unwrap_err();
     assert_eq!(error, "the media has no audio stream 3");
 }
 
 #[test]
 fn timeline_levels_follow_the_clip_position() {
-    let path = silence_then_tone("timeline.wav");
+    let dir = TempDir::new("vv-session-analysis");
+    let path = silence_then_tone(&dir, "timeline.wav");
     let mut project = Project::default();
     let media = project.media_pool.insert(MediaItem {
         path,
