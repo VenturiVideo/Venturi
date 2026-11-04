@@ -690,6 +690,7 @@ fn a_failure_marks_the_audio_clips_of_its_stream_and_of_its_measure() {
             level(shown, 3),
             level(other, 4),
             level(shown, 5),
+            level(shown, 7),
         ]
         .into_iter(),
     );

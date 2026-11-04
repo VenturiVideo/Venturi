@@ -3,7 +3,7 @@
 //! of the mix already stretched in the background. Without an audio device
 //! the clock is wall time and nothing plays.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
@@ -800,13 +800,11 @@ fn clip_audio_failures<'a>(
             }
         }
     }
+    let audible: HashSet<ClipId> = playing().map(|clip| clip.id).collect();
     for failure in levels.filter(|f| f.timeline == timeline_id) {
         // Measures are keyed by content: a failure stored by a clip since
         // disabled stays alive while an identical clip still asks for it.
-        let clip = failure
-            .measured
-            .clip
-            .filter(|id| playing().any(|clip| clip.id == *id));
+        let clip = failure.measured.clip.filter(|id| audible.contains(id));
         if let Some(clip) = clip {
             failures
                 .entry(clip)
