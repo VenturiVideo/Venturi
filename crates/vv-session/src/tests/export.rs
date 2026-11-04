@@ -3,6 +3,231 @@ use vv_core::ClipSource;
 use vv_core::{Clip, Keyframed, Rgba, Track, TrackKind};
 use vv_media::test_support::TempDir;
 
+#[test]
+fn export_sizes_above_the_old_fixed_caps_are_limited_by_the_device() {
+    let mut settings = ExportSettings::new(PathBuf::new());
+    for size in [(8192, 4320), (10000, 2000), (16384, 16384)] {
+        for custom in [false, true] {
+            settings.custom_size = custom.then_some(size);
+            assert!(
+                settings.valid_output_size(size),
+                "{size:?}, custom={custom}"
+            );
+            assert!(settings.valid_render_size(size, 16384));
+        }
+    }
+    settings.custom_size = Some((8192, 4320));
+    assert!(!settings.valid_render_size((1920, 1080), 4096));
+}
+
+#[test]
+fn custom_export_stretches_high_precision_color_without_an_extra_quantization() {
+    let compositor =
+        vv_render::Compositor::new_headless_with_precision(vv_core::ProcessingPrecision::High);
+    let mut settings = ExportSettings::new(PathBuf::new());
+    settings.custom_size = Some((16, 16));
+    settings.aspect = AspectMode::Stretch;
+    for value in [0.1234, 0.2003, 0.5011] {
+        let layers = vec![OwnedLayer {
+            content: crate::frame_provider::OwnedContent::Solid(Rgba::gray(value)),
+            transform: Default::default(),
+            opacity: 1.0,
+            filters: Vec::new(),
+            blend: Default::default(),
+            masks: Vec::new(),
+        }];
+        assert_eq!(
+            compose_export_frame(
+                &compositor,
+                &layers,
+                vv_render::OutputFrame::scaled(16, 16, (16, 8)),
+                &settings,
+            ),
+            compose_video_frame(&compositor, &layers, vv_render::OutputFrame::exact(16, 16)),
+            "a uniform color must not change when the completed image is stretched: {value}",
+        );
+    }
+}
+
+#[test]
+fn custom_export_dimensions_override_percent_and_reject_invalid_sizes() {
+    let mut settings = ExportSettings::new(PathBuf::new());
+    settings.scale_percent = 25;
+    settings.custom_size = Some((1080, 1920));
+    assert_eq!(settings.output_size((1920, 1080)), (1080, 1920));
+    assert!(settings.valid_output_size((1920, 1080)));
+    for size in [(0, 1080), (3, 1080), (1920, 1), (u32::MAX, 2)] {
+        settings.custom_size = Some(size);
+        assert!(!settings.valid_output_size((1920, 1080)), "{size:?}");
+    }
+    settings.custom_size = None;
+    assert_eq!(settings.output_size((1920, 1080)), (480, 270));
+}
+
+#[test]
+fn custom_export_rejects_oversized_intermediates_before_opening_output() {
+    let dir = TempDir::new("vv-export-gpu-limit");
+    let mut timeline = timeline_with(vec![Track {
+        kind: TrackKind::Video,
+        clips: vec![solid_color_clip(1, 0, 1, red())],
+        ..Track::new(TrackKind::Video)
+    }]);
+    timeline.resolution = (8194, 8);
+    let (project, id) = project_with(timeline);
+    let mut settings = ExportSettings::new(dir.join("too-large.mp4"));
+    settings.custom_size = Some((16, 16));
+    settings.audio = None;
+    let result = export_timeline(
+        &project,
+        id,
+        &settings,
+        0..1,
+        &Mutex::new(ExportProgress::default()),
+        &AtomicBool::new(false),
+    );
+    assert!(matches!(result, Err(ExportError::Failed(_))), "{result:?}");
+    assert!(!settings.output_path.exists());
+}
+
+#[test]
+fn custom_export_checks_output_and_required_intermediates_against_device_limits() {
+    let mut settings = ExportSettings::new(PathBuf::new());
+    settings.custom_size = Some((5000, 2000));
+    assert!(!settings.valid_render_size((1920, 1080), 4096));
+    settings.custom_size = Some((2000, 5000));
+    assert!(!settings.valid_render_size((1920, 1080), 4096));
+    settings.custom_size = Some((640, 360));
+    assert!(!settings.valid_render_size((8192, 4096), 4096));
+    assert!(!settings.valid_render_size((4096, 8192), 4096));
+    assert!(settings.valid_render_size((8192, 4608), 4096));
+    settings.custom_size = Some((4096, 2048));
+    assert!(settings.valid_render_size((1920, 1080), 4096));
+    for size in [(0, 2), (3, 2), (u32::MAX, 2)] {
+        settings.custom_size = Some(size);
+        assert!(!settings.valid_render_size((1920, 1080), 16384));
+    }
+    settings.custom_size = None;
+    settings.scale_percent = 25;
+    assert!(settings.valid_render_size((8192, 4096), 4096));
+}
+
+fn custom_export_layers() -> Vec<OwnedLayer> {
+    let solid = |color, transform| OwnedLayer {
+        content: crate::frame_provider::OwnedContent::Solid(color),
+        transform,
+        opacity: 1.0,
+        filters: Vec::new(),
+        blend: Default::default(),
+        masks: Vec::new(),
+    };
+    vec![
+        solid(red(), Default::default()),
+        solid(
+            blue(),
+            vv_core::Transform {
+                zoom: [0.25, 0.5],
+                position: [4.0, 0.0],
+                ..Default::default()
+            },
+        ),
+    ]
+}
+
+#[test]
+fn custom_export_preserves_composition_for_fit_fill_and_stretch() {
+    let compositor = vv_render::Compositor::new_headless();
+    let layers = custom_export_layers();
+    let output = vv_render::OutputFrame::scaled(16, 16, (16, 8));
+    let mut settings = ExportSettings::new(PathBuf::new());
+    settings.custom_size = Some((16, 16));
+    for mode in [AspectMode::Fit, AspectMode::Fill, AspectMode::Stretch] {
+        settings.aspect = mode;
+        let frame = compose_export_frame(&compositor, &layers, output, &settings);
+        assert_eq!(frame.len(), 16 * 16 * 3 / 2);
+        let expected = match mode {
+            AspectMode::Fit => [(2, 0, 16), (2, 7, 63), (12, 7, 32), (14, 5, 63)],
+            AspectMode::Fill => [(2, 0, 63), (2, 7, 63), (14, 7, 32), (14, 5, 32)],
+            AspectMode::Stretch => [(2, 0, 63), (2, 7, 63), (12, 7, 32), (14, 5, 63)],
+        };
+        for (x, y, luma) in expected {
+            assert!(
+                frame[y * 16 + x].abs_diff(luma) <= 2,
+                "{mode:?} at {x},{y}: {}",
+                frame[y * 16 + x]
+            );
+        }
+    }
+}
+
+#[test]
+fn percentage_presets_ignore_the_remembered_custom_aspect_mode() {
+    let compositor = vv_render::Compositor::new_headless();
+    let layers = custom_export_layers();
+    let mut settings = ExportSettings::new(PathBuf::new());
+    settings.scale_percent = 75;
+    let (width, height) = settings.output_size((18, 10));
+    let output = vv_render::OutputFrame::scaled(width, height, (18, 10));
+    assert_eq!((width, height), (12, 6));
+    for aspect in [AspectMode::Fit, AspectMode::Fill, AspectMode::Stretch] {
+        settings.aspect = aspect;
+        assert_eq!(
+            compose_export_frame(&compositor, &layers, output, &settings),
+            compose_video_frame(&compositor, &layers, output),
+            "returning to a rounded percentage preset must preserve its original composition"
+        );
+    }
+}
+
+#[test]
+fn custom_export_encodes_the_requested_dimensions_and_black_bars() {
+    let dir = TempDir::new("vv-custom-export");
+    let mut project = Project::default();
+    let mut timeline = timeline_with(vec![Track {
+        kind: TrackKind::Video,
+        clips: vec![solid_color_clip(1, 0, 2, red())],
+        muted: false,
+        solo: false,
+        locked: false,
+        crossings: Vec::new(),
+        mix: Default::default(),
+        armed: Default::default(),
+    }]);
+    timeline.resolution = (16, 8);
+    let id = project.timelines.insert(timeline);
+    let mut settings = ExportSettings::new(dir.join("custom.mp4"));
+    settings.custom_size = Some((16, 16));
+    settings.audio = None;
+    export_timeline(
+        &project,
+        id,
+        &settings,
+        0..2,
+        &Mutex::new(ExportProgress::default()),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let meta = vv_media::probe_media(&settings.output_path).unwrap();
+    assert_eq!((meta.width, meta.height), (16, 16));
+    let mut decoder = vv_media::Decoder::open(&settings.output_path).unwrap();
+    let (_, frame) = decoder.next_frame().unwrap().unwrap();
+    assert!(frame.y[2 * 16 + 8] < 25, "top bar");
+    assert!(frame.y[8 * 16 + 8] > 50, "picture");
+    settings.custom_size = Some((15, 16));
+    settings.output_path = dir.join("invalid.mp4");
+    assert!(
+        export_timeline(
+            &project,
+            id,
+            &settings,
+            0..2,
+            &Mutex::new(ExportProgress::default()),
+            &AtomicBool::new(false)
+        )
+        .is_err()
+    );
+    assert!(!settings.output_path.exists());
+}
+
 fn solid_color_clip(id: u64, start: FrameIdx, len: FrameIdx, color: Rgba) -> Clip {
     let mut clip = Clip::from_source_range(
         ClipId(id),

@@ -33,6 +33,7 @@ pub enum ExportDialogAction {
 
 pub struct ExportDialog {
     settings: ExportSettings,
+    remembered_custom_size: Option<(u32, u32)>,
     path_text: String,
     whole_timeline: bool,
     /// Kept aside while "Include audio" is off, so they can be restored.
@@ -61,6 +62,7 @@ impl ExportDialog {
                 None => None,
             },
             gpu_decoders,
+            remembered_custom_size: settings.custom_size,
             settings,
             nvenc_pending: false,
             whole_timeline: false,
@@ -212,11 +214,11 @@ impl ExportDialog {
 
     fn video_section(&mut self, ui: &mut egui::Ui, info: &TimelineInfo) {
         ui.strong("Video");
-        let video = &mut self.settings.video;
         egui::Grid::new("export_video_grid")
             .num_columns(2)
             .spacing([12.0, 6.0])
             .show(ui, |ui| {
+                let video = &mut self.settings.video;
                 ui.label(t!("export.decoder"));
                 let mut items = vec![(None, "CPU".to_owned(), true)];
                 items.extend(self.gpu_decoders.iter().map(|device| {
@@ -310,19 +312,66 @@ impl ExportDialog {
                 ui.end_row();
 
                 ui.label(t!("export.resolution"));
-                let scale = &mut self.settings.scale_percent;
+                let mut choice = self
+                    .settings
+                    .custom_size
+                    .is_none()
+                    .then_some(self.settings.scale_percent);
                 let size_label = |percent: u32| {
                     let mut probe = ExportSettings::new(PathBuf::new());
                     probe.scale_percent = percent;
                     let (w, h) = probe.output_size(info.resolution);
                     format!("{w}×{h} ({percent}%)")
                 };
-                let items: Vec<_> = ExportSettings::SCALE_CHOICES
+                let mut items: Vec<_> = ExportSettings::SCALE_CHOICES
                     .iter()
-                    .map(|percent| (*percent, size_label(*percent), true))
+                    .map(|percent| (Some(*percent), size_label(*percent), true))
                     .collect();
-                preview_combo(ui, "export_scale", scale, &items, None, None, None);
+                items.push((None, t!("export.custom_size").into_owned(), true));
+                preview_combo(ui, "export_scale", &mut choice, &items, None, None, None);
+                self.select_resolution(choice, info.resolution);
                 ui.end_row();
+
+                if let Some((width, height)) = &mut self.settings.custom_size {
+                    ui.label(t!("export.dimensions"));
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::DragValue::new(width)
+                                .range(ExportSettings::MIN_DIMENSION..=u32::MAX),
+                        );
+                        ui.label("×");
+                        ui.add(
+                            egui::DragValue::new(height)
+                                .range(ExportSettings::MIN_DIMENSION..=u32::MAX),
+                        );
+                    });
+                    ui.end_row();
+                    ui.label(t!("export.aspect_mode"));
+                    use vv_session::export::AspectMode;
+                    let items = [
+                        (AspectMode::Fit, t!("export.aspect_fit").into_owned(), true),
+                        (
+                            AspectMode::Fill,
+                            t!("export.aspect_fill").into_owned(),
+                            true,
+                        ),
+                        (
+                            AspectMode::Stretch,
+                            t!("export.aspect_stretch").into_owned(),
+                            true,
+                        ),
+                    ];
+                    preview_combo(
+                        ui,
+                        "export_aspect",
+                        &mut self.settings.aspect,
+                        &items,
+                        None,
+                        None,
+                        None,
+                    );
+                    ui.end_row();
+                }
 
                 ui.label(t!("export.frame_rate"));
                 ui.label(t!(
@@ -413,6 +462,22 @@ impl ExportDialog {
             });
     }
 
+    fn select_resolution(&mut self, choice: Option<u32>, timeline_size: (u32, u32)) {
+        if let Some(size) = self.settings.custom_size {
+            self.remembered_custom_size = Some(size);
+        }
+        match choice {
+            None => {
+                self.settings.custom_size =
+                    Some(*self.remembered_custom_size.get_or_insert(timeline_size))
+            }
+            Some(percent) => {
+                self.settings.custom_size = None;
+                self.settings.scale_percent = percent;
+            }
+        }
+    }
+
     fn export_range(&self, info: &TimelineInfo) -> std::ops::Range<FrameIdx> {
         match info.marks {
             Some((mark_in, mark_out)) if !self.whole_timeline => mark_in..mark_out,
@@ -435,10 +500,20 @@ impl ExportDialog {
         let path = validate_path(&self.path_text);
         let mut action = ExportDialogAction::None;
         let waits = info.waits_for_scan && self.settings.audio.is_some();
+        let valid_size = self.settings.valid_output_size(info.resolution);
+        if !valid_size {
+            ui.colored_label(
+                egui::Color32::RED,
+                t!(
+                    "export.error_dimensions",
+                    min = ExportSettings::MIN_DIMENSION
+                ),
+            );
+        }
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(
-                    path.is_ok() && !waits,
+                    path.is_ok() && !waits && valid_size,
                     egui::Button::new(t!("export.start")),
                 )
                 .clicked()
