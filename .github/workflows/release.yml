@@ -68,7 +68,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: Venturi-appimage-${{ runner.arch }}
-          path: target/appimage/Venturi-*.AppImage
+          path: target/appimage/Venturi-*.AppImage*
           if-no-files-found: error
 
   macos:
