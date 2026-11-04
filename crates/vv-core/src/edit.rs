@@ -456,10 +456,19 @@ pub fn insert_media(
     let mark = history.begin_group();
     let tl = &project.timelines[timeline_id];
     let rate = Rational::conform_rate(tl.fps, meta.fps);
+    let end = start + rate.scale_round(insert.source_out) - rate.scale_round(insert.source_in);
+    let automatic_video_audio = insert.video && meta.has_video;
     let has_audio_tracks = tl.first_track_index(TrackKind::Audio).is_some();
     let mut audio_track_indices: Vec<usize> = tl
         .tracks_of_kind(TrackKind::Audio)
         .filter(|(_, t)| !t.locked)
+        .filter(|(_, t)| {
+            !automatic_video_audio
+                || !t
+                    .clips
+                    .iter()
+                    .any(|clip| clip.timeline_start < end && clip.timeline_end() > start)
+        })
         .map(|(i, _)| i)
         .collect();
     if let Some(extra) = tracks.extra_audio {
