@@ -1112,6 +1112,7 @@ pub const GAIN_DB_MAX: f32 = 30.0;
 /// `vv_render`, which does not know the meaning of each one, only its id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FilterKind {
+    CameraShake,
     ColorCorrection,
     BoxBlur,
     GaussianBlur,
@@ -1221,7 +1222,7 @@ impl Lerp for BlurDirection {
 /// `EffectStack::filters` is the order of application, configurable
 /// by the user (several filters on the same clip, in a sequence they choose);
 /// `enabled` suspends it without removing it from the sequence.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(from = "StoredClipFilter")]
 pub struct ClipFilter {
     pub kind: FilterKind,
@@ -1241,6 +1242,29 @@ pub struct ClipFilter {
     pub grow: Keyframed<f32>,
     /// Drop shadow only.
     pub color: Rgba,
+    pub shake: crate::CameraShakeTracks,
+}
+
+impl Serialize for ClipFilter {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let has_shake = self.kind == FilterKind::CameraShake;
+        let mut state =
+            serializer.serialize_struct("ClipFilter", if has_shake { 10 } else { 9 })?;
+        state.serialize_field("kind", &self.kind)?;
+        state.serialize_field("enabled", &self.enabled)?;
+        state.serialize_field("radius", &self.radius)?;
+        state.serialize_field("direction", &self.direction)?;
+        state.serialize_field("amount", &self.amount)?;
+        state.serialize_field("grade", &self.grade)?;
+        state.serialize_field("offset", &self.offset)?;
+        state.serialize_field("grow", &self.grow)?;
+        state.serialize_field("color", &self.color)?;
+        if has_shake {
+            state.serialize_field("shake", &self.shake)?;
+        }
+        state.end()
+    }
 }
 
 /// `ClipFilter` as saved, older files included.
@@ -1262,6 +1286,8 @@ struct StoredClipFilter {
     grow: Keyframed<f32>,
     #[serde(default = "default_shadow_color")]
     color: Rgba,
+    #[serde(default)]
+    shake: crate::CameraShakeTracks,
 }
 
 fn default_shadow_offset() -> [Keyframed<f32>; 2] {
@@ -1279,6 +1305,7 @@ fn default_shadow_color() -> Rgba {
 /// `FilterKind` plus the kinds that no longer exist.
 #[derive(Deserialize)]
 enum StoredFilterKind {
+    CameraShake,
     /// Replaced by `ColorCorrection` with the black and white preset.
     Grayscale,
     ColorCorrection,
@@ -1291,6 +1318,7 @@ enum StoredFilterKind {
 impl From<StoredClipFilter> for ClipFilter {
     fn from(stored: StoredClipFilter) -> Self {
         let (kind, grade) = match stored.kind {
+            StoredFilterKind::CameraShake => (FilterKind::CameraShake, stored.grade),
             StoredFilterKind::Grayscale => (
                 FilterKind::ColorCorrection,
                 GradeTracks::constant(GradePreset::BlackAndWhite.value()),
@@ -1311,6 +1339,7 @@ impl From<StoredClipFilter> for ClipFilter {
             offset: stored.offset,
             grow: stored.grow,
             color: stored.color,
+            shake: stored.shake,
         }
     }
 }
@@ -1366,6 +1395,7 @@ impl ClipFilter {
             offset: default_shadow_offset(),
             grow: default_shadow_grow(),
             color: Rgba::BLACK,
+            shake: crate::CameraShakeTracks::default(),
         }
     }
 
@@ -1664,6 +1694,7 @@ impl Default for EffectStack {
 
 impl EffectStack {
     /// See `Keyframed::drop_before`, on every animatable parameter.
+    /// Camera shake keeps its curves so a cut preserves the integrated speed phase.
     pub fn drop_keyframes_before(&mut self, start: FrameIdx) {
         self.for_each_f32_track(|k| k.drop_before(start));
         if let Some(c) = &mut self.color {
@@ -1705,6 +1736,9 @@ impl EffectStack {
         }
         for f in &mut self.filters {
             f.direction.shift(delta);
+            for track in f.shake.tracks_mut() {
+                track.shift(delta);
+            }
         }
         for m in &mut self.masks {
             m.path.shift(delta);
@@ -1737,6 +1771,9 @@ impl EffectStack {
         }
         for f in &mut self.filters {
             f.direction.rescale_times(from, to);
+            for track in f.shake.tracks_mut() {
+                track.rescale_times(from, to);
+            }
         }
         for m in &mut self.masks {
             m.path.rescale_times(from, to);
