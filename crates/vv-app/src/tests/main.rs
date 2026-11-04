@@ -2070,6 +2070,19 @@ fn a_fade_set_on_several_clips_fits_each_and_undoes_at_once() {
         [(25, 0), (10, 0)],
         "one undo takes the fade off every clip"
     );
+
+    for (frames, pointer_down) in [(3, true), (6, true), (8, false)] {
+        let tl = Some(&app.session.project.timelines[timeline_id]);
+        let commands = fade_commands(tl, &targets, vv_core::FadeEdge::Out, frames);
+        app.apply_effect_changes(commands, pointer_down);
+    }
+    assert_eq!(fades(&app), [(25, 8), (10, 8)]);
+    app.session.history.undo(&mut app.session.project);
+    assert_eq!(
+        fades(&app),
+        [(25, 0), (10, 0)],
+        "a drag over several clips is one undo step"
+    );
 }
 
 #[test]
