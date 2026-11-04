@@ -287,6 +287,7 @@ pub(crate) fn file_label(path: &std::path::Path) -> String {
 struct ProjectMenus;
 
 enum ProjectAction {
+    Delete,
     DuplicateTimeline(MediaId),
     Relink,
     AddToLibrary,
@@ -337,6 +338,11 @@ impl PoolMenus<MediaId, FolderId> for ProjectMenus {
             .clicked()
         {
             out.push(MenuChoice::Action(ProjectAction::AddToLibrary));
+            ui.close();
+        }
+        ui.separator();
+        if ui.button(t!("menu.delete")).clicked() {
+            out.push(MenuChoice::Action(ProjectAction::Delete));
             ui.close();
         }
     }
@@ -646,6 +652,7 @@ impl VenturiApp {
                 PoolEvent::Action(ProjectAction::DuplicateTimeline(id)) => {
                     self.duplicate_timeline(id)
                 }
+                PoolEvent::Action(ProjectAction::Delete) => self.delete_selected_media(),
                 PoolEvent::Action(ProjectAction::Relink) => self.relink_media_dialog(),
                 PoolEvent::Action(ProjectAction::AddToLibrary) => {
                     self.add_selected_media_to_library()
