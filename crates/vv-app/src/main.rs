@@ -90,6 +90,12 @@ struct ArrowHold {
     start_frame: FrameIdx,
 }
 
+struct MarkTarget<'a> {
+    marks: &'a mut transport::MarkRange,
+    total: FrameIdx,
+    playhead: FrameIdx,
+}
+
 /// Playhead position with an arrow held for `elapsed` seconds:
 /// one frame immediately, then continuous scrolling after `ARROW_HOLD_DELAY_SECS`.
 fn arrow_hold_target(hold: &ArrowHold, elapsed: f64, fps: f64) -> FrameIdx {
@@ -975,22 +981,61 @@ impl VenturiApp {
         }
     }
 
-    /// I/O keys: on the preview if active, otherwise on the timeline.
     fn mark_at_playhead(&mut self, is_in: bool) {
-        let (marks, frame, total) = if self.browsing.is_some() {
-            let total = self.browse_total_frames();
-            (&mut self.browse_marks, self.browse_playhead, total)
-        } else if let Some(timeline_id) = self.timeline_id {
-            let total = self.session.project.timelines[timeline_id].total_frames();
-            let state = &mut self.timeline_state;
-            (&mut state.export_marks, state.playhead, total)
-        } else {
+        let Some(target) = self.mark_target() else {
             return;
         };
+        if target.total <= 0 {
+            return;
+        }
         if is_in {
-            marks.set_in(frame, total);
+            target.marks.set_in(target.playhead, target.total);
         } else {
-            marks.set_out(frame, total);
+            target.marks.set_out(target.playhead, target.total);
+        }
+    }
+
+    fn mark_target(&mut self) -> Option<MarkTarget<'_>> {
+        if self.browsing.is_some() {
+            if self.preview_error.is_some() {
+                None
+            } else {
+                let total = self.browse_total_frames();
+                let playhead = self.browse_playhead;
+                Some(MarkTarget {
+                    marks: &mut self.browse_marks,
+                    total,
+                    playhead,
+                })
+            }
+        } else if let Some(timeline_id) = self.timeline_id {
+            let total = self.session.project.timelines[timeline_id].total_frames();
+            let playhead = self.timeline_state.playhead;
+            Some(MarkTarget {
+                marks: &mut self.timeline_state.export_marks,
+                total,
+                playhead,
+            })
+        } else {
+            None
+        }
+    }
+
+    fn clear_in_point(&mut self) {
+        if let Some(target) = self.mark_target() {
+            target.marks.clear_in();
+        }
+    }
+
+    fn clear_out_point(&mut self) {
+        if let Some(target) = self.mark_target() {
+            target.marks.clear_out();
+        }
+    }
+
+    fn clear_in_and_out(&mut self) {
+        if let Some(target) = self.mark_target() {
+            target.marks.clear_all();
         }
     }
 
@@ -4149,6 +4194,12 @@ impl VenturiApp {
             }
         }
         self.sync_timeline_audio();
+        if let Some(audio) = &self.timeline_audio
+            && let Some(at) = audio.next_retry()
+        {
+            ui.ctx()
+                .request_repaint_after(at.saturating_duration_since(std::time::Instant::now()));
+        }
         self.sync_window_title(ui.ctx());
 
         self.handle_shortcuts(ui);
@@ -4421,12 +4472,18 @@ impl VenturiApp {
                     // the timeline draws them as waveforms on the audio clips.
                     self.ensure_waveforms_loaded();
                     let is_playing = self.is_timeline_playing();
+                    let audio_failures = self
+                        .timeline_audio
+                        .as_ref()
+                        .map(|audio| audio.clip_failures(&self.session.project, timeline_id))
+                        .unwrap_or_default();
                     let (drop, enter_compound) = timeline_ui::show_timeline(
                         ui,
                         &mut self.session.project,
                         &mut self.session.history,
                         timeline_id,
                         &|id| labels.get(&id).cloned().unwrap_or_default(),
+                        &audio_failures,
                         &mut self.timeline_state,
                         self.snapping_enabled,
                         self.settings.kinetic_scroll,
@@ -4531,7 +4588,7 @@ impl VenturiApp {
                     compressor: &mut self.settings.compressor_presets,
                     eq: &mut self.settings.eq_presets,
                 },
-                &mixer_panel::Vst3View {
+                &mixer_panel::ChainView {
                     installed: &installed,
                     scanning: self.plugin_scan_rx.is_some(),
                     known: &|effect| {
@@ -4551,6 +4608,11 @@ impl VenturiApp {
                         self.timeline_audio
                             .as_ref()
                             .is_some_and(|audio| audio.plugin_failed(key))
+                    },
+                    normalize_failed: &|channel, insert| {
+                        let audio = self.timeline_audio.as_ref()?;
+                        let error = audio.normalize_failure(self.timeline_id?, channel, insert)?;
+                        Some(error.to_owned())
                     },
                 },
             ));

@@ -205,6 +205,7 @@ impl ExportDialog {
                     "export.range_whole",
                     duration = format_duration(info.total_frames, fps)
                 ));
+                ui.label(t!("export.range_mark_hint"));
             }
         }
     }

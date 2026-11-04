@@ -12,9 +12,9 @@ mix failed, the per-run test fixture dirs and the unclamped audio budget.
 - **Timestamps that overlap** (jump backwards): both readers keep the
   samples written first, so a seek landing inside the overlap keeps the
   other copy. Gaps are exact.
-- **Timestamps that drift** from the sample count (no clean gap): a decode
-  from the start jumps by 5 ms each time the drift reaches it, a seek
-  places by timestamp: the two can differ by up to 5 ms.
+- **Timestamps that drift** from the sample count (no clean gap): a seek
+  and a decode from the start can differ by up to the 5 ms placement
+  tolerance, documented in [Audio pipeline](ARCHITECTURE.md#audio-pipeline).
 - **Cached levels in memory.** A file overwritten during the session keeps
   its level until restart (the disk cache checks the files, the in-memory
   one does not). Same as the other derived caches, keyed by the

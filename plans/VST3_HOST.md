@@ -124,7 +124,7 @@ All `unsafe` and all COM code live here.
   pools and the editor's refusal paths. The editor is not opened in a test:
   it needs a display and the main thread.
 - CI: the Linux job runs the fixture tests through `cargo test --workspace`;
-  the `vv-plugin-macos` job runs `cargo test -p vv-plugin` on `macos-14`.
+  the `vv-plugin-macos` job runs `cargo test -p vv-plugin` on `macos-15`.
 
 ## 3. Decisions
 

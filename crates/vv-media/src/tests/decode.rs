@@ -56,9 +56,11 @@ fn guess_matrix_never_guesses_bt2020_from_the_heuristic() {
     );
 }
 
-fn make_test_clip(name: &str, duration_secs: u32) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join("vv-media-decode-test");
-    std::fs::create_dir_all(&dir).unwrap();
+fn make_test_clip(
+    name: &str,
+    duration_secs: u32,
+) -> (crate::test_support::TempDir, std::path::PathBuf) {
+    let dir = crate::test_support::TempDir::new("vv-media-decode-test");
     let path = dir.join(name);
 
     crate::test_support::ffmpeg(
@@ -76,7 +78,7 @@ fn make_test_clip(name: &str, duration_secs: u32) -> std::path::PathBuf {
         ],
         &path,
     );
-    path
+    (dir, path)
 }
 
 #[test]
@@ -91,7 +93,7 @@ fn fitted_size_shrinks_only_what_does_not_fit_and_keeps_it_even() {
 
 #[test]
 fn a_max_size_scales_the_frames_down_with_the_same_picture() {
-    let path = make_test_clip("max-size.mp4", 1);
+    let (_dir, path) = make_test_clip("max-size.mp4", 1);
     let full = decode_first_frame(&path).unwrap();
     let mut decoder = Decoder::open(&path).unwrap();
     decoder.set_max_size(Some((160, 120)));
@@ -109,9 +111,8 @@ fn a_max_size_scales_the_frames_down_with_the_same_picture() {
 
 /// Phone screen capture: frames only when the picture changes, so the
 /// pts leave long holes. 30 fps declared, 6 frames in 3.1 s.
-fn make_vfr_test_clip(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join("vv-media-decode-test");
-    std::fs::create_dir_all(&dir).unwrap();
+fn make_vfr_test_clip(name: &str) -> (crate::test_support::TempDir, std::path::PathBuf) {
+    let dir = crate::test_support::TempDir::new("vv-media-decode-test");
     let path = dir.join(name);
     crate::test_support::ffmpeg(
         &[
@@ -132,7 +133,7 @@ fn make_vfr_test_clip(name: &str) -> std::path::PathBuf {
         ],
         &path,
     );
-    path
+    (dir, path)
 }
 
 /// The cache demands every index of a range: on a VFR source the holes
@@ -140,7 +141,7 @@ fn make_vfr_test_clip(name: &str) -> std::path::PathBuf {
 /// waited forever for frames the stream does not contain.
 #[test]
 fn a_vfr_stream_is_decoded_as_a_contiguous_cfr_sequence() {
-    let path = make_vfr_test_clip("vfr.mp4");
+    let (_dir, path) = make_vfr_test_clip("vfr.mp4");
     let mut decoder = Decoder::open(&path).unwrap();
     let mut indices = Vec::new();
     while let Some((idx, _)) = decoder.next_frame().unwrap() {
@@ -157,7 +158,7 @@ fn a_vfr_stream_is_decoded_as_a_contiguous_cfr_sequence() {
 /// stretch must not cost one full copy per CFR slot.
 #[test]
 fn the_frames_filling_a_hole_share_one_allocation() {
-    let path = make_vfr_test_clip("vfr_shared.mp4");
+    let (_dir, path) = make_vfr_test_clip("vfr_shared.mp4");
     let mut decoder = Decoder::open(&path).unwrap();
     let mut frames = Vec::new();
     while let Some((_, frame)) = decoder.next_frame().unwrap() {
@@ -176,7 +177,7 @@ fn the_frames_filling_a_hole_share_one_allocation() {
 
 #[test]
 fn a_vfr_stream_stays_contiguous_after_a_seek() {
-    let path = make_vfr_test_clip("vfr_seek.mp4");
+    let (_dir, path) = make_vfr_test_clip("vfr_seek.mp4");
     let mut decoder = Decoder::open(&path).unwrap();
     decoder.seek_to_time(2.0).unwrap();
     let mut indices = Vec::new();
@@ -200,9 +201,8 @@ fn make_test_clip_with_gop_and_bframes(
     duration_secs: u32,
     gop: u32,
     bframes: u32,
-) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join("vv-media-decode-test");
-    std::fs::create_dir_all(&dir).unwrap();
+) -> (crate::test_support::TempDir, std::path::PathBuf) {
+    let dir = crate::test_support::TempDir::new("vv-media-decode-test");
     let path = dir.join(name);
 
     crate::test_support::ffmpeg(
@@ -224,14 +224,13 @@ fn make_test_clip_with_gop_and_bframes(
         ],
         &path,
     );
-    path
+    (dir, path)
 }
 
 #[test]
 #[ignore = "manual measurement, not a correctness assertion"]
 fn bench_decode_forward_through_a_large_gop() {
-    let dir = std::env::temp_dir().join("vv-media-decode-bench");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-media-decode-bench");
     let path = dir.join("large_gop.mp4");
     crate::test_support::ffmpeg(
         &[
@@ -272,7 +271,7 @@ fn bench_decode_forward_through_a_large_gop() {
 
 #[test]
 fn decode_first_frame_of_x264_reads_correct_dimensions_and_pixels() {
-    let path = make_test_clip("sample.mp4", 1);
+    let (_dir, path) = make_test_clip("sample.mp4", 1);
 
     let frame = decode_first_frame(&path).expect("decode failed");
     assert_eq!(frame.width, 320);
@@ -299,8 +298,7 @@ fn decode_first_frame_of_x264_reads_correct_dimensions_and_pixels() {
 /// come out byte for byte as ffmpeg decodes them.
 #[test]
 fn a_yuv420p_source_is_copied_plane_by_plane_with_odd_dimensions() {
-    let dir = std::env::temp_dir().join("vv-media-decode-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-media-decode-test");
     let path = dir.join("odd_yuv420p.mkv");
     crate::test_support::ffmpeg(
         &[
@@ -337,9 +335,8 @@ fn a_yuv420p_source_is_copied_plane_by_plane_with_odd_dimensions() {
     assert!(decoded == std::fs::read(&reference_path).unwrap());
 }
 
-fn make_test_image(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join("vv-media-decode-test");
-    std::fs::create_dir_all(&dir).unwrap();
+fn make_test_image(name: &str) -> (crate::test_support::TempDir, std::path::PathBuf) {
+    let dir = crate::test_support::TempDir::new("vv-media-decode-test");
     let path = dir.join(name);
 
     crate::test_support::ffmpeg(
@@ -355,7 +352,7 @@ fn make_test_image(name: &str) -> std::path::PathBuf {
         ],
         &path,
     );
-    path
+    (dir, path)
 }
 
 /// A PNG with transparency must carry it all the way to the decoded frame:
@@ -363,8 +360,7 @@ fn make_test_image(name: &str) -> std::path::PathBuf {
 /// would end up opaque, in the color left underneath in the file.
 #[test]
 fn a_transparent_png_keeps_its_alpha_channel() {
-    let dir = std::env::temp_dir().join("vv-media-decode-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-media-decode-test");
     let path = dir.join("half_transparent.png");
     // Left half opaque, right half fully transparent.
     crate::test_support::ffmpeg(
@@ -405,7 +401,7 @@ fn a_transparent_png_keeps_its_alpha_channel() {
 /// believing it full would wash out every imported image.
 #[test]
 fn a_png_is_reported_as_limited_range_because_that_is_what_the_scaler_produces() {
-    let path = make_test_image("range.png");
+    let (_dir, path) = make_test_image("range.png");
     let mut decoder = Decoder::open_image(&path).expect("image open failed");
     let (_, frame) = decoder.next_frame().unwrap().expect("frame expected");
 
@@ -421,7 +417,7 @@ fn a_png_is_reported_as_limited_range_because_that_is_what_the_scaler_produces()
 /// per frame.
 #[test]
 fn a_video_without_alpha_carries_no_alpha_plane() {
-    let path = make_test_clip("no-alpha.mp4", 1);
+    let (_dir, path) = make_test_clip("no-alpha.mp4", 1);
     let mut decoder = Decoder::open(&path).expect("open failed");
     let (_, frame) = decoder.next_frame().unwrap().expect("frame expected");
 
@@ -430,7 +426,7 @@ fn a_video_without_alpha_carries_no_alpha_plane() {
 
 #[test]
 fn open_image_decodes_correct_dimensions_and_pixels() {
-    let path = make_test_image("still.png");
+    let (_dir, path) = make_test_image("still.png");
     let decoder = Decoder::open_image(&path).expect("image open failed");
     assert_eq!(decoder.width(), 320);
     assert_eq!(decoder.height(), 240);
@@ -442,7 +438,7 @@ fn open_image_decodes_correct_dimensions_and_pixels() {
 /// would after the single available frame.
 #[test]
 fn open_image_returns_the_same_frame_for_any_requested_position() {
-    let path = make_test_image("still_repeat.png");
+    let (_dir, path) = make_test_image("still_repeat.png");
     let mut decoder = Decoder::open_image(&path).expect("image open failed");
 
     decoder.seek_to_time(0.0).unwrap();
@@ -477,8 +473,7 @@ fn open_image_returns_the_same_frame_for_any_requested_position() {
 /// compressed to limited by the scaler.
 #[test]
 fn full_range_jpeg_keeps_its_luma_range() {
-    let dir = std::env::temp_dir().join("vv-media-decode-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-media-decode-test");
     let path = dir.join("white.jpg");
     crate::test_support::ffmpeg(
         &[
@@ -508,7 +503,7 @@ fn decode_first_frame_defaults_to_mpeg_limited_range_and_a_resolution_based_matr
     // make_test_clip does not explicitly signal matrix/range (common
     // for generated/consumer content): 320x240 is below the 720p
     // threshold, it must fall back on BT.601 + limited range.
-    let path = make_test_clip("colorspace.mp4", 1);
+    let (_dir, path) = make_test_clip("colorspace.mp4", 1);
     let frame = decode_first_frame(&path).expect("decode failed");
     assert_eq!(frame.matrix, ColorMatrix::Bt601);
     assert!(
@@ -519,7 +514,7 @@ fn decode_first_frame_defaults_to_mpeg_limited_range_and_a_resolution_based_matr
 
 #[test]
 fn decoder_sequential_frames_have_increasing_index() {
-    let path = make_test_clip("sequential.mp4", 1);
+    let (_dir, path) = make_test_clip("sequential.mp4", 1);
     let mut decoder = Decoder::open(&path).unwrap();
 
     let mut last_idx = -1;
@@ -535,7 +530,7 @@ fn decoder_sequential_frames_have_increasing_index() {
 
 #[test]
 fn decoder_seek_lands_near_target_and_decodes_forward() {
-    let path = make_test_clip("seek.mp4", 3);
+    let (_dir, path) = make_test_clip("seek.mp4", 3);
     let mut decoder = Decoder::open(&path).unwrap();
 
     decoder.seek_to_time(1.5).unwrap();
@@ -567,7 +562,7 @@ fn decoder_seek_lands_near_target_and_decodes_forward() {
 /// above.
 #[test]
 fn decoder_seek_lands_at_or_before_target_near_every_keyframe_boundary() {
-    let path = make_test_clip_with_gop_and_bframes("seek_boundaries.mp4", 4, 25, 3);
+    let (_dir, path) = make_test_clip_with_gop_and_bframes("seek_boundaries.mp4", 4, 25, 3);
     // Keyframes at 0,25,50,75 (fps=25, g=25): a target 1/2/3 frames
     // before each one is the edge case that triggered the bug.
     for keyframe in [25, 50, 75] {
@@ -589,7 +584,7 @@ fn decoder_seek_lands_at_or_before_target_near_every_keyframe_boundary() {
 /// the rest unconverted) must not change a single pixel of what follows.
 #[test]
 fn skip_before_hands_out_the_same_frames_as_a_full_decode() {
-    let path = make_test_clip_with_gop_and_bframes("skip_before.mp4", 4, 25, 2);
+    let (_dir, path) = make_test_clip_with_gop_and_bframes("skip_before.mp4", 4, 25, 2);
     let mut full = Decoder::open(&path).unwrap();
     let mut reference = std::collections::HashMap::new();
     while let Some((idx, frame)) = full.next_frame().unwrap() {
@@ -611,7 +606,7 @@ fn skip_before_hands_out_the_same_frames_as_a_full_decode() {
 /// a hole to fill by repeating the last frame handed out.
 #[test]
 fn skip_before_without_a_seek_resumes_at_the_first_wanted_frame() {
-    let path = make_test_clip_with_gop_and_bframes("skip_mid_stream.mp4", 4, 25, 2);
+    let (_dir, path) = make_test_clip_with_gop_and_bframes("skip_mid_stream.mp4", 4, 25, 2);
     let mut decoder = Decoder::open(&path).unwrap();
     for _ in 0..=20 {
         decoder.next_frame().unwrap().unwrap();
@@ -664,7 +659,7 @@ const ALL_DEVICES: &[crate::hw::HwDevice] = &[
 #[test]
 fn open_with_hw_decodes_the_same_frames_as_software() {
     let _budget = HW_BUDGET_LOCK.lock().unwrap();
-    let path = make_test_clip_with_gop_and_bframes("hw_same_frames.mp4", 2, 25, 2);
+    let (_dir, path) = make_test_clip_with_gop_and_bframes("hw_same_frames.mp4", 2, 25, 2);
     let want = decode_all(Decoder::open(&path).unwrap());
     let hw = Decoder::open_with(&path, ALL_DEVICES, crate::hw::HwPriority::Normal).unwrap();
     assert_same_frames(&decode_all(hw), &want);
@@ -672,7 +667,7 @@ fn open_with_hw_decodes_the_same_frames_as_software() {
 
 #[test]
 fn a_silent_software_fallback_of_ffmpeg_reopens_the_decoder_in_software() {
-    let path = make_test_clip_with_gop_and_bframes("hw_silent_fallback.mp4", 2, 25, 2);
+    let (_dir, path) = make_test_clip_with_gop_and_bframes("hw_silent_fallback.mp4", 2, 25, 2);
     let want = decode_all(Decoder::open(&path).unwrap());
     let mut decoder = fake_hw(&path, ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_CUDA, None);
     decoder.seek_to_time(0.0).unwrap();
@@ -683,7 +678,7 @@ fn a_silent_software_fallback_of_ffmpeg_reopens_the_decoder_in_software() {
 
 #[test]
 fn a_hw_error_mid_stream_goes_on_in_software_without_changing_the_frames() {
-    let path = make_test_clip_with_gop_and_bframes("hw_error_mid_stream.mp4", 2, 25, 2);
+    let (_dir, path) = make_test_clip_with_gop_and_bframes("hw_error_mid_stream.mp4", 2, 25, 2);
     let want = decode_all(Decoder::open(&path).unwrap());
     let decoder = fake_hw(
         &path,
@@ -695,7 +690,7 @@ fn a_hw_error_mid_stream_goes_on_in_software_without_changing_the_frames() {
 
 #[test]
 fn a_hw_error_during_a_transit_lands_on_the_wanted_frame() {
-    let path = make_test_clip_with_gop_and_bframes("hw_error_transit.mp4", 4, 25, 2);
+    let (_dir, path) = make_test_clip_with_gop_and_bframes("hw_error_transit.mp4", 4, 25, 2);
     let want = decode_all(Decoder::open(&path).unwrap());
     let mut decoder = fake_hw(&path, ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_YUV420P, None);
     decoder.seek_to_time(70.0 / 25.0).unwrap();
@@ -728,10 +723,9 @@ fn cpu_time() -> Option<std::time::Duration> {
 #[ignore = "manual measurement, not a correctness assertion"]
 fn bench_hw_decode() {
     use crate::hw::HwDevice;
+    let dir = crate::test_support::TempDir::new("vv-media-decode-bench");
     let path = std::env::var("VV_BENCH_CLIP").map_or_else(
         |_| {
-            let dir = std::env::temp_dir().join("vv-media-decode-bench");
-            std::fs::create_dir_all(&dir).unwrap();
             let path = dir.join("hevc_1080p.mkv");
             crate::test_support::ffmpeg(
                 &[
@@ -801,8 +795,7 @@ fn bench_hw_decode() {
 /// included.
 #[test]
 fn an_nv12_source_keeps_its_interleaved_chroma() {
-    let dir = std::env::temp_dir().join("vv-media-decode-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-media-decode-test");
     let path = dir.join("odd_nv12.mkv");
     crate::test_support::ffmpeg(
         &[
@@ -844,7 +837,7 @@ fn an_nv12_source_keeps_its_interleaved_chroma() {
 #[test]
 fn a_decoder_whose_surfaces_do_not_fit_the_budget_opens_in_software() {
     let _budget = HW_BUDGET_LOCK.lock().unwrap();
-    let path = make_test_clip("hw_over_budget.mp4", 1);
+    let (_dir, path) = make_test_clip("hw_over_budget.mp4", 1);
     crate::hw::set_budget_bytes(1);
     let decoder = Decoder::open_with(&path, ALL_DEVICES, crate::hw::HwPriority::Normal);
     crate::hw::set_budget_bytes(usize::MAX);
@@ -870,7 +863,7 @@ fn a_low_priority_lease_leaves_half_of_the_budget_to_the_others() {
 
 #[test]
 fn landing_frame_is_the_keyframe_and_still_comes_out_of_next_frame() {
-    let path = make_test_clip_with_gop_and_bframes("landing_frame.mp4", 4, 25, 2);
+    let (_dir, path) = make_test_clip_with_gop_and_bframes("landing_frame.mp4", 4, 25, 2);
     let mut decoder = Decoder::open(&path).unwrap();
     decoder.seek_to_time(60.0 / 25.0).unwrap();
 
@@ -884,14 +877,14 @@ fn landing_frame_is_the_keyframe_and_still_comes_out_of_next_frame() {
 
 #[test]
 fn landing_frame_is_none_without_a_seek_pending() {
-    let path = make_test_clip_with_gop_and_bframes("landing_none.mp4", 1, 25, 0);
+    let (_dir, path) = make_test_clip_with_gop_and_bframes("landing_none.mp4", 1, 25, 0);
     let mut decoder = Decoder::open(&path).unwrap();
     assert!(decoder.landing_frame().unwrap().is_none());
 }
 
 #[test]
 fn keyframe_before_decodes_the_keyframe_alone_and_a_seek_resumes_after_it() {
-    let path = make_test_clip_with_gop_and_bframes("keyframe_before.mp4", 4, 25, 2);
+    let (_dir, path) = make_test_clip_with_gop_and_bframes("keyframe_before.mp4", 4, 25, 2);
     let mut decoder = Decoder::open(&path).unwrap();
     let mut reference = Decoder::open(&path).unwrap();
     reference.seek_to_time(2.0).unwrap();

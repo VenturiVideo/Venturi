@@ -1,11 +1,8 @@
 use super::*;
 use vv_core::Track;
 
-fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("vv-voiceover-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn temp_dir(name: &str) -> vv_media::test_support::TempDir {
+    vv_media::test_support::TempDir::new(&format!("vv-voiceover-{name}"))
 }
 
 /// A timeline at 25 fps with a video track and an armed audio track holding
@@ -55,23 +52,21 @@ fn takes_are_numbered_past_the_ones_already_there_in_any_format() {
         dir.join("Voiceover 003.mp3"),
         "001 is taken by a WAV"
     );
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn an_armed_track_waits_for_a_saved_project() {
+    let dir = temp_dir("guard");
     let (mut app, _) = app_with_armed_track();
     assert!(!app.prepare_take());
     assert!(app.timeline_state.record_needs_save);
-
-    let dir = temp_dir("guard");
     app.session.set_path(Some(dir.join("project.vvproj")));
     app.timeline_state.record_needs_save = false;
     assert!(app.prepare_take());
     assert!(!app.timeline_state.record_needs_save);
 
     app.session.set_path(None);
-    app.settings.recording_dir = Some(dir.clone());
+    app.settings.recording_dir = Some(dir.to_path_buf());
     assert!(
         app.prepare_take(),
         "a folder of its own needs no saved project"
@@ -80,13 +75,12 @@ fn an_armed_track_waits_for_a_saved_project() {
     let audio = 1;
     app.session.project.timelines[app.timeline_id.unwrap()].tracks[audio].armed = false;
     assert!(app.prepare_take(), "nothing armed, nothing to save first");
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn a_take_is_saved_next_to_the_project_and_overwrites_the_track_in_one_step() {
-    let (mut app, timeline) = app_with_armed_track();
     let dir = temp_dir("place");
+    let (mut app, timeline) = app_with_armed_track();
     app.session.set_path(Some(dir.join("project.vvproj")));
     let steps_before = app.session.history.labels().count();
 
@@ -136,7 +130,6 @@ fn a_take_is_saved_next_to_the_project_and_overwrites_the_track_in_one_step() {
             .values()
             .all(|m| m.path != take_file)
     );
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]

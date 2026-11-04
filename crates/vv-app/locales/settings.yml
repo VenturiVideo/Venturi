@@ -234,6 +234,15 @@ action.mark_in:
 action.mark_out:
   en: Mark out
   it: Punto di fine (out)
+action.clear_in:
+  en: Clear in
+  it: Cancella punto di inizio (in)
+action.clear_out:
+  en: Clear out
+  it: Cancella punto di fine (out)
+action.clear_in_out:
+  en: Clear in and out
+  it: Cancella punti di inizio e fine (in e out)
 action.fullscreen_viewer:
   en: Fullscreen player
   it: Player a schermo intero

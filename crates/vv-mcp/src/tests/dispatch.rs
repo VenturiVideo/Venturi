@@ -1,12 +1,10 @@
 use super::*;
 use std::path::Path;
 use vv_core::edit;
+use vv_media::test_support::TempDir;
 
-pub(crate) fn test_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("vv-mcp-{name}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+pub(crate) fn test_dir(name: &str) -> TempDir {
+    TempDir::new(&format!("vv-mcp-{name}"))
 }
 
 /// 1 s of 64x48 video at 30000/1001 fps with a sine track.
