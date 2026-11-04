@@ -85,6 +85,9 @@ impl StretchRequest<'_> {
             StretchInput::Nested { .. } => {
                 let format = (self.sample_rate, self.channels);
                 let snapshot = self.snapshot(source, self.frames.clone(), format);
+                if !snapshot.is_ready(self.frames.clone()) {
+                    return ClipAudio::Pending;
+                }
                 let frames = (self.frames.end - self.frames.start) as usize;
                 let mut mixed = vec![0.0; frames * self.channels.max(1) as usize];
                 mix_range(&snapshot, self.frames.start, &mut mixed);

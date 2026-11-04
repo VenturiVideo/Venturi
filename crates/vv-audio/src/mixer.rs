@@ -325,6 +325,9 @@ pub struct MixSnapshot {
     pub channels: u16,
     /// Sorted by track.
     pub clips: Vec<MixClip>,
+    /// Where a pitch-corrected clip is left out while its stretch is still
+    /// coming: silent, and not in `clips` for `is_ready` to see.
+    pending: Vec<std::ops::Range<u64>>,
     /// Track and range of `clips` of each track with clips.
     groups: Vec<(usize, std::ops::Range<usize>)>,
     /// Indexed by timeline track index; a clip whose track is missing plays
@@ -365,6 +368,7 @@ impl MixSnapshot {
             sample_rate,
             channels,
             clips,
+            pending: Vec::new(),
             groups,
             tracks,
             master,
@@ -528,6 +532,13 @@ impl MixSnapshot {
     /// hands in a clip still decoding as `ClipAudio::Partial`, even with no
     /// block yet, for it to be seen here.
     pub fn is_ready(&self, range: std::ops::Range<u64>) -> bool {
+        if self
+            .pending
+            .iter()
+            .any(|p| p.start < range.end && p.end > range.start)
+        {
+            return false;
+        }
         self.clips
             .iter()
             .filter(|clip| clip.start < range.end && clip.start + clip.len > range.start)
@@ -1044,6 +1055,7 @@ fn collect_clips(
     let fps = timeline.fps.as_f64().max(1e-9);
     let mut clips = Vec::new();
     let mut cyclic = false;
+    let mut pending = Vec::new();
     for (track_index, track) in timeline.audible_tracks() {
         for clip in track
             .clips
@@ -1118,6 +1130,8 @@ fn collect_clips(
                     span.step.to_bits(),
                     (sample_rate, channels),
                 ));
+                // A truncated request yields no audio past its stretched length.
+                let reach = ((frames.end - frames.start) as f64 / span.step).ceil() as u64 + 1;
                 let request = StretchRequest {
                     project,
                     input,
@@ -1129,7 +1143,11 @@ fn collect_clips(
                 };
                 match source.stretched(request) {
                     ClipAudio::Ready(stretched) => ClipInput::Blocks(stretched),
-                    ClipAudio::Pending | ClipAudio::Partial(_) | ClipAudio::Missing => continue,
+                    ClipAudio::Pending | ClipAudio::Partial(_) => {
+                        pending.push(span.start..span.start + span.len.min(reach));
+                        continue;
+                    }
+                    ClipAudio::Missing => continue,
                 }
             } else if item.compound.is_some() {
                 let Some((mix, nested_cyclic)) = nested_mix(
@@ -1363,6 +1381,7 @@ fn collect_clips(
     };
     let mut snapshot = MixSnapshot::new(sample_rate, channels, clips, tracks, master);
     snapshot.keep_running(&running);
+    snapshot.pending = pending;
     (snapshot, cyclic)
 }
 
