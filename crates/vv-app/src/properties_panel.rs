@@ -793,6 +793,36 @@ pub(crate) fn toggle_filter_commands(
         .collect()
 }
 
+/// Sets the `edge` fade of the `targets` to `frames`, shortened to fit each
+/// clip; the clips already there get no command.
+pub(crate) fn fade_commands(
+    tl: Option<&vv_core::Timeline>,
+    targets: &[PanelTarget],
+    edge: vv_core::FadeEdge,
+    frames: FrameIdx,
+) -> Vec<BoxedCommand> {
+    targets
+        .iter()
+        .filter_map(|t| {
+            let clip = tl?.clip(t.track_index, t.clip_id)?;
+            let current = match edge {
+                vv_core::FadeEdge::In => clip.fade_in,
+                vv_core::FadeEdge::Out => clip.fade_out,
+            };
+            let frames = frames.clamp(0, clip.timeline_len);
+            (frames != current).then(|| {
+                Box::new(vv_core::SetClipFade::new(
+                    t.timeline,
+                    t.track_index,
+                    t.clip_id,
+                    edge,
+                    frames,
+                )) as BoxedCommand
+            })
+        })
+        .collect()
+}
+
 /// The effects of a clip targeted by the panel.
 pub(crate) fn target_effects<'a>(
     tl: Option<&'a vv_core::Timeline>,
@@ -2626,6 +2656,33 @@ impl VenturiApp {
                                                             .clip(primary.track_index, primary.clip_id)
                                                     })
                                                     .map(|c| c.timeline_frame_at(source_frame));
+                                            }
+
+                                            let clips: Vec<&vv_core::Clip> = targets
+                                                .iter()
+                                                .filter_map(|t| tl?.clip(t.track_index, t.clip_id))
+                                                .collect();
+                                            if let (Some(timeline), Some(first)) = (tl, clips.first()) {
+                                                let fps = timeline.fps.as_f64().max(1.0);
+                                                let longest = clips.iter().map(|c| c.timeline_len).max().unwrap_or(0);
+                                                let fades = [
+                                                    (vv_core::FadeEdge::In, t!("props.fade_in"), first.fade_in),
+                                                    (vv_core::FadeEdge::Out, t!("props.fade_out"), first.fade_out),
+                                                ];
+                                                for (edge, label, current) in fades {
+                                                    let mut secs = current as f64 / fps;
+                                                    let row = param_row(ui, &label, None, |ui| {
+                                                        drag_field(ui, &mut secs, 0.02, 0.0..=longest as f64 / fps, 2, " s")
+                                                    });
+                                                    let frames = if row.reset {
+                                                        Some(0)
+                                                    } else {
+                                                        row.changed.then(|| (secs * fps).round() as FrameIdx)
+                                                    };
+                                                    if let Some(frames) = frames {
+                                                        pending_effects.extend(fade_commands(tl, targets, edge, frames));
+                                                    }
+                                                }
                                             }
                                         }
                                     }
