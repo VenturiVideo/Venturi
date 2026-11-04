@@ -4171,6 +4171,23 @@ fn in_out_keys_on_the_timeline_set_the_export_range() {
 }
 
 #[test]
+fn keyboard_steps_request_visibility_in_both_directions_but_idle_input_does_not() {
+    let mut app = VenturiApp::default();
+    make_timeline_with_clip(&mut app, 0, 0, 100);
+    app.scrub_audio = false;
+    app.timeline_state.playhead = 50;
+    for direction in [1, -1] {
+        app.timeline_state.reveal_playhead = false;
+        app.arrow_hold = None;
+        assert!(app.step_playhead_with_arrows(Some(direction), 0.0));
+        assert!(app.timeline_state.reveal_playhead);
+    }
+    app.timeline_state.reveal_playhead = false;
+    assert!(!app.step_playhead_with_arrows(None, 1.0));
+    assert!(!app.timeline_state.reveal_playhead);
+}
+
+#[test]
 fn clearing_in_out_actions_restore_the_timeline_export_range() {
     let mut app = VenturiApp::default();
     make_timeline_with_clip(&mut app, 0, 0, 100);
