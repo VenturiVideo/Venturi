@@ -138,6 +138,10 @@ pub struct Decoder {
     hw: Option<crate::hw::HwState>,
     _hw_lease: Option<crate::hw::Lease>,
     transfer_time: Duration,
+    /// Keyframe last read with no seek since: the next one measures a GOP.
+    last_keyframe_read: Option<FrameIdx>,
+    /// See `observed_gop`.
+    observed_gop: Option<FrameIdx>,
     #[cfg(test)]
     fail_after: Option<u32>,
 }
@@ -210,6 +214,8 @@ impl Decoder {
             hw,
             _hw_lease: lease,
             transfer_time: Duration::ZERO,
+            last_keyframe_read: None,
+            observed_gop: None,
             #[cfg(test)]
             fail_after: None,
         })
@@ -277,6 +283,7 @@ impl Decoder {
         const MAX_RETRIES: u32 = 20;
         for _ in 0..MAX_RETRIES {
             self.ictx.seek(ts, ..ts)?;
+            self.last_keyframe_read = None;
             self.decoder.flush();
             self.eof_sent = false;
             self.pending = None;
@@ -333,6 +340,7 @@ impl Decoder {
         let mut step = i64::from(ffmpeg::ffi::AV_TIME_BASE);
         for _ in 0..20 {
             self.ictx.seek(ts, ..ts)?;
+            self.last_keyframe_read = None;
             self.decoder.flush();
             self.eof_sent = false;
             let key = loop {
@@ -550,9 +558,10 @@ impl Decoder {
             self.path.display()
         );
         crate::hw::mark_failed(&self.path);
-        let transfer_time = self.transfer_time;
+        let (transfer_time, observed_gop) = (self.transfer_time, self.observed_gop);
         *self = Self::open(&self.path)?;
         self.transfer_time = transfer_time;
+        self.observed_gop = observed_gop;
         Ok(())
     }
 
@@ -587,6 +596,11 @@ impl Decoder {
                     if packet.stream() != self.video_stream_index {
                         continue;
                     }
+                    if packet.is_key()
+                        && let Some(pts) = packet.pts()
+                    {
+                        self.note_keyframe_read(self.frame_idx(pts));
+                    }
                     // A non-reference frame is needed only by itself: before
                     // `skip_before` it can go undecoded. Without a pts, decode it.
                     let skip = self.skip_before.is_some_and(|skip_before| {
@@ -611,6 +625,22 @@ impl Decoder {
                 Err(e) => return Err(e.into()),
             }
         }
+    }
+
+    fn note_keyframe_read(&mut self, idx: FrameIdx) {
+        if let Some(prev) = self.last_keyframe_read
+            && idx > prev
+        {
+            self.observed_gop = Some(self.observed_gop.map_or(idx - prev, |g| g.max(idx - prev)));
+        }
+        self.last_keyframe_read = Some(idx);
+    }
+
+    /// The longest distance between two keyframes read one after the other,
+    /// `None` until two have been: unlike seek landings, never a multiple of
+    /// the GOP.
+    pub fn observed_gop(&self) -> Option<FrameIdx> {
+        self.observed_gop
     }
 
     fn raw_frame(&self, decoded: ffmpeg::frame::Video) -> (FrameIdx, ffmpeg::frame::Video) {
