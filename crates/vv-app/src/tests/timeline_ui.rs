@@ -131,6 +131,7 @@ fn the_timeline_reveals_keyboard_steps_beyond_its_last_clip() {
                         &mut app.session.history,
                         timeline,
                         &|_| "media".to_string(),
+                        &std::collections::HashMap::new(),
                         &mut app.timeline_state,
                         true,
                         true,
