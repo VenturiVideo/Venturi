@@ -687,8 +687,9 @@ fn the_prefetch_window_shrinks_to_what_the_cache_budget_holds() {
 
     let (ahead, behind) = app.effective_window_secs(timeline_id);
 
+    // The portrait one fits the timeline at 0.45: decoded a √2 step above.
     let frame_bytes =
-        vv_media::yuv420_frame_bytes(1920, 1080) + vv_media::yuv420_frame_bytes(1080, 2400);
+        vv_media::yuv420_frame_bytes(1920, 1080) + vv_media::yuv420_frame_bytes(540, 1200);
     let needed = (ahead + behind) * 60.0 * frame_bytes as f64;
     assert!(
         needed <= app.settings.cache_budget_bytes as f64,
@@ -5327,7 +5328,8 @@ fn window_frame_bytes_counts_the_media_inside_a_compound_clip() {
 
     assert_eq!(
         app.window_frame_bytes(root, 0, 500),
-        vv_media::yuv420_frame_bytes(4516, 1080)
+        vv_media::yuv420_frame_bytes(2258, 540),
+        "fitted into the 1080p compound clip, not into the root timeline"
     );
 }
 
@@ -5358,7 +5360,7 @@ fn window_frame_bytes_maps_the_window_into_the_compound_clip() {
     );
     assert_eq!(
         app.window_frame_bytes(root, 1150, 1300),
-        vv_media::yuv420_frame_bytes(1920, 1080) + vv_media::yuv420_frame_bytes(3840, 2160)
+        vv_media::yuv420_frame_bytes(1920, 1080) + vv_media::yuv420_frame_bytes(1920, 1080)
     );
 }
 

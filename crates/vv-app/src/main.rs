@@ -306,6 +306,8 @@ struct VenturiApp {
     viewer_zoom: viewer_zoom::ViewerZoom,
     /// Player box and frame size of the last draw, for the zoom shortcuts.
     viewer_geometry: Option<(egui::Rect, egui::Vec2)>,
+    /// Screen pixels per timeline pixel in the last draw of the viewer.
+    viewer_scale: f64,
     /// What the viewer shows: the last composition, even if in this
     /// frame no new one was made (no empty flash).
     last_viewer_frame_kind: Option<ViewerFrameKind>,
@@ -529,6 +531,7 @@ impl Default for VenturiApp {
             viewer_content: None,
             viewer_zoom: viewer_zoom::ViewerZoom::default(),
             viewer_geometry: None,
+            viewer_scale: 1.0,
             last_viewer_frame_kind: None,
             viewer_keyframe: false,
             egui_render_state: None,
@@ -1693,6 +1696,7 @@ impl VenturiApp {
             0.0
         });
         render_ahead.set_keyframes_when_behind(self.settings.keyframes_when_behind);
+        render_ahead.set_viewer_scale(self.viewer_scale);
         let (ahead_secs, behind_secs) = self.effective_window_secs(timeline_id);
         render_ahead.set_lookahead_secs(ahead_secs);
         render_ahead.set_behind_secs(behind_secs);
@@ -1747,8 +1751,10 @@ impl VenturiApp {
     /// the cache: the media inside compound clips, at the size the preview
     /// resolution decodes them to.
     fn window_frame_bytes(&self, timeline_id: TimelineId, from: FrameIdx, to: FrameIdx) -> usize {
+        let shown =
+            render_ahead::shown_sizes(&self.session.project, timeline_id, self.viewer_scale);
         let mut seen = std::collections::HashSet::new();
-        self.frame_bytes_within(timeline_id, from, to, &mut seen, 0)
+        self.frame_bytes_within(timeline_id, from, to, &shown, &mut seen, 0)
     }
 
     fn frame_bytes_within(
@@ -1756,6 +1762,7 @@ impl VenturiApp {
         timeline_id: TimelineId,
         from: FrameIdx,
         to: FrameIdx,
+        shown: &std::collections::HashMap<MediaId, (u32, u32)>,
         seen: &mut std::collections::HashSet<MediaId>,
         depth: u32,
     ) -> usize {
@@ -1781,12 +1788,13 @@ impl VenturiApp {
                 let a = clip.picture_frame_at(clip.timeline_start.max(from));
                 let b = clip.picture_frame_at(clip.timeline_end().min(to) - 1);
                 let (start, end) = (a.min(b), a.max(b) + 1);
-                bytes += self.frame_bytes_within(nested_id, start, end, seen, depth + 1);
+                bytes += self.frame_bytes_within(nested_id, start, end, shown, seen, depth + 1);
             } else if seen.insert(media_id) {
-                bytes += vv_media::yuv420_frame_bytes(
-                    (item.meta.width / divisor).max(1),
-                    (item.meta.height / divisor).max(1),
-                );
+                let (w, h) = shown
+                    .get(&media_id)
+                    .copied()
+                    .unwrap_or((item.meta.width, item.meta.height));
+                bytes += vv_media::yuv420_frame_bytes((w / divisor).max(1), (h / divisor).max(1));
             }
         }
         bytes
@@ -4807,6 +4815,7 @@ impl VenturiApp {
                             paint_keyframes_badge(ui.painter(), rect.intersect(area));
                         }
                         self.viewer_geometry = Some((area, tex_size));
+                        self.viewer_scale = f64::from(self.viewer_zoom.scale(area, tex_size, ppp));
                         viewer_area = Some(area);
                         viewer_rect = Some(rect);
                     }
