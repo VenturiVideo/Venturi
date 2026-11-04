@@ -135,7 +135,7 @@ fn keys_asked(timeline: &Timeline, known: bool) -> Vec<u64> {
     let known = |_: &Vst3Effect| known;
     draw_effects(
         timeline,
-        &Vst3View {
+        &ChainView {
             known: &known,
             latency_ms: &latency,
             ..view()
@@ -144,7 +144,7 @@ fn keys_asked(timeline: &Timeline, known: bool) -> Vec<u64> {
     asked.into_inner()
 }
 
-fn view() -> Vst3View<'static> {
+fn view() -> ChainView<'static> {
     fn known(_: &Vst3Effect) -> bool {
         true
     }
@@ -157,7 +157,7 @@ fn view() -> Vst3View<'static> {
     fn normalize_failed(_: MixerChannel, _: usize) -> Option<String> {
         None
     }
-    Vst3View {
+    ChainView {
         installed: &[],
         scanning: false,
         known: &known,
@@ -167,7 +167,7 @@ fn view() -> Vst3View<'static> {
     }
 }
 
-fn draw_effects(timeline: &Timeline, view: &Vst3View) {
+fn draw_effects(timeline: &Timeline, view: &ChainView) {
     let keys = vv_audio::plugin_keys_in(0, timeline);
     let ctx = egui::Context::default();
     let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
@@ -210,7 +210,7 @@ fn an_enabled_normalization_asks_why_its_level_failed_at_its_place() {
     };
     draw_effects(
         &timeline,
-        &Vst3View {
+        &ChainView {
             normalize_failed: &failed,
             ..view()
         },

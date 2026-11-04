@@ -150,7 +150,7 @@ pub(crate) fn show_mixer(
     timeline_id: Option<TimelineId>,
     meters: Option<&MixMeters>,
     presets: EffectPresets,
-    vst3: &Vst3View,
+    chain: &ChainView,
 ) -> Vec<BoxedCommand> {
     let mut commands: Vec<BoxedCommand> = Vec::new();
     egui::Window::new(t!("mixer.title"))
@@ -192,7 +192,7 @@ pub(crate) fn show_mixer(
                             flags,
                             level,
                             effect_slots,
-                            vst3,
+                            chain,
                         );
                         edits.push((edit, channel));
                     }
@@ -207,7 +207,7 @@ pub(crate) fn show_mixer(
                         None,
                         level,
                         effect_slots,
-                        vst3,
+                        chain,
                     );
                     edits.push((edit, MixerChannel::Master));
                 });
@@ -350,7 +350,7 @@ pub(crate) fn channel_strip(timeline: &Timeline, channel: MixerChannel) -> Optio
 
 /// What the chain needs of the VST3 host (the scan and the live instances)
 /// and of the level measures.
-pub(crate) struct Vst3View<'a> {
+pub(crate) struct ChainView<'a> {
     pub(crate) installed: &'a [PluginInfo],
     pub(crate) scanning: bool,
     pub(crate) known: &'a dyn Fn(&Vst3Effect) -> bool,
@@ -595,7 +595,7 @@ fn strip(
     flags: Option<(bool, bool)>,
     level: [f32; 2],
     effect_slots: usize,
-    vst3: &Vst3View,
+    chain: &ChainView,
 ) -> StripEdit {
     let mut edit = StripEdit::default();
     let frame = egui::Frame::group(ui.style())
@@ -611,7 +611,7 @@ fn strip(
                     channel,
                     &mix.effects,
                     effect_slots,
-                    vst3,
+                    chain,
                     &mut edit,
                 );
                 ui.add_space(6.0);
@@ -676,7 +676,7 @@ fn effects(
     channel: MixerChannel,
     effects: &[AudioEffect],
     slots: usize,
-    vst3: &Vst3View,
+    chain: &ChainView,
     edit: &mut StripEdit,
 ) {
     let row = egui::vec2(STRIP_WIDTH, EFFECT_ROW_HEIGHT);
@@ -688,8 +688,8 @@ fn effects(
         let mut hover = name.clone();
         if let AudioEffectKind::Vst3(plugin) = &effect.kind {
             let key = keys.get(channel, index).unwrap_or(0);
-            let missing = !(vst3.known)(plugin);
-            let badge = vst3_badge(missing, !missing && (vst3.failed)(key));
+            let missing = !(chain.known)(plugin);
+            let badge = vst3_badge(missing, !missing && (chain.failed)(key));
             if let Some(badge) = badge {
                 name.insert_str(0, "! ");
                 hover = match badge {
@@ -697,7 +697,7 @@ fn effects(
                     Vst3Badge::Failed => t!("mixer.vst3_failed"),
                 }
                 .into_owned();
-            } else if let Some(ms) = (vst3.latency_ms)(key)
+            } else if let Some(ms) = (chain.latency_ms)(key)
                 && ms > 0.0
             {
                 name.push_str(&format!(" {ms:.0} ms"));
@@ -705,7 +705,7 @@ fn effects(
             }
         } else if matches!(effect.kind, AudioEffectKind::Normalize { .. })
             && effect.enabled
-            && let Some(error) = (vst3.normalize_failed)(channel, index)
+            && let Some(error) = (chain.normalize_failed)(channel, index)
         {
             name.insert_str(0, "! ");
             hover = t!("mixer.normalize_failed", error = error).into_owned();
@@ -786,13 +786,13 @@ fn effects(
             }
         }
         ui.menu_button(t!("mixer.vst3"), |ui| {
-            if vst3.scanning {
+            if chain.scanning {
                 ui.weak(t!("mixer.vst3_scanning"));
-            } else if vst3.installed.is_empty() {
+            } else if chain.installed.is_empty() {
                 ui.weak(t!("mixer.vst3_none"));
             }
             menu_list::menu_list(ui, |ui, type_ahead| {
-                for (vendor, plugins) in vst3_menu(vst3.installed) {
+                for (vendor, plugins) in vst3_menu(chain.installed) {
                     let vendor = if vendor.is_empty() { "-" } else { &vendor };
                     let response = ui.menu_button(vendor, |ui| {
                         menu_list::menu_list(ui, |ui, type_ahead| {
@@ -809,7 +809,8 @@ fn effects(
                 }
             });
             ui.separator();
-            let rescan = ui.add_enabled(!vst3.scanning, egui::Button::new(t!("mixer.vst3_rescan")));
+            let rescan =
+                ui.add_enabled(!chain.scanning, egui::Button::new(t!("mixer.vst3_rescan")));
             if rescan.clicked() {
                 edit.rescan = true;
             }

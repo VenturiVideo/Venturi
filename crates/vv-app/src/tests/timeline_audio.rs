@@ -603,6 +603,11 @@ fn a_failure_marks_the_audio_clips_of_its_stream_and_of_its_measure() {
         clip.audio_stream_index = stream;
         clip
     };
+    let mut disabled = clip(5, 1);
+    disabled.disabled = true;
+    let mut stretched = clip(6, 1);
+    stretched.pitch_correction = true;
+    stretched.set_speed(vv_core::Rational::new(2, 1), vv_core::Rational::one());
     let track = |kind, clips| {
         let mut track = vv_core::Track::new(kind);
         track.clips = clips;
@@ -619,6 +624,7 @@ fn a_failure_marks_the_audio_clips_of_its_stream_and_of_its_measure() {
     let shown = project.timelines.insert(timeline(vec![
         track(TrackKind::Video, vec![clip(1, 1)]),
         track(TrackKind::Audio, vec![clip(2, 0), clip(3, 1)]),
+        track(TrackKind::Audio, vec![disabled, stretched]),
     ]));
     let other = project.timelines.insert(timeline(Vec::new()));
     let level = |timeline, clip| LevelFailure {
@@ -644,6 +650,6 @@ fn a_failure_marks_the_audio_clips_of_its_stream_and_of_its_measure() {
     ]);
     assert_eq!(
         failures, expected,
-        "the video clip plays no audio; the decode error wins over the level"
+        "the video, disabled and pitch-corrected clips read no stream; the decode error wins over the level"
     );
 }

@@ -2861,10 +2861,6 @@ pub fn show_timeline(
                         id,
                         sense,
                     );
-                    let resp = match &visual.warning {
-                        Some(warning) => resp.on_hover_text(warning),
-                        None => resp,
-                    };
 
                     let is_selected = state
                         .selected
@@ -3084,7 +3080,13 @@ pub fn show_timeline(
                     } else {
                         0.0
                     };
-                    paint_clip_overlay(&painter, clip_rect, visual, is_proxy_backed, top_inset);
+                    let badge =
+                        paint_clip_overlay(&painter, clip_rect, visual, is_proxy_backed, top_inset);
+                    if let (Some(badge), Some(warning)) = (badge, &visual.warning)
+                        && resp.hover_pos().is_some_and(|pos| badge.contains(pos))
+                    {
+                        resp.clone().on_hover_text(warning);
+                    }
                     if retime_bar_shown {
                         let group: Vec<ClipKey> = expand_to_linked_groups(
                             &visuals,
@@ -4068,14 +4070,14 @@ fn paint_clip_label(
 }
 
 /// Label, "disabled" and warning badges, link icon and veil of the locked
-/// tracks, on top of the waveform.
+/// tracks, on top of the waveform. Returns the warning badge's rect.
 fn paint_clip_overlay(
     painter: &egui::Painter,
     clip_rect: egui::Rect,
     visual: &ClipVisual,
     is_proxy_backed: bool,
     top_inset: f32,
-) {
+) -> Option<egui::Rect> {
     let veil_rect = clip_rect;
     let clip_rect = clip_rect.with_min_y(clip_rect.top() + top_inset);
     let label_offset_y = if is_proxy_backed {
@@ -4089,10 +4091,11 @@ fn paint_clip_overlay(
         paint_disabled_badge(painter, label_pos);
         label_pos.x += DISABLED_BADGE_SIZE + 4.0;
     }
-    if visual.warning.is_some() {
-        paint_warning_badge(painter, label_pos);
+    let warning_badge = visual.warning.is_some().then(|| {
+        let rect = paint_warning_badge(painter, label_pos);
         label_pos.x += DISABLED_BADGE_SIZE + 4.0;
-    }
+        rect
+    });
     let label_color = if visual.muted {
         egui::Color32::from_gray(185)
     } else {
@@ -4127,6 +4130,7 @@ fn paint_clip_overlay(
             egui::Color32::from_rgba_unmultiplied(70, 70, 70, 140),
         );
     }
+    warning_badge
 }
 
 /// Triangular shadow of the fade (from the corner towards the handle) plus the
@@ -6204,7 +6208,7 @@ fn paint_disabled_badge(painter: &egui::Painter, top_left: egui::Pos2) {
     );
 }
 
-fn paint_warning_badge(painter: &egui::Painter, top_left: egui::Pos2) {
+fn paint_warning_badge(painter: &egui::Painter, top_left: egui::Pos2) -> egui::Rect {
     let rect = egui::Rect::from_min_size(
         top_left + egui::vec2(0.0, 1.0),
         egui::vec2(DISABLED_BADGE_SIZE, DISABLED_BADGE_SIZE),
@@ -6217,6 +6221,7 @@ fn paint_warning_badge(painter: &egui::Painter, top_left: egui::Pos2) {
         egui::FontId::proportional(DISABLED_BADGE_SIZE - 1.0),
         egui::Color32::WHITE,
     );
+    rect
 }
 
 fn audio_failure_text(failure: &ClipAudioFailure) -> String {

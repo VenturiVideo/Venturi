@@ -4556,7 +4556,7 @@ impl VenturiApp {
                     compressor: &mut self.settings.compressor_presets,
                     eq: &mut self.settings.eq_presets,
                 },
-                &mixer_panel::Vst3View {
+                &mixer_panel::ChainView {
                     installed: &installed,
                     scanning: self.plugin_scan_rx.is_some(),
                     known: &|effect| {
