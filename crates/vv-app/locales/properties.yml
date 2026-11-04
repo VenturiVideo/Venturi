@@ -423,11 +423,11 @@ props.volume:
 
 props.fade_in:
   en: "Fade in"
-  it: "Fade in"
+  it: "Dissolvenza in"
 
 props.fade_out:
   en: "Fade out"
-  it: "Fade out"
+  it: "Dissolvenza out"
 
 props.no_audio_clip:
   en: "No audio clip selected."
