@@ -2023,6 +2023,69 @@ fn editing_one_param_on_several_clips_keeps_their_other_values_and_moves_positio
 }
 
 #[test]
+fn a_fade_set_on_several_clips_fits_each_and_undoes_at_once() {
+    let mut app = VenturiApp::default();
+    let long = make_timeline_with_clip(&mut app, 1, 0, 50);
+    let short = make_timeline_with_clip(&mut app, 1, 60, 10);
+    let timeline_id = app.timeline_id.unwrap();
+    let target = |clip_id, timeline_start| PanelTarget {
+        timeline: timeline_id,
+        track_index: 1,
+        clip_id,
+        source_frame: 0,
+        timeline_start,
+        is_solid_color: false,
+        is_text: false,
+    };
+    let targets = [target(long, 0), target(short, 60)];
+    let fades = |app: &VenturiApp| {
+        let clips = &app.session.project.timelines[timeline_id].tracks[1].clips;
+        clips
+            .iter()
+            .map(|c| (c.fade_in, c.fade_out))
+            .collect::<Vec<_>>()
+    };
+
+    let tl = Some(&app.session.project.timelines[timeline_id]);
+    let commands = fade_commands(tl, &targets, vv_core::FadeEdge::In, 25);
+    app.apply_effect_changes(commands, false);
+    let tl = Some(&app.session.project.timelines[timeline_id]);
+    let commands = fade_commands(tl, &targets, vv_core::FadeEdge::Out, 5);
+    app.apply_effect_changes(commands, false);
+    assert_eq!(
+        fades(&app),
+        [(25, 5), (10, 5)],
+        "a fade longer than a clip is shortened to it"
+    );
+
+    let tl = Some(&app.session.project.timelines[timeline_id]);
+    assert!(
+        fade_commands(tl, &targets, vv_core::FadeEdge::Out, 5).is_empty(),
+        "clips that already have the fade get no command"
+    );
+
+    app.session.history.undo(&mut app.session.project);
+    assert_eq!(
+        fades(&app),
+        [(25, 0), (10, 0)],
+        "one undo takes the fade off every clip"
+    );
+
+    for (frames, pointer_down) in [(3, true), (6, true), (8, false)] {
+        let tl = Some(&app.session.project.timelines[timeline_id]);
+        let commands = fade_commands(tl, &targets, vv_core::FadeEdge::Out, frames);
+        app.apply_effect_changes(commands, pointer_down);
+    }
+    assert_eq!(fades(&app), [(25, 8), (10, 8)]);
+    app.session.history.undo(&mut app.session.project);
+    assert_eq!(
+        fades(&app),
+        [(25, 0), (10, 0)],
+        "a drag over several clips is one undo step"
+    );
+}
+
+#[test]
 fn dragging_a_value_is_a_single_undo_step() {
     let mut app = VenturiApp::default();
     let clip_id = make_timeline_with_clip(&mut app, 0, 0, 20);
