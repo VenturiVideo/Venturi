@@ -15,9 +15,7 @@ use vv_audio::mixer::{
     timeline_frame_to_sample,
 };
 use vv_audio::{STRETCH_CHUNK_FRAMES, Stretcher};
-use vv_core::{
-    ClipId, ClipSource, FrameIdx, Keyframed, MixerChannel, Project, TimelineId, TrackKind,
-};
+use vv_core::{ClipId, ClipSource, FrameIdx, Keyframed, MixerChannel, Project, TimelineId};
 
 use crate::mix_buffers::{LevelFailure, MixBufferCache};
 
@@ -776,18 +774,18 @@ fn clip_audio_failures<'a>(
     let Some(timeline) = project.timelines.get(timeline_id) else {
         return failures;
     };
+    let playing = || {
+        timeline
+            .audible_tracks()
+            .flat_map(|(_, t)| &t.clips)
+            .filter(|clip| !clip.disabled)
+    };
     if !decode.is_empty() {
-        let audio_tracks = timeline
-            .tracks
-            .iter()
-            .filter(|t| t.kind == TrackKind::Audio);
         // Only the clips the mixer reads from these streams.
         let reads_stream = |clip: &&vv_core::Clip| {
-            !clip.disabled
-                && clip.freeze.is_none()
-                && !(clip.pitch_correction && !clip.speed().is_one())
+            clip.freeze.is_none() && !(clip.pitch_correction && !clip.speed().is_one())
         };
-        for clip in audio_tracks.flat_map(|t| &t.clips).filter(reads_stream) {
+        for clip in playing().filter(reads_stream) {
             let ClipSource::Media(id) = &clip.source else {
                 continue;
             };
@@ -803,7 +801,13 @@ fn clip_audio_failures<'a>(
         }
     }
     for failure in levels.filter(|f| f.timeline == timeline_id) {
-        if let Some(clip) = failure.measured.clip {
+        // Measures are keyed by content: a failure stored by a clip since
+        // disabled stays alive while an identical clip still asks for it.
+        let clip = failure
+            .measured
+            .clip
+            .filter(|id| playing().any(|clip| clip.id == *id));
+        if let Some(clip) = clip {
             failures
                 .entry(clip)
                 .or_insert_with(|| ClipAudioFailure::Level(failure.error.to_owned()));

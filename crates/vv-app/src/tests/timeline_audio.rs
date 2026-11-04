@@ -1,5 +1,6 @@
 use super::*;
 use vv_audio::mixer::mix_range_without_plugins;
+use vv_core::TrackKind;
 
 const FPS: f64 = 25.0;
 const RATE: f64 = PROJECT_SAMPLE_RATE as f64;
@@ -653,6 +654,8 @@ fn a_failure_marks_the_audio_clips_of_its_stream_and_of_its_measure() {
         track.clips = clips;
         track
     };
+    let mut muted = track(TrackKind::Audio, vec![clip(7, 1)]);
+    muted.muted = true;
     let timeline = |tracks| vv_core::Timeline {
         name: String::new(),
         fps: vv_core::Rational::new(25, 1),
@@ -665,6 +668,7 @@ fn a_failure_marks_the_audio_clips_of_its_stream_and_of_its_measure() {
         track(TrackKind::Video, vec![clip(1, 1)]),
         track(TrackKind::Audio, vec![clip(2, 0), clip(3, 1)]),
         track(TrackKind::Audio, vec![disabled, stretched]),
+        muted,
     ]));
     let other = project.timelines.insert(timeline(Vec::new()));
     let level = |timeline, clip| LevelFailure {
@@ -681,7 +685,13 @@ fn a_failure_marks_the_audio_clips_of_its_stream_and_of_its_measure() {
         &project,
         shown,
         &[(&path, 1, "corrupt packet")],
-        [level(shown, 2), level(shown, 3), level(other, 4)].into_iter(),
+        [
+            level(shown, 2),
+            level(shown, 3),
+            level(other, 4),
+            level(shown, 5),
+        ]
+        .into_iter(),
     );
 
     let expected = HashMap::from([
@@ -690,6 +700,6 @@ fn a_failure_marks_the_audio_clips_of_its_stream_and_of_its_measure() {
     ]);
     assert_eq!(
         failures, expected,
-        "the video, disabled and pitch-corrected clips read no stream; the decode error wins over the level"
+        "the video, disabled, pitch-corrected and muted clips read no stream nor measure; the decode error wins over the level"
     );
 }
