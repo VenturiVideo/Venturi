@@ -2,6 +2,7 @@ use super::*;
 use crate::{channel, run_headless};
 use rmcp::model::{CallToolRequestParams, ClientConfig};
 use rmcp::{ClientHandler, ServiceExt};
+use vv_media::test_support::TempDir;
 use vv_session::Session;
 
 #[derive(Clone, Default)]
@@ -13,11 +14,8 @@ impl ClientHandler for Client {
     }
 }
 
-fn test_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("vv-mcp-socket-{name}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn test_dir(name: &str) -> TempDir {
+    TempDir::new(&format!("vv-mcp-socket-{name}"))
 }
 
 fn wait_for(what: &str, condition: impl Fn() -> bool) {

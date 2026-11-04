@@ -5,7 +5,6 @@ use super::*;
 const DISCORD_INVITE: &str = "https://discord.gg/3v2xjXFnZv";
 
 impl VenturiApp {
-    /// Handles configured keyboard shortcuts using the current UI frame.
     pub(crate) fn handle_shortcuts(&mut self, ui: &mut egui::Ui) {
         // Copy/paste are handled outside `ui.input`: `ctx.copy_text` takes
         // the same lock and would deadlock inside it.
@@ -99,6 +98,15 @@ impl VenturiApp {
             }
             if pressed(Action::MarkOut) {
                 self.mark_at_playhead(false);
+            }
+            if pressed(Action::ClearIn) {
+                self.clear_in_point();
+            }
+            if pressed(Action::ClearOut) {
+                self.clear_out_point();
+            }
+            if pressed(Action::ClearInOut) {
+                self.clear_in_and_out();
             }
             if pressed(Action::FastPlayback) {
                 self.handle_fast_playback_key();
@@ -526,7 +534,10 @@ impl VenturiApp {
                             self.add_marker_at_playhead();
                             ui.close();
                         }
-                        let can_mark = self.mark_target_frames() > 0;
+                        let (can_mark, marks) = self
+                            .mark_target()
+                            .map(|target| (target.total > 0, Some(*target.marks)))
+                            .unwrap_or((false, None));
                         for (action, is_in) in [(Action::MarkIn, true), (Action::MarkOut, false)] {
                             if ui
                                 .add_enabled(
@@ -536,6 +547,32 @@ impl VenturiApp {
                                 .clicked()
                             {
                                 self.mark_at_playhead(is_in);
+                                ui.close();
+                            }
+                        }
+                        let has_in = marks.is_some_and(|m| m.mark_in.is_some());
+                        let has_out = marks.is_some_and(|m| m.mark_out.is_some());
+                        for (action, enabled, clear) in [
+                            (
+                                Action::ClearIn,
+                                has_in,
+                                Self::clear_in_point as fn(&mut Self),
+                            ),
+                            (Action::ClearOut, has_out, Self::clear_out_point),
+                            (
+                                Action::ClearInOut,
+                                has_in || has_out,
+                                Self::clear_in_and_out,
+                            ),
+                        ] {
+                            if ui
+                                .add_enabled(
+                                    enabled,
+                                    egui::Button::new(keymap.menu_label(&action.label(), action)),
+                                )
+                                .clicked()
+                            {
+                                clear(self);
                                 ui.close();
                             }
                         }

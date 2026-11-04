@@ -12,8 +12,7 @@ fn tone(rate: u32) -> Vec<f32> {
 
 #[test]
 fn every_available_format_writes_a_file_that_reads_back_at_its_length() {
-    let dir = std::env::temp_dir().join(format!("vv-audio-file-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-audio-file");
     let available = AudioFileFormat::available();
     assert!(available.contains(&AudioFileFormat::Wav));
     for format in available {
@@ -29,7 +28,6 @@ fn every_available_format_writes_a_file_that_reads_back_at_its_length() {
         let peak = decoded.samples.iter().fold(0f32, |p, s| p.max(s.abs()));
         assert!((0.4..0.6).contains(&peak), "{format:?}: peak {peak}");
     }
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]

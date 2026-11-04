@@ -9,6 +9,9 @@ fn sine(freq: f32, sample_rate: u32, secs: f32) -> Vec<f32> {
 
 #[test]
 fn stretch_at_tempo_2x_roughly_halves_duration() {
+    if skip_without_rubberband() {
+        return;
+    }
     let sample_rate = 48_000;
     let samples = sine(440.0, sample_rate, 2.0); // mono, 2s
     let stretched = stretch_samples(&samples, sample_rate, 1, 2.0).unwrap();
@@ -30,6 +33,9 @@ fn stretch_at_tempo_2x_roughly_halves_duration() {
 
 #[test]
 fn stretch_at_tempo_4x_roughly_quarters_duration() {
+    if skip_without_rubberband() {
+        return;
+    }
     let sample_rate = 48_000;
     let samples = sine(440.0, sample_rate, 2.0);
     let stretched = stretch_samples(&samples, sample_rate, 1, 4.0).unwrap();
@@ -45,6 +51,9 @@ fn stretch_at_tempo_4x_roughly_quarters_duration() {
 /// exercises this path.
 #[test]
 fn stretch_stereo_roughly_halves_duration_and_stays_interleaved() {
+    if skip_without_rubberband() {
+        return;
+    }
     let sample_rate = 44_100;
     let channels = 2u16;
     let samples = sine(440.0, sample_rate, 5.0)
@@ -72,6 +81,9 @@ fn stretch_stereo_roughly_halves_duration_and_stays_interleaved() {
 /// What the offline render feeds it: its chunks, not the whole input.
 #[test]
 fn a_stretch_fed_in_pieces_equals_one_fed_whole() {
+    if skip_without_rubberband() {
+        return;
+    }
     let samples: Vec<f32> = (0..96_000).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
     let whole = stretch_samples(&samples, 48_000, 2, 1.25).unwrap();
     let mut stretcher = Stretcher::new(48_000, 2, 1.25).unwrap();

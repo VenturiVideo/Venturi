@@ -1,4 +1,5 @@
 use super::*;
+use vv_media::test_support::TempDir;
 
 fn touch(path: &Path) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -7,8 +8,7 @@ fn touch(path: &Path) {
 
 #[test]
 fn a_folder_becomes_a_tree_of_its_media_only() {
-    let root = std::env::temp_dir().join("vv-session-media-tree");
-    let _ = std::fs::remove_dir_all(&root);
+    let root = TempDir::new("vv-session-media-tree");
     let shots = root.join("Shots");
     for file in [
         "a.mp4",
@@ -47,8 +47,7 @@ fn a_folder_becomes_a_tree_of_its_media_only() {
 
 #[test]
 fn a_folder_without_media_brings_nothing() {
-    let root = std::env::temp_dir().join("vv-session-media-tree-empty");
-    let _ = std::fs::remove_dir_all(&root);
+    let root = TempDir::new("vv-session-media-tree-empty");
     touch(&root.join("Docs/a.txt"));
     assert_eq!(MediaTree::scan(&[root.join("Docs")]), MediaTree::default());
 }

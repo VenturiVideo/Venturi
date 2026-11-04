@@ -368,14 +368,12 @@ fn decode_streams(
         let mut packet = ffmpeg::Packet::empty();
         match packet.read(&mut ictx) {
             Ok(()) => {
-                let Some((slot, (_, stream))) = decoders
-                    .iter_mut()
-                    .enumerate()
-                    .filter_map(|(slot, d)| Some((slot, d.as_mut()?)))
-                    .find(|(_, (i, _))| *i == packet.stream())
-                else {
+                let Some(slot) = slot_of(&decoders, packet.stream()) else {
                     continue;
                 };
+                let (_, stream) = decoders[slot]
+                    .as_mut()
+                    .expect("slot_of returns a live slot");
                 stream.decoder.send_packet(&packet)?;
                 if stream.drain(slot, &mut samples, &mut on_chunk)?.is_break() {
                     return Ok(formats);
@@ -399,6 +397,13 @@ fn decode_streams(
     Ok(formats)
 }
 
+/// Slot of the open decoder reading `stream_index`, if any.
+fn slot_of(decoders: &[Option<(usize, StreamDecoder)>], stream_index: usize) -> Option<usize> {
+    decoders
+        .iter()
+        .position(|d| d.as_ref().is_some_and(|(i, _)| *i == stream_index))
+}
+
 /// Seeks to `secs` after the first frame, with fresh decoders that place
 /// their frames by timestamp, anchored on the first frames from the start.
 fn seek(
@@ -415,11 +420,10 @@ fn seek(
         if packet.read(ictx).is_err() {
             break;
         }
-        let found = decoders
-            .iter_mut()
-            .zip(&mut firsts)
-            .find(|(d, _)| d.as_ref().is_some_and(|(i, _)| *i == packet.stream()));
-        let Some((Some((_, stream)), frames)) = found else {
+        let Some(slot) = slot_of(decoders, packet.stream()) else {
+            continue;
+        };
+        let (Some((_, stream)), frames) = (&mut decoders[slot], &mut firsts[slot]) else {
             continue;
         };
         if frames.len() < ORIGIN_FRAMES && stream.decoder.send_packet(&packet).is_ok() {

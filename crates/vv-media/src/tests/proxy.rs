@@ -1,8 +1,11 @@
 use super::*;
 
-fn make_test_clip(file_name: &str, size: &str, duration_secs: u32) -> PathBuf {
-    let dir = std::env::temp_dir().join("vv-media-proxy-test");
-    std::fs::create_dir_all(&dir).unwrap();
+fn make_test_clip(
+    file_name: &str,
+    size: &str,
+    duration_secs: u32,
+) -> (crate::test_support::TempDir, std::path::PathBuf) {
+    let dir = crate::test_support::TempDir::new("vv-media-proxy-test");
     let path = dir.join(file_name);
     crate::test_support::ffmpeg(
         &[
@@ -17,7 +20,7 @@ fn make_test_clip(file_name: &str, size: &str, duration_secs: u32) -> PathBuf {
         ],
         &path,
     );
-    path
+    (dir, path)
 }
 
 #[test]
@@ -50,7 +53,7 @@ fn proxy_path_for_is_deterministic_and_keyed_by_content_hash_and_quality() {
 
 #[test]
 fn generate_proxy_produces_a_smaller_all_intra_file_that_decodes_back_correctly() {
-    let path = make_test_clip("source.mp4", "640x360", 2);
+    let (_dir, path) = make_test_clip("source.mp4", "640x360", 2);
     let content_hash = 0xABCDEF;
     // Cleanup from a previous run: `generate_proxy` does not overwrite
     // in place (it writes a temporary and renames), but a final file
@@ -103,7 +106,7 @@ fn generate_proxy_produces_a_smaller_all_intra_file_that_decodes_back_correctly(
 
 #[test]
 fn generate_proxy_downscales_a_wider_source() {
-    let path = make_test_clip("wide_source.mp4", "1920x1080", 1);
+    let (_dir, path) = make_test_clip("wide_source.mp4", "1920x1080", 1);
     let content_hash = 0x123456;
     let _ = std::fs::remove_file(proxy_path_for(content_hash, ProxyQuality::Medium));
 
@@ -123,8 +126,7 @@ fn generate_proxy_downscales_a_wider_source() {
 /// come out swapped or smeared. A red frame tells them apart.
 #[test]
 fn generate_proxy_keeps_the_colors_of_an_nv12_source() {
-    let dir = std::env::temp_dir().join("vv-media-proxy-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::TempDir::new("vv-media-proxy-test");
     let path = dir.join("red_nv12.mkv");
     crate::test_support::ffmpeg(
         &[

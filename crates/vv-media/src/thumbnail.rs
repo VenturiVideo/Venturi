@@ -11,16 +11,22 @@ pub struct Thumbnail {
 }
 
 /// Frame at ~1s (or at the midpoint, for shorter clips): the very first
-/// frame is often black because of a fade-in.
+/// frame is often black because of a fade-in. An image has a single frame:
+/// `duration_secs` is ignored.
 pub fn generate_thumbnail(
     path: &Path,
     duration_secs: f64,
     max_width: u32,
 ) -> Result<Thumbnail, crate::MediaError> {
     crate::probe::ensure_init();
-    let mut decoder = Decoder::open(path)?;
+    let is_image = crate::probe::is_image_path(path);
+    let mut decoder = if is_image {
+        Decoder::open_image(path)?
+    } else {
+        Decoder::open(path)?
+    };
     let target = (duration_secs / 2.0).min(1.0);
-    if target > 0.0 {
+    if !is_image && target > 0.0 {
         decoder.seek_to_time(target)?;
     }
     let (_, frame) = decoder
