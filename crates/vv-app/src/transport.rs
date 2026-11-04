@@ -5,8 +5,8 @@
 
 use vv_core::FrameIdx;
 
-/// In/out markers: `None` = end of the bar, so they follow the duration
-/// when the content changes.
+/// In/out markers: an unset In follows the start of the bar, and an unset Out
+/// follows its end when the content duration changes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MarkRange {
     pub mark_in: Option<FrameIdx>,
@@ -37,6 +37,18 @@ impl MarkRange {
         if self.mark_in.is_some_and(|mark_in| mark_in >= out) {
             self.mark_in = None;
         }
+    }
+
+    pub fn clear_in(&mut self) {
+        self.mark_in = None;
+    }
+
+    pub fn clear_out(&mut self) {
+        self.mark_out = None;
+    }
+
+    pub fn clear_all(&mut self) {
+        *self = Self::default();
     }
 
     pub fn is_full(&self, total: FrameIdx) -> bool {

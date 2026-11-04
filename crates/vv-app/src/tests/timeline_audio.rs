@@ -608,3 +608,88 @@ fn a_window_rendered_in_pieces_equals_the_whole_stretch() {
         .unwrap();
     assert_eq!(pieces, expected);
 }
+
+#[test]
+fn a_failure_marks_the_audio_clips_of_its_stream_and_of_its_measure() {
+    let mut project = Project::default();
+    let path = PathBuf::from("/media/interview.mov");
+    let media = project.media_pool.insert(vv_core::MediaItem {
+        path: path.clone(),
+        meta: vv_core::MediaMeta {
+            duration_frames: 250,
+            fps: vv_core::Rational::new(25, 1),
+            width: 0,
+            height: 0,
+            has_video: true,
+            has_audio: true,
+            sample_rate: 48_000,
+            channels: 1,
+            audio_streams: 2,
+            file: Default::default(),
+        },
+        content_hash: 1,
+        compound: None,
+        folder: None,
+    });
+    let clip = |id, stream| {
+        let mut clip = vv_core::Clip::from_source_range(
+            ClipId(id),
+            ClipSource::Media(media),
+            0,
+            250,
+            0,
+            vv_core::Rational::one(),
+        );
+        clip.audio_stream_index = stream;
+        clip
+    };
+    let mut disabled = clip(5, 1);
+    disabled.disabled = true;
+    let mut stretched = clip(6, 1);
+    stretched.pitch_correction = true;
+    stretched.set_speed(vv_core::Rational::new(2, 1), vv_core::Rational::one());
+    let track = |kind, clips| {
+        let mut track = vv_core::Track::new(kind);
+        track.clips = clips;
+        track
+    };
+    let timeline = |tracks| vv_core::Timeline {
+        name: String::new(),
+        fps: vv_core::Rational::new(25, 1),
+        resolution: (1, 1),
+        tracks,
+        markers: Vec::new(),
+        master: Default::default(),
+    };
+    let shown = project.timelines.insert(timeline(vec![
+        track(TrackKind::Video, vec![clip(1, 1)]),
+        track(TrackKind::Audio, vec![clip(2, 0), clip(3, 1)]),
+        track(TrackKind::Audio, vec![disabled, stretched]),
+    ]));
+    let other = project.timelines.insert(timeline(Vec::new()));
+    let level = |timeline, clip| LevelFailure {
+        timeline,
+        measured: vv_audio::Measured {
+            channel: MixerChannel::Track(1),
+            insert: 0,
+            clip: Some(ClipId(clip)),
+        },
+        error: "too quiet",
+    };
+
+    let failures = clip_audio_failures(
+        &project,
+        shown,
+        &[(&path, 1, "corrupt packet")],
+        [level(shown, 2), level(shown, 3), level(other, 4)].into_iter(),
+    );
+
+    let expected = HashMap::from([
+        (ClipId(2), ClipAudioFailure::Level("too quiet".into())),
+        (ClipId(3), ClipAudioFailure::Decode("corrupt packet".into())),
+    ]);
+    assert_eq!(
+        failures, expected,
+        "the video, disabled and pitch-corrected clips read no stream; the decode error wins over the level"
+    );
+}
