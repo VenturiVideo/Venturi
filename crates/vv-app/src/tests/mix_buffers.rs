@@ -1065,7 +1065,7 @@ fn level_failed() -> LevelOutcome {
 
 #[test]
 fn a_decode_failure_is_reported_until_a_retry_decodes_the_file() {
-    let good = sine_wav("reported.wav", 1);
+    let (_dir_good, good) = sine_wav("reported.wav", 1);
     let path = good.with_file_name("reported-then-present.wav");
     let _ = std::fs::remove_file(&path);
     let mut cache = missing_in_timeline(&path);
@@ -1094,7 +1094,7 @@ fn a_decode_failure_is_reported_until_a_retry_decodes_the_file() {
 
 #[test]
 fn a_stream_the_file_lacks_is_reported_without_a_decoder_error() {
-    let path = sine_wav("one-stream.wav", 1);
+    let (_dir_path, path) = sine_wav("one-stream.wav", 1);
     let mut cache = MixBufferCache::spawn(48_000, 1);
     cache.begin_pass();
     cache.file_frames(&path, 3, 0..SEC, 0);
