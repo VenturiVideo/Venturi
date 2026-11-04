@@ -286,6 +286,7 @@ fn visual(track_index: usize, id: u64, start: FrameIdx, len: FrameIdx) -> ClipVi
         color: egui::Color32::WHITE,
         locked: false,
         muted: false,
+        warning: None,
     }
 }
 
@@ -1020,6 +1021,7 @@ fn media_clip_visual(
         color: egui::Color32::WHITE,
         locked: false,
         muted: false,
+        warning: None,
     }
 }
 
@@ -1633,6 +1635,7 @@ fn show_timeline_renders_without_panicking_with_real_clips() {
                 &mut history,
                 timeline_id,
                 &|_id| "media".to_string(),
+                &std::collections::HashMap::new(),
                 &mut state,
                 true,
                 true,
@@ -1682,6 +1685,7 @@ fn show_timeline_renders_without_panicking_with_more_than_two_tracks() {
                 &mut history,
                 timeline_id,
                 &|_id| "media".to_string(),
+                &std::collections::HashMap::new(),
                 &mut state,
                 true,
                 true,
@@ -1763,6 +1767,7 @@ fn zoom_keeps_playhead_at_same_screen_position() {
                     &mut history,
                     timeline_id,
                     &|_id| "media".to_string(),
+                    &std::collections::HashMap::new(),
                     state,
                     true,
                     true,
@@ -1882,6 +1887,7 @@ fn show_timeline_panel_does_not_shrink_to_short_content() {
                         &mut history,
                         timeline_id,
                         &|_id| "media".to_string(),
+                        &std::collections::HashMap::new(),
                         &mut state,
                         true,
                         true,
@@ -1900,4 +1906,75 @@ fn show_timeline_panel_does_not_shrink_to_short_content() {
         last_height > 200.0,
         "the panel shrank to its content ({last_height}px) instead of staying near the requested 240px"
     );
+}
+
+fn shapes_filled_with(shapes: &[egui::epaint::ClippedShape], color: egui::Color32) -> usize {
+    fn count(shape: &egui::Shape, color: egui::Color32) -> usize {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().map(|s| count(s, color)).sum(),
+            egui::Shape::Rect(rect) => usize::from(rect.fill == color),
+            _ => 0,
+        }
+    }
+    shapes.iter().map(|s| count(&s.shape, color)).sum()
+}
+
+#[test]
+fn a_clip_whose_audio_failed_shows_a_warning_badge() {
+    let mut project = Project::default();
+    let timeline_id = project.timelines.insert(vv_core::Timeline {
+        name: "T".into(),
+        fps: vv_core::Rational::new(25, 1),
+        resolution: (1920, 1080),
+        tracks: vec![vv_core::Track::new(TrackKind::Audio)],
+        markers: Vec::new(),
+        master: Default::default(),
+    });
+    let mut history = History::default();
+    let clip_id = project.alloc_clip_id();
+    history.do_command(
+        &mut project,
+        Box::new(vv_core::InsertClip {
+            timeline: timeline_id,
+            track_index: 0,
+            clip: Clip::from_source_range(
+                clip_id,
+                vv_core::ClipSource::SolidColor,
+                0,
+                50,
+                0,
+                vv_core::Rational::one(),
+            ),
+        }),
+    );
+    let mut badges = |failures: &std::collections::HashMap<ClipId, ClipAudioFailure>| {
+        let mut state = TimelineState::default();
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                show_timeline(
+                    ui,
+                    &mut project,
+                    &mut history,
+                    timeline_id,
+                    &|_id| "media".to_string(),
+                    failures,
+                    &mut state,
+                    true,
+                    true,
+                    &[],
+                    &[],
+                    &[],
+                    &std::collections::HashMap::new(),
+                    false,
+                );
+            });
+        });
+        output.textures_delta.clear();
+        shapes_filled_with(&output.shapes, crate::theme::ERROR)
+    };
+
+    let failed =
+        std::collections::HashMap::from([(clip_id, ClipAudioFailure::Decode("corrupt".into()))]);
+    assert_eq!(badges(&failed) - badges(&Default::default()), 1);
 }
