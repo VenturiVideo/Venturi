@@ -195,6 +195,8 @@ struct SharedState {
     /// every cycle, there is no transition to react to.
     lookahead_secs: AtomicU64,
     behind_secs: AtomicU64,
+    /// See `RenderAhead::set_viewer_scale`: bits of an `f64`.
+    viewer_scale: AtomicU64,
 }
 
 /// See the module docs. One per `VenturiApp`.
@@ -222,6 +224,7 @@ impl RenderAhead {
             caught_up: AtomicBool::new(false),
             lookahead_secs: AtomicU64::new(lookahead_secs.max(0.0).to_bits()),
             behind_secs: AtomicU64::new(behind_secs.max(0.0).to_bits()),
+            viewer_scale: AtomicU64::new(1f64.to_bits()),
         });
         let (tx, rx) = mpsc::channel();
         let thread_shared = shared.clone();
@@ -346,6 +349,14 @@ impl RenderAhead {
     pub fn set_preview_divisor(&self, divisor: u32) {
         self.shared.caught_up.store(false, Ordering::Relaxed);
         let _ = self.tx.send(Command::SetPreviewDivisor(divisor));
+    }
+
+    /// Screen pixels per timeline pixel in the viewer: above 1 the media
+    /// decode larger than they show on the timeline, to keep the detail.
+    pub fn set_viewer_scale(&self, scale: f64) {
+        if store_secs(&self.shared.viewer_scale, scale) {
+            self.shared.caught_up.store(false, Ordering::Relaxed);
+        }
     }
 
     /// The decoded frame for `(media_id, source_frame)`, if already
@@ -521,7 +532,10 @@ fn worker_loop(
     // Previous cycle interrupted by a playhead jump: it restarts
     // immediately instead of waiting for `POLL_INTERVAL`.
     let mut retry_immediately = false;
-    let mut preview_divisor = 1;
+    let mut sizes = DecodeSizes {
+        divisor: 1,
+        shown: shown_sizes(&project, timeline_id, 1.0),
+    };
     let pacing = RefCell::new(Pacing::default());
     loop {
         let first = if retry_immediately {
@@ -564,8 +578,8 @@ fn worker_loop(
                     open_keys.clear();
                 }
                 Command::SetPreviewDivisor(divisor) => {
-                    if divisor != preview_divisor {
-                        preview_divisor = divisor;
+                    if divisor != sizes.divisor {
+                        sizes.divisor = divisor;
                         shared.caches.clear();
                         open.clear();
                         open_behind.clear();
@@ -579,6 +593,23 @@ fn worker_loop(
                 }
                 Command::Wake => {}
             }
+        }
+
+        let shown = shown_sizes(&project, timeline_id, load_secs(&shared.viewer_scale));
+        if shown != sizes.shown {
+            for (media_id, _) in &project.media_pool {
+                if shown.get(&media_id) != sizes.shown.get(&media_id) {
+                    // The decoding cost was learned at the other size.
+                    let mut pacing = pacing.borrow_mut();
+                    pacing.fell_behind.retain(|(m, _)| *m != media_id);
+                    pacing.throughput.retain(|(m, _), _| *m != media_id);
+                    shared.caches.remove_media(media_id);
+                    open.remove(&media_id);
+                    open_behind.remove(&media_id);
+                    open_keys.remove(&media_id);
+                }
+            }
+            sizes.shown = shown;
         }
 
         let from = shared.target.frame();
@@ -595,7 +626,7 @@ fn worker_loop(
             shared.cache_budget_bytes.load(Ordering::Relaxed),
             went_backward,
             proxy,
-            preview_divisor,
+            &sizes,
             load_secs(&shared.lookahead_secs),
             load_secs(&shared.behind_secs),
             &shared.target,
@@ -1181,6 +1212,10 @@ fn walk_and_fill(
     behind_secs: f64,
     target: &LiveTarget,
 ) -> WalkOutcome {
+    let sizes = DecodeSizes {
+        divisor: preview_divisor,
+        shown: shown_sizes(project, timeline_id, 1.0),
+    };
     walk_and_fill_paced(
         project,
         timeline_id,
@@ -1192,7 +1227,7 @@ fn walk_and_fill(
         cache_budget_bytes,
         went_backward,
         proxy,
-        preview_divisor,
+        &sizes,
         lookahead_secs,
         behind_secs,
         target,
@@ -1211,7 +1246,7 @@ fn walk_and_fill_paced(
     cache_budget_bytes: usize,
     went_backward: bool,
     proxy: Option<ProxyQuality>,
-    preview_divisor: u32,
+    sizes: &DecodeSizes,
     lookahead_secs: f64,
     behind_secs: f64,
     target: &LiveTarget,
@@ -1374,7 +1409,7 @@ fn walk_and_fill_paced(
         cache_budget_bytes,
         from_frame,
         proxy,
-        preview_divisor,
+        sizes,
         target,
         jumps,
         window: &forward_segments,
@@ -1605,6 +1640,112 @@ fn decode_path(
     }
 }
 
+/// The size each media decodes at: its `shown_sizes` entry, divided by the
+/// preview resolution.
+struct DecodeSizes {
+    divisor: u32,
+    shown: HashMap<MediaId, (u32, u32)>,
+}
+
+impl DecodeSizes {
+    fn max_size(&self, media_id: MediaId, item: &vv_core::MediaItem) -> Option<(u32, u32)> {
+        let native = (item.meta.width, item.meta.height);
+        let (w, h) = self.shown.get(&media_id).copied().unwrap_or(native);
+        ((w, h) != native || self.divisor > 1).then(|| {
+            (
+                (w / self.divisor.max(1)).max(1),
+                (h / self.divisor.max(1)).max(1),
+            )
+        })
+    }
+}
+
+/// The largest size each video of `timeline_id` shows at: fitted into the
+/// timeline, times the largest zoom of its clips and `viewer_scale` (at
+/// least 1), in steps of √2 so that small changes keep the cache, never
+/// above its own size. Inside a compound clip, at the resolution of its
+/// timeline: that is what it is composed at.
+pub fn shown_sizes(
+    project: &Project,
+    timeline_id: TimelineId,
+    viewer_scale: f64,
+) -> HashMap<MediaId, (u32, u32)> {
+    let mut sizes = HashMap::new();
+    let mut walked = HashSet::new();
+    shown_sizes_within(
+        project,
+        timeline_id,
+        viewer_scale.max(1.0),
+        0,
+        &mut walked,
+        &mut sizes,
+    );
+    sizes
+}
+
+fn shown_sizes_within(
+    project: &Project,
+    timeline_id: TimelineId,
+    scale: f64,
+    depth: u32,
+    walked: &mut HashSet<TimelineId>,
+    sizes: &mut HashMap<MediaId, (u32, u32)>,
+) {
+    let Some(timeline) = project.timelines.get(timeline_id) else {
+        return;
+    };
+    if depth >= vv_core::MAX_COMPOUND_DEPTH {
+        return;
+    }
+    let (tw, th) = (
+        timeline.resolution.0.max(1) as f64,
+        timeline.resolution.1.max(1) as f64,
+    );
+    for (_, clip) in timeline.visible_video_clips() {
+        let ClipSource::Media(media_id) = clip.source else {
+            continue;
+        };
+        let Some(item) = project.media_pool.get(media_id) else {
+            continue;
+        };
+        if let Some(nested) = item.compound {
+            if depth + 1 < vv_core::MAX_COMPOUND_DEPTH && walked.insert(nested) {
+                shown_sizes_within(project, nested, 1.0, depth + 1, walked, sizes);
+            }
+            continue;
+        }
+        if !item.meta.has_video || item.meta.is_image() {
+            continue;
+        }
+        let (sw, sh) = (item.meta.width.max(1), item.meta.height.max(1));
+        let fit = (tw / sw as f64).min(th / sh as f64);
+        let factor = fit * max_zoom(&clip.effects.transform) * scale;
+        let stepped = 2f64.powf((factor.log2() * 2.0).ceil() / 2.0);
+        let size = if stepped >= 1.0 {
+            (sw, sh)
+        } else {
+            (
+                ((sw as f64 * stepped).ceil() as u32).max(1),
+                ((sh as f64 * stepped).ceil() as u32).max(1),
+            )
+        };
+        let entry = sizes.entry(media_id).or_insert(size);
+        *entry = (entry.0.max(size.0), entry.1.max(size.1));
+    }
+}
+
+fn max_zoom(transform: &vv_core::TransformTracks) -> f64 {
+    [
+        vv_core::TransformParam::ZoomX,
+        vv_core::TransformParam::ZoomY,
+    ]
+    .into_iter()
+    .map(|p| transform.track(p))
+    .flat_map(|k| std::iter::once(k.default).chain(k.keyframes().iter().map(|(_, v, _)| *v)))
+    .map(|z| f64::from(z.abs()))
+    .fold(f64::MIN_POSITIVE, f64::max)
+}
+
 /// While paused, puts the keyframe a seek landed on in the cache when decoding
 /// the `transit` frames from it to the one wanted is predicted to take longer
 /// than `KEYFRAME_FIRST_AFTER_SECS`: the viewer shows it meanwhile.
@@ -1651,12 +1792,7 @@ fn fill_keyframes(
             continue;
         };
         let (path, is_proxy) = decode_path(item, ctx.proxy);
-        let max_size = (ctx.preview_divisor > 1).then(|| {
-            (
-                (item.meta.width / ctx.preview_divisor).max(1),
-                (item.meta.height / ctx.preview_divisor).max(1),
-            )
-        });
+        let max_size = ctx.sizes.max_size(media_id, item);
         let mut t = segment.source_start;
         loop {
             let (span, next) = {
@@ -1744,8 +1880,7 @@ struct FillContext<'a> {
     /// from the last `Command::SetProxy` — see `fill_segments`
     /// where it decides whether to resolve the source path or the proxy one.
     proxy: Option<ProxyQuality>,
-    /// See `RenderAhead::set_preview_divisor`.
-    preview_divisor: u32,
+    sizes: &'a DecodeSizes,
     target: &'a LiveTarget,
     /// `target.jumps()` when the cycle started.
     jumps: u64,
@@ -1788,12 +1923,7 @@ fn fill_segments(
         // Without room for even one frame it does not start: it would pay the
         // transit for a frame then rejected, cycle after cycle. The transit never
         // counts against the budget of the wanted stretch.
-        let max_size = (ctx.preview_divisor > 1).then(|| {
-            (
-                (item.meta.width / ctx.preview_divisor).max(1),
-                (item.meta.height / ctx.preview_divisor).max(1),
-            )
-        });
+        let max_size = ctx.sizes.max_size(segment.media_id, item);
         let (frame_w, frame_h) = max_size.unwrap_or((item.meta.width, item.meta.height));
         let estimated_frame_bytes = vv_media::yuv420_frame_bytes(frame_w, frame_h);
         if ctx.caches.bytes_used() + estimated_frame_bytes > ctx.cache_budget_bytes {
