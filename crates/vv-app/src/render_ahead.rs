@@ -448,12 +448,21 @@ impl OpenDecoder {
         }
     }
 
-    /// The GOP as far as seeks have shown it, `None` before any.
+    /// The GOP as far as decoding or seeks have shown it, `None` before any.
     fn known_gop(&self) -> Option<FrameIdx> {
-        match (self.estimated_gop, self.min_gop) {
+        match (self.gop(), self.min_gop) {
             (None, 0) => None,
             (gop, min) => Some(gop.unwrap_or(0).max(min)),
         }
+    }
+
+    /// The keyframes read in sequence first: seeks happen at cuts, far apart,
+    /// and the distance between their landings stays a multiple of the GOP.
+    fn gop(&self) -> Option<FrameIdx> {
+        self.decoder
+            .observed_gop()
+            .map(|g| g.min(MAX_SEEK_THRESHOLD_FRAMES))
+            .or(self.estimated_gop)
     }
 
     /// About one observed GOP, a fallback while there is none; fixed on the proxies.
@@ -463,7 +472,7 @@ impl OpenDecoder {
         }
         // Below `min_gop` an interrupted transit would seek again, landing on
         // the same keyframe and starting over: at 2x on a long GOP, forever.
-        self.estimated_gop
+        self.gop()
             .unwrap_or(DEFAULT_SEEK_THRESHOLD_FRAMES)
             .max(self.min_gop)
     }
@@ -1975,12 +1984,12 @@ fn fill_segments(
             {
                 if debug_enabled() {
                     eprintln!(
-                        "[render_ahead] INTERROTTO media={:?} segment=[{},{}] live={live} from_frame={} threshold={threshold_frames} estimated_gop={:?} last_keyframe_landed={:?}",
+                        "[render_ahead] INTERROTTO media={:?} segment=[{},{}] live={live} from_frame={} threshold={threshold_frames} gop={:?} last_keyframe_landed={:?}",
                         segment.media_id,
                         segment.source_start,
                         segment.source_end,
                         ctx.from_frame,
-                        open.get(&segment.media_id).unwrap().estimated_gop,
+                        open.get(&segment.media_id).unwrap().gop(),
                         open.get(&segment.media_id).unwrap().last_keyframe_landed,
                     );
                 }
