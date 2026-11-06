@@ -2031,6 +2031,25 @@ fn forgetting_a_part_drops_its_bytes_and_its_place_in_the_queue() {
 }
 
 #[test]
+fn stale_queue_entries_are_compacted() {
+    let peak = || CachedParts {
+        parts: LevelParts::Peak(0.5),
+        sources: None,
+    };
+    let mut state = LevelsState::default();
+    for key in 0..1000 {
+        remember(&mut state, usize::MAX, key, peak(), true);
+        forget(&mut state, key);
+    }
+    assert!(state.queued.is_empty());
+    assert!(
+        state.droppable.len() <= 65,
+        "{} skipped entries kept",
+        state.droppable.len()
+    );
+}
+
+#[test]
 fn a_key_written_after_a_failed_write_joins_the_queue() {
     // A nested measure can `put` the same key twice: its first write may have
     // failed and the second succeeded, and the key must become droppable then.
