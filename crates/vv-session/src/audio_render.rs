@@ -8,7 +8,7 @@ use std::io::{Read, Write};
 use std::ops::{ControlFlow, Range};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
 use vv_audio::loudness::{LOOKAHEAD_FRAMES, LevelMeter, LevelParts};
@@ -44,6 +44,8 @@ const MAX_ON_DISK_BYTES: u64 = 256 << 20;
 const MAX_IN_MEMORY_BYTES: usize = 64 << 20;
 /// A `.tmp` older than this is a write a crash cut short.
 const MAX_TMP_AGE_SECS: u64 = 60 * 60;
+/// Names each write's temp file, so two writes of one key never share it.
+static WRITE: AtomicU64 = AtomicU64::new(0);
 
 /// Hands `sink` the mix of the timeline audio frames `range`, in order, at
 /// `PROJECT_SAMPLE_RATE`/`PROJECT_CHANNELS`; `Break` stops the render.
@@ -64,20 +66,9 @@ pub fn measure_level(
     analysis: &LevelAnalysis,
     levels: &mut LevelCache,
 ) -> Result<f32, ExportError> {
-    let (mine, theirs) = levels.claim(&analysis.segments);
-    // Waiting while a measure this one is nested in holds claims can wait on
-    // itself, or on a thread waiting on it: render the others' segments too.
-    let (to_measure, to_wait) = if levels.holding {
-        let mut all = mine.clone();
-        all.extend(theirs.iter().copied());
-        all.sort_by_key(|segment| segment.frames.start);
-        (all, Vec::new())
-    } else {
-        (mine.clone(), theirs)
-    };
+    let (mine, to_measure, to_wait) = claim_for_measure(levels, &analysis.segments);
     let runs = runs(&to_measure, levels.threads);
     measure_claimed(analysis, levels, &mine, runs)?;
-    let to_wait: Vec<u64> = to_wait.iter().map(|segment| segment.key).collect();
     levels.wait_for(&to_wait);
     let parts = match collect_parts(analysis, levels) {
         Some(parts) => parts,
@@ -85,6 +76,25 @@ pub fn measure_level(
         None => measure_missing(analysis, levels)?,
     };
     Ok(LevelParts::merge(&parts))
+}
+
+/// The segments to render, the ones this call claims, and the keys another
+/// measure owns. Nested in a measure that holds those claims, they are
+/// rendered here too: waiting would wait on the nest, or on itself.
+fn claim_for_measure<'s>(
+    levels: &mut LevelCache,
+    segments: &'s [LevelSegment],
+) -> (Vec<&'s LevelSegment>, Vec<&'s LevelSegment>, Vec<u64>) {
+    let (mine, theirs) = levels.claim(segments);
+    if levels.holding {
+        let mut all = mine.clone();
+        all.extend(theirs.iter().copied());
+        all.sort_by_key(|segment| segment.frames.start);
+        (mine, all, Vec::new())
+    } else {
+        let to_wait = theirs.iter().map(|segment| segment.key).collect();
+        (mine.clone(), mine, to_wait)
+    }
 }
 
 /// Every measured part of `analysis`, in segment order.
@@ -130,15 +140,10 @@ fn measure_missing(
         .filter(|segment| levels.get(segment.key).is_none())
         .cloned()
         .collect();
-    let (missing, theirs) = levels.claim(&gone);
-    let runs = runs(&missing, levels.threads);
+    let (missing, to_measure, to_wait) = claim_for_measure(levels, &gone);
+    let runs = runs(&to_measure, levels.threads);
     measure_claimed(analysis, levels, &missing, runs)?;
-    // Another measure may be rendering `theirs`; nested in one that holds
-    // their claim, waiting would wait on itself.
-    if !levels.holding {
-        let keys: Vec<u64> = theirs.iter().map(|segment| segment.key).collect();
-        levels.wait_for(&keys);
-    }
+    levels.wait_for(&to_wait);
     collect_parts(analysis, levels)
         .ok_or_else(|| ExportError::Failed("a segment was not measured".into()))
 }
@@ -715,8 +720,13 @@ impl LevelCache {
         // Written before it is remembered: only a file makes a part droppable.
         let on_disk = match (self.path(key), sources.filter(|_| !degraded)) {
             (Some(path), Some(sources)) => {
-                // Per process: the preview and an export may write it at once.
-                let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+                // Unique per write: the preview and an export may write the
+                // same key at once.
+                let tmp = path.with_extension(format!(
+                    "{}.{}.tmp",
+                    std::process::id(),
+                    WRITE.fetch_add(1, Ordering::Relaxed)
+                ));
                 std::fs::create_dir_all(path.parent().unwrap_or(&path))
                     .and_then(|()| {
                         std::fs::File::create(&tmp)?.write_all(&encode_parts(sources, part))?;
@@ -725,6 +735,7 @@ impl LevelCache {
                     .map(|()| true)
                     .unwrap_or_else(|e| {
                         // Best effort: without it the level is measured again.
+                        let _ = std::fs::remove_file(&tmp);
                         eprintln!("[levels] {}: {e}", path.display());
                         false
                     })
@@ -797,6 +808,14 @@ fn forget(state: &mut LevelsState, key: u64) {
         state.bytes -= cached_bytes(&old);
     }
     state.queued.remove(&key);
+    // Skipped entries cost nothing to read but would pile up under frequent
+    // invalidation: compact once they outnumber the live ones.
+    if state.droppable.len() > 2 * state.queued.len() + 64 {
+        let queued = &state.queued;
+        state
+            .droppable
+            .retain(|(key, generation)| queued.get(key) == Some(generation));
+    }
 }
 
 /// Drops the oldest parts that are also on disk, until `state` holds
