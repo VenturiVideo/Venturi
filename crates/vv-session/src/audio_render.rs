@@ -38,13 +38,11 @@ const READER_QUEUE: usize = 64;
 /// Rendered before every segment of a measure: the loudness filters settle
 /// in it, the true peak interpolates from it.
 const WARM_UP_FRAMES: u64 = PROJECT_SAMPLE_RATE as u64 / 4;
-/// Levels kept in `$XDG_CACHE_HOME/venturi/levels` at most, oldest first: the
-/// energies of a segment of a long timeline weigh hundreds of KB each.
+/// Levels kept in `$XDG_CACHE_HOME/venturi/levels` at most, oldest first.
 const MAX_ON_DISK_BYTES: u64 = 256 << 20;
 /// The same for the session.
 const MAX_IN_MEMORY_BYTES: usize = 64 << 20;
-/// A `.tmp` file older than this is a write a crash cut short: a write that is
-/// still running is seconds old, and the prune runs once per process.
+/// A `.tmp` older than this is a write a crash cut short.
 const MAX_TMP_AGE_SECS: u64 = 60 * 60;
 
 /// Hands `sink` the mix of the timeline audio frames `range`, in order, at
@@ -78,25 +76,12 @@ pub fn measure_level(
         (mine.clone(), theirs)
     };
     let runs = runs(&to_measure, levels.threads);
-    let holding = std::mem::replace(&mut levels.holding, true);
-    let measured = if levels.threads <= 1 || runs.len() <= 1 {
-        runs.iter()
-            .try_for_each(|run| measure_run(analysis, run, levels))
-    } else {
-        measure_in_parallel(analysis, runs, levels)
-    };
-    levels.holding = holding;
-    if measured.is_err() {
-        levels.release(&mine);
-    }
-    measured?;
+    measure_claimed(analysis, levels, &mine, runs)?;
     let to_wait: Vec<u64> = to_wait.iter().map(|segment| segment.key).collect();
     levels.wait_for(&to_wait);
     let parts = match collect_parts(analysis, levels) {
         Some(parts) => parts,
-        // A part evicted from memory whose file another process' start-up prune
-        // took is gone, and the measure that produced it is over: render the
-        // ones that are missing once more rather than fail the export.
+        // A part whose file another process' prune took is measured again.
         None => measure_missing(analysis, levels)?,
     };
     Ok(LevelParts::merge(&parts))
@@ -111,27 +96,49 @@ fn collect_parts(analysis: &LevelAnalysis, levels: &mut LevelCache) -> Option<Ve
         .collect()
 }
 
-/// Measures the segments of `analysis` that are no longer in the cache, then
-/// collects all of them: the fallback for a part whose file vanished after the
-/// claim, between the measure and the read back.
+/// Measures `runs`, releasing `claimed` if that fails so no thread is left
+/// waiting on a claim that will never be served.
+fn measure_claimed(
+    analysis: &LevelAnalysis,
+    levels: &mut LevelCache,
+    claimed: &[&LevelSegment],
+    runs: Vec<Vec<&LevelSegment>>,
+) -> Result<(), ExportError> {
+    let holding = std::mem::replace(&mut levels.holding, true);
+    let measured = if levels.threads <= 1 || runs.len() <= 1 {
+        runs.iter()
+            .try_for_each(|run| measure_run(analysis, run, levels))
+    } else {
+        measure_in_parallel(analysis, runs, levels)
+    };
+    levels.holding = holding;
+    if measured.is_err() {
+        levels.release(claimed);
+    }
+    measured
+}
+
+/// Measures the segments of `analysis` the cache no longer has, then collects
+/// all of them: the fallback for a file that vanished before the read back.
 fn measure_missing(
     analysis: &LevelAnalysis,
     levels: &mut LevelCache,
 ) -> Result<Vec<LevelParts>, ExportError> {
-    let missing: Vec<LevelSegment> = analysis
+    let gone: Vec<LevelSegment> = analysis
         .segments
         .iter()
         .filter(|segment| levels.get(segment.key).is_none())
         .cloned()
         .collect();
-    let (missing, _) = levels.claim(&missing);
+    let (missing, theirs) = levels.claim(&gone);
     let runs = runs(&missing, levels.threads);
-    let holding = std::mem::replace(&mut levels.holding, true);
-    let measured = runs
-        .iter()
-        .try_for_each(|run| measure_run(analysis, run, levels));
-    levels.holding = holding;
-    measured?;
+    measure_claimed(analysis, levels, &missing, runs)?;
+    // Another measure may be rendering `theirs`; nested in one that holds
+    // their claim, waiting would wait on itself.
+    if !levels.holding {
+        let keys: Vec<u64> = theirs.iter().map(|segment| segment.key).collect();
+        levels.wait_for(&keys);
+    }
     collect_parts(analysis, levels)
         .ok_or_else(|| ExportError::Failed("a segment was not measured".into()))
 }
@@ -484,9 +491,13 @@ struct SharedLevels {
 #[derive(Default)]
 struct LevelsState {
     parts: HashMap<u64, CachedParts>,
-    /// Keys of `parts` that are also on disk, oldest first: the only ones
-    /// that may be dropped.
-    droppable: VecDeque<u64>,
+    /// Keys of `parts` that are also on disk, oldest first, with the
+    /// generation they were queued in: an entry left behind by `forget`, or
+    /// by a newer queueing of the same key, is skipped rather than searched for.
+    droppable: VecDeque<(u64, u64)>,
+    /// The live generation of each queued key.
+    queued: HashMap<u64, u64>,
+    generation: u64,
     /// `cached_bytes` of the parts in `parts`.
     bytes: usize,
     /// Being measured by a thread: another one waits for them instead of
@@ -636,9 +647,7 @@ impl LevelCache {
         let mut bytes = Vec::new();
         let mut file = std::fs::File::open(self.path(key)?).ok()?;
         file.read_to_end(&mut bytes).ok()?;
-        // A read keeps the file: the prune drops the oldest by modification
-        // time, and a level read back is worth more than one written later and
-        // never asked for again.
+        // A read keeps the file: the prune drops by last use.
         let _ = file.set_modified(std::time::SystemTime::now());
         let (sources, part) = decode_parts(&bytes)?;
         if sources
@@ -703,8 +712,7 @@ impl LevelCache {
     /// when `degraded`.
     fn put(&mut self, key: u64, part: &LevelParts, sources: Option<&[Stamp]>, degraded: bool) {
         self.rendered += 1;
-        // Written before it is remembered: the file, not `sources`, is what lets
-        // the session drop it.
+        // Written before it is remembered: only a file makes a part droppable.
         let on_disk = match (self.path(key), sources.filter(|_| !degraded)) {
             (Some(path), Some(sources)) => {
                 // Per process: the preview and an export may write it at once.
@@ -744,9 +752,7 @@ impl LevelCache {
     }
 }
 
-/// The map entry and the queue's copy of the key: what a part costs before its
-/// own heap. A peak is one `f32`, so without it a cache of peaks never reaches
-/// the budget.
+/// What a part costs besides its own buffers: its map entry and queue slot.
 const ENTRY_BYTES: usize = std::mem::size_of::<CachedParts>() + 2 * std::mem::size_of::<u64>();
 
 fn cached_bytes(cached: &CachedParts) -> usize {
@@ -761,10 +767,8 @@ fn cached_bytes(cached: &CachedParts) -> usize {
     sources + segments + ENTRY_BYTES
 }
 
-/// Keeps a measured part, dropping the ones measured before it when the
-/// session's budget is exceeded. `on_disk`: a file holds the part, which is
-/// what makes dropping it free; a part only in memory is never dropped, since
-/// the measure that produced it reads it back once more (`measure_level`).
+/// Keeps `cached` and drops the oldest parts over the budget. A part without a
+/// file is not droppable: the measure that made it reads it back.
 fn remember(
     state: &mut LevelsState,
     max_bytes: usize,
@@ -774,50 +778,46 @@ fn remember(
 ) {
     let bytes = cached_bytes(&cached);
     match state.parts.insert(key, cached) {
-        Some(old) => {
-            state.bytes = state.bytes + bytes - cached_bytes(&old);
-            // A second measure of the key may be the one that wrote its file.
-            if on_disk && !state.droppable.contains(&key) {
-                state.droppable.push_back(key);
-            }
-        }
-        None => {
-            state.bytes += bytes;
-            if on_disk {
-                state.droppable.push_back(key);
-            }
-        }
+        Some(old) => state.bytes = state.bytes + bytes - cached_bytes(&old),
+        None => state.bytes += bytes,
+    }
+    // A key already queued keeps its place: this write may be its first.
+    if on_disk && !state.queued.contains_key(&key) {
+        let generation = state.generation;
+        state.generation += 1;
+        state.queued.insert(key, generation);
+        state.droppable.push_back((key, generation));
     }
     drop_oldest_parts(state, max_bytes);
 }
 
-/// Drops a part's bookkeeping with it: a stale entry must not leave its bytes
-/// counted or its key queued.
+/// Drops a part's bookkeeping with it; the queue entry stays and is skipped.
 fn forget(state: &mut LevelsState, key: u64) {
     if let Some(old) = state.parts.remove(&key) {
         state.bytes -= cached_bytes(&old);
     }
-    state.droppable.retain(|queued| *queued != key);
+    state.queued.remove(&key);
 }
 
 /// Drops the oldest parts that are also on disk, until `state` holds
 /// `max_bytes`.
 fn drop_oldest_parts(state: &mut LevelsState, max_bytes: usize) {
     while state.bytes > max_bytes {
-        let Some(oldest) = state.droppable.pop_front() else {
+        let Some((oldest, generation)) = state.droppable.pop_front() else {
             break;
         };
+        if state.queued.get(&oldest) != Some(&generation) {
+            continue;
+        }
+        state.queued.remove(&oldest);
         if let Some(old) = state.parts.remove(&oldest) {
             state.bytes -= cached_bytes(&old);
         }
     }
 }
 
-/// Drops the oldest `.level` files until `dir` holds `max_bytes`: the ones
-/// written for segments of a timeline the session no longer measures. A file
-/// read back has its time set to the read, so what goes first is what is least
-/// recently used. A `*.tmp` older than `MAX_TMP_AGE` is a write that a crash cut
-/// short, and it goes too.
+/// Drops the `.level` files least recently used until `dir` holds `max_bytes`,
+/// and the `.tmp` files a crashed write left behind.
 fn prune_levels(dir: &Path, max_bytes: u64) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;

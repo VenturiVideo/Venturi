@@ -2019,7 +2019,15 @@ fn forgetting_a_part_drops_its_bytes_and_its_place_in_the_queue() {
     forget(&mut state, 7);
     assert!(state.parts.is_empty());
     assert_eq!(state.bytes, 0);
-    assert!(state.droppable.is_empty(), "a stale key is not left queued");
+    assert!(state.queued.is_empty(), "the key left the queue");
+
+    // The queue keeps the stale entry; a part queued under the same key again
+    // must not be dropped by it.
+    remember(&mut state, 10 * one, 7, peak(), true);
+    remember(&mut state, 10 * one, 8, peak(), true);
+    drop_oldest_parts(&mut state, one);
+    assert!(!state.parts.contains_key(&7), "the older part went");
+    assert!(state.parts.contains_key(&8), "the stale entry took no part");
 }
 
 #[test]
@@ -2100,8 +2108,9 @@ fn a_written_level_is_the_droppable_one() {
     };
     cache.put(1, &part, Some(std::slice::from_ref(&stamp)), false);
     let state = cache.shared.state.lock().unwrap();
+    let queued: Vec<u64> = state.droppable.iter().map(|(key, _)| *key).collect();
     assert_eq!(
-        state.droppable.iter().copied().collect::<Vec<_>>(),
+        queued,
         vec![1],
         "the file is there, so the session may drop it"
     );
@@ -2184,7 +2193,8 @@ fn a_level_gone_before_the_read_back_is_measured_again() {
     }
 
     let mut project = Project::default();
-    let tl = echoed_gap(&mut project, "fallback.wav", false);
+    let dir = TempDir::new("vv-audio-render-test");
+    let tl = echoed_gap(&dir, &mut project, "fallback.wav", false);
     let mut cache = echo_cache();
     let mut source = Fallback {
         cache: &mut cache,
@@ -2200,4 +2210,58 @@ fn a_level_gone_before_the_read_back_is_measured_again() {
     let (segments, parts) = source.result.expect("a level was asked for");
     let parts = parts.unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(parts.len(), segments, "every segment came back");
+}
+
+#[test]
+fn a_failed_fallback_measure_releases_its_claims() {
+    // A vanished file and a cancelled re-measure left the segments claimed: the
+    // next measure waited on them forever (#42).
+    struct Failing<'c> {
+        cache: &'c mut LevelCache,
+        result: Option<Result<Vec<LevelParts>, ExportError>>,
+    }
+
+    impl AudioSource for Failing<'_> {
+        fn file(&mut self, path: &Path, stream: usize) -> ClipAudio {
+            decoded_whole(path, stream).map_or(ClipAudio::Missing, ClipAudio::Ready)
+        }
+
+        fn plugin(&mut self, _: vv_audio::PluginRequest<'_>) -> Option<vv_audio::PluginHandle> {
+            Some(Arc::new(Passthrough))
+        }
+
+        fn level(&mut self, analysis: LevelAnalysis) -> LevelReading {
+            if self.result.is_none() {
+                self.cache.cancel = Some(Arc::new(AtomicBool::new(true)));
+                self.result = Some(measure_missing(&analysis, self.cache));
+            }
+            LevelReading::Ready(1.0)
+        }
+    }
+
+    let mut project = Project::default();
+    let dir = TempDir::new("vv-audio-render-test");
+    let tl = echoed_gap(&dir, &mut project, "cancelled.wav", false);
+    let mut cache = echo_cache();
+    let mut source = Failing {
+        cache: &mut cache,
+        result: None,
+    };
+    MixSnapshot::from_timeline(
+        &project,
+        &tl,
+        PROJECT_SAMPLE_RATE,
+        PROJECT_CHANNELS,
+        &mut source,
+    );
+    let result = source.result.take().expect("a level was asked for");
+    assert!(
+        matches!(result, Err(ExportError::Cancelled)),
+        "the fallback measure failed as set up"
+    );
+    let state = cache.shared.state.lock().unwrap();
+    assert!(
+        state.measuring.is_empty(),
+        "a failed measure leaves no claim"
+    );
 }
