@@ -325,7 +325,7 @@ impl SharedFrameCache {
 
     /// All the wanted frames `start..=end` of the media are cached: all of
     /// them, or with a stride its multiples (none in the range: covered).
-    /// Stops at the first missing one, without building the intervals.
+    /// Does not build the intervals.
     pub fn covers(&self, media_id: MediaId, start: FrameIdx, end: FrameIdx) -> bool {
         self.inner.lock().unwrap().covers(media_id, start, end)
     }

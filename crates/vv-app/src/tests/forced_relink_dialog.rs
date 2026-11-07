@@ -2,11 +2,7 @@ use super::*;
 
 #[test]
 fn a_finished_search_turns_into_rows_preselected_where_something_matched() {
-    let dir = std::env::temp_dir().join(format!(
-        "vv-app-forced-relink-dialog-test-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = vv_media::test_support::TempDir::new("vv-app-forced-relink-dialog-test");
     let found = dir.join("rana.mp4");
     std::fs::write(&found, b"x").unwrap();
 
@@ -37,11 +33,11 @@ fn a_finished_search_turns_into_rows_preselected_where_something_matched() {
         compound: None,
         folder: None,
     });
-    app.open_forced_relink(dir.clone(), &[rana, ghost]);
+    app.open_forced_relink(dir.to_path_buf(), &[rana, ghost]);
     let dialog = app.forced_relink.as_mut().unwrap();
     dialog.phase = Phase::Searching(forced_relink::spawn_search(
         dialog.references.clone(),
-        dir.clone(),
+        dir.to_path_buf(),
         dialog.criteria.clone(),
     ));
 
@@ -75,6 +71,4 @@ fn a_finished_search_turns_into_rows_preselected_where_something_matched() {
             .collect::<Vec<_>>(),
         [(rana, found)]
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
