@@ -2688,3 +2688,138 @@ fn strip_keys_match_plugin_key_in_for_every_effect() {
     }
     assert_eq!(checked, 7);
 }
+
+// Keep the pre-optimization algorithm as an oracle for summation and clamping.
+fn reference_resampled(buffer: &impl Frames, pos: f64, step: f64, gain: f32, out: &mut [f32]) {
+    let last = buffer.end().saturating_sub(1);
+    let at = |frame: u64, c: usize| {
+        buffer
+            .frame(frame.min(last))
+            .map_or(0.0, |samples| samples[c])
+    };
+    let pos = pos.max(buffer.start() as f64);
+    let i = pos as u64;
+    if step < 1.0 {
+        let t = (pos - i as f64) as f32;
+        for (c, o) in out.iter_mut().enumerate() {
+            *o += (at(i, c) + (at(i + 1, c) - at(i, c)) * t) * gain;
+        }
+    } else {
+        let n = (step as usize).max(1);
+        for (c, o) in out.iter_mut().enumerate() {
+            let sum: f32 = (i..i + n as u64).map(|frame| at(frame, c)).sum();
+            *o += sum / n as f32 * gain;
+        }
+    }
+}
+
+#[test]
+fn resampled_audio_past_the_end_holds_the_last_sample() {
+    let buffer = SampleBlocks::contiguous(Arc::new(vec![0.5; 100]), 0, 1);
+    for pos in [98.0, 99.0, 100.0, 150.0, 10_000.0] {
+        let mut out = [0.0];
+        add_resampled(&buffer, pos, 2.0, 1.0, &mut out);
+        assert_eq!(out, [0.5], "pos={pos}");
+    }
+}
+
+fn assert_resampled_matches_reference(buffer: &impl Frames, channels: usize) {
+    for pos in [
+        -1.0, 0.0, 2.5, 17.0, 18.75, 19.5, 20.25, 22.5, 24.75, 25.0, 26.0, 150.0,
+    ] {
+        for step in [0.125, 0.5, 0.99, 1.0, 1.5, 2.0, 3.75, 8.0, 16.0] {
+            for gain in [0.0, -0.0, 0.37, 1.0, -1.7] {
+                let mut actual: Vec<f32> = (0..channels).map(|c| c as f32 * 0.17).collect();
+                let mut expected = actual.clone();
+                reference_resampled(buffer, pos, step, gain, &mut expected);
+                add_resampled(buffer, pos, step, gain, &mut actual);
+                assert_eq!(
+                    actual.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                    expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                    "pos={pos}, step={step}, gain={gain}, channels={channels}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn resampled_audio_matches_reference_for_dense_sparse_and_partial_buffers() {
+    for channels in [1, 2, 6] {
+        let samples: Vec<f32> = (0..9 * channels)
+            .map(|i| ((i * 71 % 29) as f32 - 14.0) / 17.0)
+            .collect();
+        for start in [0, 17] {
+            let dense = SampleBlocks::contiguous(Arc::new(samples.clone()), start, channels as u16);
+            assert_resampled_matches_reference(&dense, channels);
+            let rendered = Rendered {
+                samples: &samples,
+                from: start,
+                channels,
+            };
+            assert_resampled_matches_reference(&rendered, channels);
+            for missing in [None, Some(0), Some(1), Some(2)] {
+                let blocks = samples
+                    .chunks(3 * channels)
+                    .enumerate()
+                    .map(|(i, chunk)| (Some(i) != missing).then(|| Arc::new(chunk.to_vec())))
+                    .collect();
+                let sparse = SampleBlocks::new(start, 3, channels as u16, blocks, start + 8);
+                assert_resampled_matches_reference(&sparse, channels);
+            }
+            let empty = SampleBlocks::contiguous(Arc::new(Vec::new()), start, channels as u16);
+            assert_resampled_matches_reference(&empty, channels);
+        }
+    }
+    add_resampled(&mono(Arc::new(Vec::new())), 150.0, 2.0, 1.0, &mut []);
+}
+
+#[test]
+#[ignore = "manual measurement, not a correctness assertion"]
+fn bench_resampled_audio() {
+    use std::hint::black_box;
+    let buffer = SampleBlocks::new(
+        0,
+        64,
+        2,
+        (0..64)
+            .map(|b| {
+                Some(Arc::new(
+                    (0..128)
+                        .map(|i| ((b * 128 + i) % 71) as f32 / 71.0)
+                        .collect(),
+                ))
+            })
+            .collect(),
+        4096,
+    );
+    let reference = |buffer: &SampleBlocks, pos, step, gain, out: &mut [f32]| {
+        reference_resampled(buffer, pos, step, gain, out);
+    };
+    let optimized = |buffer: &SampleBlocks, pos, step, gain, out: &mut [f32]| {
+        add_resampled(buffer, pos, step, gain, out);
+    };
+    for step in [0.5, 2.0, 8.0] {
+        for (name, run) in [
+            (
+                "reference",
+                reference as fn(&SampleBlocks, f64, f64, f32, &mut [f32]),
+            ),
+            ("optimized", optimized),
+        ] {
+            let start = std::time::Instant::now();
+            for i in 0..1_000_000 {
+                let mut out = [0.0; 2];
+                run(
+                    black_box(&buffer),
+                    black_box((i % 4096) as f64 + 0.25),
+                    black_box(step),
+                    black_box(0.37),
+                    &mut out,
+                );
+                black_box(out);
+            }
+            eprintln!("resample {name} step={step}: {:?}", start.elapsed());
+        }
+    }
+}

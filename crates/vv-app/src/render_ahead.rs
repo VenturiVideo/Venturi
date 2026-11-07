@@ -559,13 +559,11 @@ fn worker_loop(
             match cmd {
                 Command::Stop => return,
                 Command::UpdateProject(p, id) => {
-                    forget_changed_media(&project, &p, &shared.caches, &mut open, &mut open_behind);
                     forget_changed_media(
                         &project,
                         &p,
                         &shared.caches,
-                        &mut open_keys,
-                        &mut HashMap::new(),
+                        &mut [&mut open, &mut open_behind, &mut open_keys],
                     );
                     project = *p;
                     timeline_id = id;
@@ -644,8 +642,7 @@ fn forget_changed_media(
     old: &Project,
     new: &Project,
     caches: &SharedFrameCache,
-    open: &mut HashMap<MediaId, OpenDecoder>,
-    open_behind: &mut HashMap<MediaId, OpenDecoder>,
+    decoders: &mut [&mut HashMap<MediaId, OpenDecoder>],
 ) {
     for (media_id, item) in &old.media_pool {
         let same_file = new
@@ -654,8 +651,9 @@ fn forget_changed_media(
             .is_some_and(|n| n.path == item.path && n.content_hash == item.content_hash);
         if !same_file {
             caches.remove_media(media_id);
-            open.remove(&media_id);
-            open_behind.remove(&media_id);
+            for map in decoders.iter_mut() {
+                map.remove(&media_id);
+            }
         }
     }
 }
