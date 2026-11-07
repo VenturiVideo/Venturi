@@ -323,7 +323,7 @@ impl Default for Channel {
 pub struct MixSnapshot {
     pub sample_rate: u32,
     pub channels: u16,
-    /// Sorted by (track, start).
+    /// Sorted by track.
     pub clips: Vec<MixClip>,
     /// Track and range of `clips` of each track with clips.
     groups: Vec<(usize, std::ops::Range<usize>)>,
@@ -352,7 +352,7 @@ impl MixSnapshot {
         tracks: Vec<Channel>,
         master: Channel,
     ) -> Self {
-        clips.sort_by_key(|c| (c.track, c.start));
+        clips.sort_by_key(|c| c.track);
         let mut groups: Vec<(usize, std::ops::Range<usize>)> = Vec::new();
         for (i, clip) in clips.iter().enumerate() {
             match groups.last_mut() {
@@ -1921,14 +1921,7 @@ fn mix_into(
             let channel = snapshot.track(*track);
             let scratch = &mut state.scratch[..len * ch];
             scratch.fill(0.0);
-            let block_end = block_time + len as u64;
             for (index, clip) in range.clone().zip(&snapshot.clips[range.clone()]) {
-                if clip.start >= block_end {
-                    break;
-                }
-                if clip.start + clip.len <= block_time {
-                    continue;
-                }
                 let nested = state.nested.get_mut(index).and_then(Option::as_mut);
                 add_clip(snapshot, clip, nested, block_time, scratch);
             }
