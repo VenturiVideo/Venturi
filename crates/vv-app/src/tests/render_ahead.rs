@@ -208,6 +208,12 @@ fn dummy_frame() -> FrameYuv420 {
     }
 }
 
+/// Every media at its own size.
+static NATIVE_SIZES: std::sync::LazyLock<DecodeSizes> = std::sync::LazyLock::new(|| DecodeSizes {
+    divisor: 1,
+    shown: HashMap::new(),
+});
+
 fn media_clip(id: u64, media_id: MediaId, start: FrameIdx, len: FrameIdx) -> Clip {
     Clip::from_source_range(
         ClipId(id),
@@ -3130,7 +3136,7 @@ fn fill_segments_bridges_the_gap_between_two_disconnected_cached_islands() {
         cache_budget_bytes: usize::MAX,
         from_frame: 5,
         proxy: None,
-        preview_divisor: 1,
+        sizes: &NATIVE_SIZES,
         target: &LiveTarget::still(5),
         jumps: 0,
         window: &[],
@@ -3209,7 +3215,7 @@ fn fill_segments_does_not_let_transit_frames_exhaust_the_budget_before_the_wante
         cache_budget_bytes: tight_budget,
         from_frame: 80,
         proxy: None,
-        preview_divisor: 1,
+        sizes: &NATIVE_SIZES,
         target: &LiveTarget::still(80),
         jumps: 0,
         window: &[],
@@ -3311,7 +3317,7 @@ fn fill_segments_does_not_block_a_reachable_segment_just_because_its_transit_wou
         cache_budget_bytes: budget_enough_for_the_wanted_range_but_not_the_full_transit,
         from_frame: 24,
         proxy: None,
-        preview_divisor: 1,
+        sizes: &NATIVE_SIZES,
         target: &LiveTarget::still(24),
         jumps: 0,
         window: &[],
@@ -3502,7 +3508,7 @@ fn fill_segments_caches_only_the_transit_some_window_wants() {
         cache_budget_bytes: usize::MAX,
         from_frame: 80,
         proxy: None,
-        preview_divisor: 1,
+        sizes: &NATIVE_SIZES,
         target: &LiveTarget::still(80),
         jumps: 0,
         window: &window,
@@ -3561,7 +3567,7 @@ fn fill_segments_is_interrupted_by_a_jump_below_the_seek_threshold() {
         cache_budget_bytes: usize::MAX,
         from_frame: 10,
         proxy: None,
-        preview_divisor: 1,
+        sizes: &NATIVE_SIZES,
         target: &target,
         jumps: 0,
         window: std::slice::from_ref(&segment),
@@ -4208,7 +4214,7 @@ fn fill_paced(
         320 * 240 * 4 * 400,
         false,
         None,
-        1,
+        &NATIVE_SIZES,
         DEFAULT_LOOKAHEAD_SECS,
         0.0,
         target,
@@ -4550,7 +4556,7 @@ fn paused_context<'a>(
         cache_budget_bytes: usize::MAX,
         from_frame: 70,
         proxy: None,
-        preview_divisor: 1,
+        sizes: &NATIVE_SIZES,
         target,
         jumps: 0,
         window: &[],
@@ -4708,4 +4714,130 @@ fn position_decoder_sees_no_hole_in_the_frames_a_stride_skips() {
     );
 
     assert_eq!(positioned, Positioned::Reused);
+}
+
+fn video_media(project: &mut Project, width: u32, height: u32) -> MediaId {
+    project.media_pool.insert(MediaItem {
+        path: format!("{width}x{height}.mkv").into(),
+        meta: MediaMeta {
+            duration_frames: 1000,
+            fps: Rational::new(25, 1),
+            width,
+            height,
+            has_video: true,
+            has_audio: false,
+            sample_rate: 0,
+            channels: 0,
+            audio_streams: 0,
+            file: Default::default(),
+        },
+        content_hash: 0,
+        compound: None,
+        folder: None,
+    })
+}
+
+fn video_track(clips: Vec<Clip>) -> Track {
+    Track {
+        kind: TrackKind::Video,
+        clips,
+        muted: false,
+        solo: false,
+        locked: false,
+        crossings: Vec::new(),
+        mix: Default::default(),
+        armed: Default::default(),
+    }
+}
+
+fn timeline_at(resolution: (u32, u32), clips: Vec<Clip>) -> Timeline {
+    Timeline {
+        resolution,
+        ..timeline_with(vec![video_track(clips)])
+    }
+}
+
+#[test]
+fn shown_sizes_fit_a_4k_media_into_a_720p_timeline_a_step_above() {
+    let mut project = Project::default();
+    let media = video_media(&mut project, 3840, 2160);
+    let timeline = project
+        .timelines
+        .insert(timeline_at((1280, 720), vec![media_clip(1, media, 0, 100)]));
+    // A third of the size, rounded up to the √2 step: 2^-1.5.
+    assert_eq!(shown_sizes(&project, timeline, 1.0)[&media], (1358, 764));
+    assert_eq!(
+        shown_sizes(&project, timeline, 0.5)[&media],
+        (1358, 764),
+        "a viewer smaller than the timeline still decodes at its resolution"
+    );
+    assert_eq!(shown_sizes(&project, timeline, 2.0)[&media], (2716, 1528));
+    assert_eq!(shown_sizes(&project, timeline, 4.0)[&media], (3840, 2160));
+}
+
+#[test]
+fn shown_sizes_follow_the_largest_zoom_of_any_clip_of_the_media() {
+    let mut project = Project::default();
+    let media = video_media(&mut project, 3840, 2160);
+    let mut zoomed = media_clip(2, media, 100, 100);
+    zoomed
+        .effects
+        .transform
+        .track_mut(vv_core::TransformParam::ZoomX)
+        .upsert(10, 3.0, vv_core::Interpolation::Linear);
+    let timeline = project.timelines.insert(timeline_at(
+        (1280, 720),
+        vec![media_clip(1, media, 0, 100), zoomed],
+    ));
+    assert_eq!(shown_sizes(&project, timeline, 1.0)[&media], (3840, 2160));
+}
+
+#[test]
+fn shown_sizes_never_grow_a_media_above_its_own_size() {
+    let mut project = Project::default();
+    let media = video_media(&mut project, 640, 360);
+    let timeline = project.timelines.insert(timeline_at(
+        (1920, 1080),
+        vec![media_clip(1, media, 0, 100)],
+    ));
+    assert_eq!(shown_sizes(&project, timeline, 1.0)[&media], (640, 360));
+}
+
+#[test]
+fn shown_sizes_inside_a_compound_clip_use_its_timeline_whatever_the_viewer() {
+    let mut project = Project::default();
+    let media = video_media(&mut project, 3840, 2160);
+    let nested = project.timelines.insert(timeline_at(
+        (1920, 1080),
+        vec![media_clip(1, media, 0, 100)],
+    ));
+    let compound = video_media(&mut project, 1920, 1080);
+    project.media_pool[compound].compound = Some(nested);
+    let root = project.timelines.insert(timeline_at(
+        (1280, 720),
+        vec![media_clip(1, compound, 0, 100)],
+    ));
+    assert_eq!(shown_sizes(&project, root, 1.0)[&media], (1920, 1080));
+    assert_eq!(shown_sizes(&project, root, 8.0)[&media], (1920, 1080));
+    assert!(!shown_sizes(&project, root, 1.0).contains_key(&compound));
+}
+
+#[test]
+fn decode_sizes_divide_the_shown_size_and_leave_a_native_one_alone() {
+    let mut project = Project::default();
+    let media = video_media(&mut project, 3840, 2160);
+    let item = project.media_pool[media].clone();
+    let shown = HashMap::from([(media, (1358, 764))]);
+    let full = DecodeSizes {
+        divisor: 1,
+        shown: shown.clone(),
+    };
+    assert_eq!(full.max_size(media, &item), Some((1358, 764)));
+    let half = DecodeSizes { divisor: 2, shown };
+    assert_eq!(half.max_size(media, &item), Some((679, 382)));
+    let native = DecodeSizes {
+        divisor: 1,
+        shown: HashMap::from([(media, (3840, 2160))]),
+    };
+    assert_eq!(native.max_size(media, &item), None);
 }

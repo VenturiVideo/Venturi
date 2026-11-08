@@ -580,6 +580,24 @@ fn decoder_seek_lands_at_or_before_target_near_every_keyframe_boundary() {
     }
 }
 
+#[test]
+fn observed_gop_is_the_keyframe_distance_and_never_spans_a_seek() {
+    let (_dir, path) = make_test_clip_with_gop_and_bframes("observed_gop.mp4", 4, 25, 2);
+    let mut seeking = Decoder::open(&path).unwrap();
+    for secs in [1.0, 3.0] {
+        seeking.seek_to_time(secs).unwrap();
+    }
+    assert!(
+        matches!(seeking.observed_gop(), None | Some(25)),
+        "landings 25 and 75 are no GOP of 50: {:?}",
+        seeking.observed_gop()
+    );
+
+    let mut sequential = Decoder::open(&path).unwrap();
+    while sequential.next_frame().unwrap().is_some() {}
+    assert_eq!(sequential.observed_gop(), Some(25));
+}
+
 /// Skipping the transit after a seek (non-reference B-frames undecoded,
 /// the rest unconverted) must not change a single pixel of what follows.
 #[test]
