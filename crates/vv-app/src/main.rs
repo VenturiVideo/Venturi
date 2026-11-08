@@ -47,6 +47,7 @@ mod thumbnail_worker;
 mod timeline_audio;
 mod timeline_ui;
 mod transport;
+mod ui_scale;
 mod viewer_overlay;
 mod viewer_waveform;
 mod viewer_zoom;
@@ -5080,6 +5081,7 @@ fn main() -> eframe::Result<()> {
                 o.input_options.horizontal_scroll_modifier = egui::Modifiers::CTRL;
             });
             theme::apply(&cc.egui_ctx);
+            ui_scale::configure(&cc.egui_ctx);
             let mut app = VenturiApp::default();
             let egui_ctx = cc.egui_ctx.clone();
             let plugin_ctx = egui_ctx.clone();

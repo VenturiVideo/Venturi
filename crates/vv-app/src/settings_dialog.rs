@@ -13,6 +13,7 @@ use crate::settings::{Action, Keymap, Settings, Shortcut};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
     General,
+    Appearance,
     Playback,
     Recording,
     Integrations,
@@ -20,8 +21,9 @@ pub enum Section {
 }
 
 impl Section {
-    const ALL: [Section; 5] = [
+    const ALL: [Section; 6] = [
         Section::General,
+        Section::Appearance,
         Section::Playback,
         Section::Recording,
         Section::Integrations,
@@ -31,6 +33,7 @@ impl Section {
     fn title(self) -> Cow<'static, str> {
         match self {
             Section::General => t!("settings.section_general"),
+            Section::Appearance => t!("settings.section_appearance"),
             Section::Playback => t!("settings.section_playback"),
             Section::Recording => t!("settings.section_recording"),
             Section::Integrations => t!("settings.section_integrations"),
@@ -107,6 +110,11 @@ impl SettingsDialog {
                     ui.vertical(|ui| match self.section {
                         Section::General => {
                             response.changed |= general_section(ui, settings);
+                        }
+                        Section::Appearance => {
+                            egui::ScrollArea::vertical()
+                                .auto_shrink([false, true])
+                                .show(ui, crate::ui_scale::show);
                         }
                         Section::Recording => {
                             let (changed, pick) = recording_section(
@@ -614,3 +622,7 @@ fn playback_section(ui: &mut egui::Ui, settings: &mut Settings) -> bool {
     });
     changed
 }
+
+#[cfg(test)]
+#[path = "tests/settings_dialog.rs"]
+mod tests;
