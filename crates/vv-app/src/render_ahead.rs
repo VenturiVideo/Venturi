@@ -142,6 +142,8 @@ struct LiveTarget {
     /// Bumped every time the user moves the playhead (not playback): the
     /// cycle in progress serves a position no longer wanted.
     jumps: AtomicU64,
+    /// Set on drop: unlike `jumps`, a cycle starting afterwards still sees it.
+    stopped: AtomicBool,
     /// See `RenderAhead::set_frame_stride`.
     frame_stride: AtomicI64,
     /// See `RenderAhead::set_playback_speed`: bits of an `f64`.
@@ -155,6 +157,7 @@ impl LiveTarget {
         Self {
             frame: AtomicI64::new(frame),
             jumps: AtomicU64::new(0),
+            stopped: AtomicBool::new(false),
             frame_stride: AtomicI64::new(1),
             speed: AtomicU64::new(0),
             keyframes_when_behind: AtomicBool::new(false),
@@ -179,6 +182,14 @@ impl LiveTarget {
 
     fn jumps(&self) -> u64 {
         self.jumps.load(Ordering::Relaxed)
+    }
+
+    fn stopped(&self) -> bool {
+        self.stopped.load(Ordering::Relaxed)
+    }
+
+    fn interrupted_since(&self, jumps: u64) -> bool {
+        self.stopped() || self.jumps() != jumps
     }
 }
 
@@ -392,6 +403,7 @@ impl RenderAhead {
 impl Drop for RenderAhead {
     fn drop(&mut self) {
         // A cycle reads `Stop` only once it ends: a jump breaks it off now.
+        self.shared.target.stopped.store(true, Ordering::Relaxed);
         self.shared.target.jumps.fetch_add(1, Ordering::Relaxed);
         let _ = self.tx.send(Command::Stop);
         if let Some(h) = self.handle.take() {
@@ -540,6 +552,9 @@ fn worker_loop(
     };
     let pacing = RefCell::new(Pacing::default());
     loop {
+        if shared.target.stopped() {
+            return;
+        }
         let first = if retry_immediately {
             match rx.try_recv() {
                 Ok(cmd) => Some(cmd),
@@ -1789,6 +1804,12 @@ fn fill_keyframes(
     open: &mut HashMap<MediaId, OpenDecoder>,
 ) -> ControlFlow<WalkOutcome> {
     for segment in segments {
+        if ctx.target.interrupted_since(ctx.jumps) {
+            return ControlFlow::Break(WalkOutcome {
+                interrupted: true,
+                caught_up: false,
+            });
+        }
         let media_id = segment.media_id;
         let Some(item) = ctx.project.media_pool.get(media_id) else {
             continue;
@@ -1858,7 +1879,7 @@ fn fill_keyframes(
             ctx.pacing
                 .borrow_mut()
                 .record_keyframe_span(media_id, keyframe, seek_to);
-            if ctx.target.jumps() != ctx.jumps {
+            if ctx.target.interrupted_since(ctx.jumps) {
                 return ControlFlow::Break(WalkOutcome {
                     interrupted: true,
                     caught_up: false,
@@ -1911,6 +1932,12 @@ fn fill_segments(
     open: &mut HashMap<MediaId, OpenDecoder>,
 ) -> ControlFlow<WalkOutcome> {
     for segment in segments {
+        if ctx.target.interrupted_since(ctx.jumps) {
+            return ControlFlow::Break(WalkOutcome {
+                interrupted: true,
+                caught_up: false,
+            });
+        }
         let Some(item) = ctx.project.media_pool.get(segment.media_id) else {
             continue;
         };
@@ -2110,7 +2137,7 @@ fn fill_segments(
             // Live target: if the playhead moved past the threshold the prefetch is
             // obsolete and it restarts immediately.
             let live = ctx.target.frame();
-            if ctx.target.jumps() != ctx.jumps
+            if ctx.target.interrupted_since(ctx.jumps)
                 || (live - ctx.from_frame).abs() > threshold_frames
                 || ctx.decide_by.is_some_and(|by| Instant::now() >= by)
             {
