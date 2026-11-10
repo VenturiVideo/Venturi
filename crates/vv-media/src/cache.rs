@@ -126,51 +126,25 @@ impl SharedFrameCache {
         let inner = self.inner.lock().unwrap();
         let frames = inner.entries.get(&media_id)?;
         let stride = inner.stride(media_id);
-        let clip_lo = lo.min(idx);
-        let clip_hi = hi.max(idx);
-        if let Some(frame) = frames.get(&idx) {
-            return Some((frame.clone(), Served::Exact));
+        let clip = lo.min(idx)..=hi.max(idx);
+        let cached = |i: FrameIdx| clip.contains(&i).then(|| frames.get(&i).cloned()).flatten();
+        if let Some(frame) = cached(idx) {
+            return Some((frame, Served::Exact));
         }
-        if stride > 1 {
-            let min_i = (idx - (stride - 1)).max(clip_lo);
-            let max_i = (idx + (stride - 1)).min(clip_hi);
-            let earlier = (min_i < idx)
-                .then(|| frames.range(min_i..idx).next_back())
-                .flatten();
-            let later = (idx < max_i)
-                .then(|| frames.range((idx + 1)..=max_i).next())
-                .flatten();
-            let neighbour = match (earlier, later) {
-                (Some((&e_idx, e_frame)), Some((&l_idx, l_frame))) => {
-                    if idx - e_idx <= l_idx - idx {
-                        Some(e_frame)
-                    } else {
-                        Some(l_frame)
-                    }
-                }
-                (Some((_, frame)), None) | (None, Some((_, frame))) => Some(frame),
-                (None, None) => None,
-            };
-            if let Some(frame) = neighbour {
-                return Some((frame.clone(), Served::Neighbour));
-            }
+        if let Some(frame) = (1..stride)
+            .flat_map(|d| [idx - d, idx + d])
+            .find_map(cached)
+        {
+            return Some((frame, Served::Neighbour));
         }
         if !inner.keyframes_only.contains(&media_id) {
             return None;
         }
-        let min_kf = (idx - MAX_KEYFRAME_DISTANCE).max(clip_lo);
-        if min_kf < idx
-            && let Some((_, frame)) = frames.range(min_kf..idx).next_back()
-        {
-            return Some((frame.clone(), Served::Keyframe));
-        }
-        let max_kf = (idx + MAX_KEYFRAME_DISTANCE).min(clip_hi);
-        if idx < max_kf
-            && let Some((_, frame)) = frames.range((idx + 1)..=max_kf).next()
-        {
-            return Some((frame.clone(), Served::Keyframe));
-        }
-        None
+        (1..=MAX_KEYFRAME_DISTANCE)
+            .map(|d| idx - d)
+            .chain((1..=MAX_KEYFRAME_DISTANCE).map(|d| idx + d))
+            .find_map(cached)
+            .map(|frame| (frame, Served::Keyframe))
     }
 
     /// The decoder cannot keep up with `media_id`: only keyframes are
