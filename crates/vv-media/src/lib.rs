@@ -13,6 +13,8 @@ pub mod proxy;
 pub mod thumbnail;
 pub mod waveform;
 
+mod orientation;
+
 pub use audio::{
     AudioBuffer, decode_audio_streams_from, decode_audio_streams_streaming, decode_audio_track,
 };
