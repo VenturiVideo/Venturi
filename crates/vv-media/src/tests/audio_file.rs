@@ -1,5 +1,13 @@
 use super::*;
 
+struct Fixture(std::path::PathBuf);
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// One second of a 440 Hz tone, stereo, at `rate`.
 fn tone(rate: u32) -> Vec<f32> {
     (0..rate)
@@ -45,4 +53,99 @@ fn an_unavailable_choice_falls_back_to_mp3_then_wav() {
     for format in AudioFileFormat::ALL {
         assert_eq!(AudioFileFormat::from_id(format.id()), Some(format));
     }
+}
+
+#[test]
+fn short_final_audio_frames_preserve_the_recorded_sample_count() {
+    let root = std::env::temp_dir().join(format!("vv-audio-tail-{}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    let fixture = Fixture(root);
+    for format in [
+        AudioFileFormat::Wav,
+        AudioFileFormat::Flac,
+        AudioFileFormat::Mp3,
+        AudioFileFormat::Opus,
+    ] {
+        if !format.is_available() {
+            continue;
+        }
+        for frames in [1_337, 48_000, 48_001] {
+            let samples = &tone(48_000)[..frames.min(48_000) * 2];
+            let mut samples = samples.to_vec();
+            samples.resize(frames * 2, 0.25);
+            let path = fixture.0.join(format!("{frames}.{}", format.extension()));
+            write_audio_file(&path, format, &samples, 48_000, 2).unwrap();
+            let decoded = crate::decode_audio_track(&path, 0).unwrap().unwrap();
+            assert_eq!(decoded.sample_rate, 48_000);
+            assert_eq!(
+                decoded.samples.len() / decoded.channels as usize,
+                frames,
+                "{format:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn recording_encoders_match_reference_decoded_lengths() {
+    let root = std::env::temp_dir().join(format!("vv-audio-reference-{}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    let dir = Fixture(root);
+    let cli = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-encoders"])
+        .output()
+        .expect("ffmpeg must be on PATH");
+    assert!(cli.status.success(), "could not list FFmpeg CLI encoders");
+    let encoders = String::from_utf8(cli.stdout).unwrap();
+    let formats: Vec<_> = AudioFileFormat::available()
+        .into_iter()
+        .filter(|format| {
+            let available = encoders
+                .lines()
+                .any(|line| line.split_whitespace().nth(1) == Some(format.encoder_name()));
+            if !available {
+                eprintln!("{format:?} reference comparison not run: CLI encoder unavailable");
+            }
+            available
+        })
+        .collect();
+    assert!(
+        formats.contains(&AudioFileFormat::Wav),
+        "reference PCM encoder required"
+    );
+    let mut failures = Vec::new();
+    for frames in [1_337, 48_000, 48_001] {
+        let mut samples = tone(48_000);
+        samples.resize(frames * 2, 0.25);
+        let source = dir.0.join(format!("{frames}-source.wav"));
+        write_audio_file(&source, AudioFileFormat::Wav, &samples, 48_000, 2).unwrap();
+        for &format in &formats {
+            let path = dir.0.join(format!("{frames}.{}", format.extension()));
+            let reference = dir
+                .0
+                .join(format!("{frames}-reference.{}", format.extension()));
+            write_audio_file(&path, format, &samples, 48_000, 2).unwrap();
+            crate::test_support::ffmpeg(
+                &[
+                    "-i",
+                    source.to_str().unwrap(),
+                    "-c:a",
+                    format.encoder_name(),
+                    "-b:a",
+                    &format.bit_rate().to_string(),
+                ],
+                &reference,
+            );
+            let decoded = crate::decode_audio_track(&path, 0).unwrap().unwrap();
+            let expected = crate::decode_audio_track(&reference, 0).unwrap().unwrap();
+            assert_eq!(decoded.sample_rate, expected.sample_rate, "{format:?}");
+            assert_eq!(decoded.channels, expected.channels, "{format:?}");
+            let actual = decoded.samples.len() / decoded.channels as usize;
+            let expected = expected.samples.len() / expected.channels as usize;
+            if actual != expected {
+                failures.push(format!("{format:?}/{frames}: {actual} != {expected}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("; "));
 }
