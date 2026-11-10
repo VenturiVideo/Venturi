@@ -442,9 +442,8 @@ impl Encoder {
         };
         frame.set_pts(Some(video.next_pts));
         frame.set_kind(ffmpeg::picture::Type::None);
-        video.next_pts += 1;
-
         video.encoder.send_frame(&frame)?;
+        video.next_pts += 1;
         drain_packets(
             &mut self.octx,
             &mut video.encoder,
@@ -724,6 +723,10 @@ pub(crate) fn fill_plane(
 ) {
     let stride = frame.stride(plane);
     let data = frame.data_mut(plane);
+    if stride == row_width {
+        data[..src.len()].copy_from_slice(src);
+        return;
+    }
     for (y, row) in src.chunks_exact(row_width.max(1)).enumerate() {
         data[y * stride..y * stride + row.len()].copy_from_slice(row);
     }
