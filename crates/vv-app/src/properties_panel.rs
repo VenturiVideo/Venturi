@@ -1507,6 +1507,7 @@ impl VenturiApp {
                 .filters
                 .iter()
                 .map(|f| crate::FilterPanelInfo {
+                    shake: crate::camera_shake_panel::ShakeInfo::of(&f.shake, frame, in_clip),
                     kind: f.kind,
                     enabled: f.enabled,
                     radius: f.radius.value_at(frame),
@@ -2243,6 +2244,11 @@ impl VenturiApp {
                                                         },
                                                     );
                                                     self.settings.panels.color_window_open = color_window_open;
+                                                    let shake = if kind == vv_core::FilterKind::CameraShake {
+                                                        crate::camera_shake_panel::section(ui, &filter.shake, reset)
+                                                    } else {
+                                                        Default::default()
+                                                    };
                                                     let mut reset_radius = reset;
                                                     let mut reset_direction = reset;
                                                     let mut reset_amount = reset;
@@ -2379,6 +2385,7 @@ impl VenturiApp {
                                                             pending_effects.extend(crate::grade_panel::grade_commands(tl, targets, &section));
                                                         }
                                                     }
+                                                    goto = goto.or(shake.goto);
                                                     if let Some(source_frame) = goto {
                                                         pending_playhead = self
                                                             .timeline_id
@@ -2396,6 +2403,7 @@ impl VenturiApp {
                                                         && !reset_grow
                                                         && !reset_color
                                                         && new_color.is_none()
+                                                        && !shake.changed()
                                                         && keyframes.is_empty()
                                                         && enabled == filter.enabled
                                                     {
@@ -2413,6 +2421,9 @@ impl VenturiApp {
                                                         let mut new_filters = effects.filters.clone();
                                                         let defaults = vv_core::ClipFilter::new(kind);
                                                         let own = &mut new_filters[pos];
+                                                        let shake_commands = if kind == vv_core::FilterKind::CameraShake {
+                                                            shake.commands(clip_ref, t.source_frame, &mut own.shake)
+                                                        } else { Vec::new() };
                                                         if reset || enabled != filter.enabled {
                                                             own.enabled = enabled || reset;
                                                         }
@@ -2490,6 +2501,7 @@ impl VenturiApp {
                                                             pending_effects.push(set_filters(clip_ref, new_filters));
                                                         }
                                                         pending_effects.append(&mut pending_keyframes);
+                                                        pending_effects.extend(shake_commands);
                                                     }
                                                 }
                                             }

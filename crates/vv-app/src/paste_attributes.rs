@@ -569,6 +569,9 @@ fn merge(
                         grow: scaled(&f.grow, size),
                         ..f.clone()
                     };
+                    for track in filter.shake.tracks_mut() {
+                        *track = remap.apply(track);
+                    }
                     for track in filter.grade.tracks_mut() {
                         *track = remap.apply(track);
                     }

@@ -467,3 +467,34 @@ fn keeps_what_otio_cannot_represent_in_metadata() {
     assert_eq!(meta["effects"]["gain_db"]["default"], -6.0);
     assert_eq!(meta["display_color"], "Indigo");
 }
+
+#[test]
+fn camera_shake_round_trips_through_venturi_otio_metadata() {
+    let (mut project, timeline, _) = project();
+    let mut clip = Clip::from_source_range(
+        ClipId(1),
+        ClipSource::SolidColor,
+        0,
+        100,
+        0,
+        Rational::one(),
+    );
+    let mut filter = ClipFilter::new(FilterKind::CameraShake);
+    filter.shake.seed = 123;
+    filter
+        .shake
+        .track_mut(crate::ShakeParam::MotionScale)
+        .upsert(12, 0.25, Interpolation::EaseInOut);
+    clip.effects.filters.push(filter.clone());
+    project.timelines[timeline].tracks[0].clips.push(clip);
+    let value = timeline_to_otio(&project, timeline, None);
+    let loaded = crate::otio::project_from_otio(
+        &value,
+        std::path::Path::new("/tmp"),
+        &mut |_| panic!("no external media"),
+        None,
+    )
+    .unwrap();
+    let timeline = loaded.project.timelines.values().next().unwrap();
+    assert_eq!(timeline.tracks[0].clips[0].effects.filters, vec![filter]);
+}

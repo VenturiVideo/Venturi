@@ -146,6 +146,13 @@ fn rows(effects: &EffectStack) -> Vec<KeyframeTarget> {
         if !filter.grow.is_constant() {
             rows.push(KeyframeTarget::FilterGrow(filter.kind));
         }
+        if filter.kind == vv_core::FilterKind::CameraShake {
+            for param in vv_core::ShakeParam::ALL {
+                if !filter.shake.track(param).is_constant() {
+                    rows.push(KeyframeTarget::CameraShake(param));
+                }
+            }
+        }
         if filter.kind.has_grade() {
             for param in vv_core::GradeParam::ALL {
                 if !filter.grade.track(param).is_constant() {
@@ -181,6 +188,17 @@ fn mask_track(
 
 fn filter(effects: &EffectStack, kind: vv_core::FilterKind) -> Option<&vv_core::ClipFilter> {
     effects.filters.iter().find(|f| f.kind == kind)
+}
+
+fn shake_track(
+    effects: &EffectStack,
+    param: vv_core::ShakeParam,
+) -> Option<&vv_core::Keyframed<f32>> {
+    Some(
+        filter(effects, vv_core::FilterKind::CameraShake)?
+            .shake
+            .track(param),
+    )
 }
 
 fn grade_track(
@@ -231,6 +249,9 @@ fn frames_of(effects: &EffectStack, target: KeyframeTarget) -> Vec<FrameIdx> {
         KeyframeTarget::FilterGrow(kind) => filter(effects, kind)
             .map(|f| f.grow.keyframes().iter().map(|k| k.0).collect())
             .unwrap_or_default(),
+        KeyframeTarget::CameraShake(param) => shake_track(effects, param)
+            .map(|k| k.keyframes().iter().map(|k| k.0).collect())
+            .unwrap_or_default(),
         KeyframeTarget::Grade(param) => grade_track(effects, param)
             .map(|k| k.keyframes().iter().map(|k| k.0).collect())
             .unwrap_or_default(),
@@ -261,6 +282,7 @@ fn scalar_at(
             filter(effects, kind)?.offset[axis.index()].keyframe_at(frame)
         }
         KeyframeTarget::FilterGrow(kind) => filter(effects, kind)?.grow.keyframe_at(frame),
+        KeyframeTarget::CameraShake(param) => shake_track(effects, param)?.keyframe_at(frame),
         KeyframeTarget::Grade(param) => grade_track(effects, param)?.keyframe_at(frame),
         KeyframeTarget::Mask(index, param) => mask_track(effects, index, param)?.keyframe_at(frame),
         KeyframeTarget::Color | KeyframeTarget::FilterDirection(_) | KeyframeTarget::Text => None,
@@ -286,6 +308,9 @@ fn scalar_keyframes(
             .unwrap_or_default(),
         KeyframeTarget::FilterGrow(kind) => filter(effects, kind)
             .map(|f| f.grow.keyframes().to_vec())
+            .unwrap_or_default(),
+        KeyframeTarget::CameraShake(param) => shake_track(effects, param)
+            .map(|k| k.keyframes().to_vec())
             .unwrap_or_default(),
         KeyframeTarget::Grade(param) => grade_track(effects, param)
             .map(|k| k.keyframes().to_vec())
@@ -326,6 +351,7 @@ fn scalar_value_at(effects: &EffectStack, target: KeyframeTarget, frame: FrameId
             Some(filter(effects, kind)?.offset[axis.index()].value_at(frame))
         }
         KeyframeTarget::FilterGrow(kind) => Some(filter(effects, kind)?.grow.value_at(frame)),
+        KeyframeTarget::CameraShake(param) => Some(shake_track(effects, param)?.value_at(frame)),
         KeyframeTarget::Grade(param) => Some(grade_track(effects, param)?.value_at(frame)),
         KeyframeTarget::Mask(index, param) => {
             Some(mask_track(effects, index, param)?.value_at(frame))
@@ -386,6 +412,11 @@ fn target_label(target: KeyframeTarget) -> String {
             "{} {}",
             crate::timeline_ui::filter_label(kind),
             t!("props.grow")
+        ),
+        KeyframeTarget::CameraShake(param) => format!(
+            "{} {}",
+            t!("filter.camera_shake"),
+            crate::camera_shake_panel::param_label(param)
         ),
         KeyframeTarget::Grade(param) => crate::grade_panel::grade_param_label(param),
         KeyframeTarget::Mask(index, param) => format!(
@@ -1083,6 +1114,7 @@ fn keyframe_value(target: KeyframeTarget, value: f32) -> vv_core::KeyframeValue 
             vv_core::KeyframeValue::FilterOffset(kind, axis, value)
         }
         KeyframeTarget::FilterGrow(kind) => vv_core::KeyframeValue::FilterGrow(kind, value),
+        KeyframeTarget::CameraShake(param) => vv_core::KeyframeValue::CameraShake(param, value),
         KeyframeTarget::Grade(param) => vv_core::KeyframeValue::Grade(param, value),
         KeyframeTarget::Mask(index, param) => vv_core::KeyframeValue::Mask(index, param, value),
         // Without a curve one does not get here: they are edited from the Properties panel.
