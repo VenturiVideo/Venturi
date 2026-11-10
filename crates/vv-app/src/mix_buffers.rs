@@ -188,8 +188,8 @@ struct FailedLevel {
     measured: Measured,
 }
 
-/// A normalization whose level could not be measured: it plays at unity
-/// gain until a retry measures it.
+/// A normalization whose level could not be measured: it plays at its last
+/// measured level, or unity gain without one, until a retry measures it.
 pub struct LevelFailure<'a> {
     pub timeline: TimelineId,
     pub measured: Measured,
