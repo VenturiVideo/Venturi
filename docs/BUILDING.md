@@ -180,6 +180,9 @@ libvorbis): the target machine needs neither FFmpeg nor RPM Fusion.
 glibc, ALSA, Vulkan and the NVIDIA driver, if any (NVENC requires >= 550),
 stay the system ones.
 
+Each AppImage produces a `Venturi-<arch>.AppImage.zsync` sidecar for delta updates.
+The first release with update metadata is the baseline for subsequent deltas.
+
 The script re-runs itself inside a Debian 13 container
 (`container/Containerfile.appimage`, built on first use): a glibc binary only
 runs on a glibc >= the build one, so the release must not be compiled on
@@ -246,8 +249,8 @@ A missing `x` is fixed with `chmod +x` on that file, a broken signature with
 ### Releases
 
 `.github/workflows/release.yml` builds the AppImages (x86_64, aarch64) and the
-macOS dmg. Pushing a `v*` tag also publishes a GitHub release with the three
-files attached and notes generated from the commits:
+macOS dmg. Pushing a `v*` tag also publishes a GitHub release with the generated
+artifacts attached and notes generated from the commits:
 
 ```sh
 scripts/release.sh 0.2.0          # bumps Cargo.toml/Cargo.lock, commits, tags
