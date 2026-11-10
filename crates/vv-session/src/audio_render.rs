@@ -269,8 +269,14 @@ pub fn stretch_offline(
     request: &StretchRequest,
     levels: &mut LevelCache,
 ) -> Result<SampleBlocks, ExportError> {
-    let mut stretcher = Stretcher::new(PROJECT_SAMPLE_RATE, PROJECT_CHANNELS, request.tempo)
-        .map_err(ExportError::Failed)?;
+    let mut stretcher = Stretcher::with_pitch(
+        PROJECT_SAMPLE_RATE,
+        PROJECT_CHANNELS,
+        request.tempo,
+        request.pitch,
+        request.preserve_formants,
+    )
+    .map_err(ExportError::Failed)?;
     let mut out = Vec::new();
     let mut failed = None;
     render(
@@ -676,7 +682,7 @@ impl LevelCache {
 const PARTS_MAGIC: &[u8; 4] = b"VVLV";
 /// Raised when the format or what a measure computes changes: older files
 /// are measured again.
-const PARTS_VERSION: u32 = 3;
+const PARTS_VERSION: u32 = 4;
 
 fn encode_parts(sources: &[Stamp], part: &LevelParts) -> Vec<u8> {
     let mut bytes = PARTS_MAGIC.to_vec();

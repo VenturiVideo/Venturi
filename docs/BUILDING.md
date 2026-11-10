@@ -36,12 +36,17 @@ above, less regularly tested):
 ```sh
 sudo apt install \
   build-essential pkg-config \
-  libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
+  libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev \
   clang libclang-dev \
   libwayland-dev libxkbcommon-dev libx11-dev \
   libvulkan-dev mesa-vulkan-drivers \
   libasound2-dev
 ```
+
+FFmpeg must include the `rubberband` audio filter for pitch-preserving speed
+changes and [clip Pitch Shift](PITCH_SHIFT.md). Check with
+`ffmpeg -hide_banner -h filter=rubberband`; the linked FFmpeg libraries must
+also include the filter.
 
 ### libav version
 

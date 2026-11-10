@@ -14,6 +14,71 @@ fn project() -> (Project, TimelineId) {
     (project, timeline)
 }
 
+#[test]
+fn clip_pitch_shift_edits_bypass_and_reset_support_undo_and_redo() {
+    let (mut project, tl) = project();
+    let id = ClipId(1);
+    project.timelines[tl].tracks[0]
+        .clips
+        .push(Clip::from_source_range(
+            id,
+            ClipSource::SolidColor,
+            10,
+            60,
+            20,
+            Rational::one(),
+        ));
+    let original = project.timelines[tl].tracks[0].clips[0].clone();
+    let shifted = crate::PitchShift {
+        semitones: -7.0,
+        cents: 25.0,
+        preserve_formants: true,
+        ..Default::default()
+    };
+    let mut history = History::default();
+    let get = |project: &Project| project.timelines[tl].tracks[0].clips[0].effects.pitch_shift;
+    for value in [
+        shifted,
+        crate::PitchShift {
+            enabled: false,
+            ..shifted
+        },
+        crate::PitchShift::default(),
+    ] {
+        history.do_command(
+            &mut project,
+            Box::new(set_clip_pitch_shift(tl, 0, id, value)),
+        );
+        assert_eq!(get(&project), value);
+    }
+    history.undo(&mut project);
+    assert!(!get(&project).enabled);
+    history.undo(&mut project);
+    assert_eq!(get(&project), shifted);
+    history.undo(&mut project);
+    assert_eq!(get(&project), crate::PitchShift::default());
+    history.redo(&mut project);
+    assert_eq!(get(&project), shifted);
+    let clip = &project.timelines[tl].tracks[0].clips[0];
+    assert_eq!(
+        (clip.source_offset, clip.timeline_start, clip.timeline_len),
+        (
+            original.source_offset,
+            original.timeline_start,
+            original.timeline_len
+        )
+    );
+    let mut split = SplitClip::new(tl, 0, id, 30);
+    split.apply(&mut project);
+    assert_eq!(project.timelines[tl].tracks[0].clips.len(), 2);
+    assert!(
+        project.timelines[tl].tracks[0]
+            .clips
+            .iter()
+            .all(|clip| clip.effects.pitch_shift == shifted)
+    );
+}
+
 fn add_track(timeline: TimelineId) -> Box<dyn Command> {
     Box::new(AddTrack::new(timeline, TrackKind::Audio))
 }
