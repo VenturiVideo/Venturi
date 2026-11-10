@@ -6,7 +6,7 @@ document covers building, testing and packaging from the repository.
 
 ## Dependencies
 
-- **Rust** 1.88 or newer (edition 2024, let chains) — [rustup.rs](https://rustup.rs)
+- **Rust** 1.95 or newer (required by egui/eframe 0.36) — [rustup.rs](https://rustup.rs)
 - **FFmpeg** (development headers/libs + `pkg-config`, for `ffmpeg-next`, the
   binding used for decode/encode)
 - **clang/libclang** (for `ffmpeg-next`'s bindgen)
@@ -124,6 +124,21 @@ development libraries) also needs to be in `PATH`.
 The time-stretch tests need an FFmpeg built with librubberband
 (`scripts/build-ffmpeg.sh` builds one; Homebrew's does not). Without it they
 are skipped locally, and fail under CI.
+
+### Optional profiling
+
+Run `cargo run --release -p vv-app --features performance` to enable CPU
+profiling. Install `puffin_viewer` with `cargo install puffin_viewer --locked`,
+then run `puffin_viewer 127.0.0.1:8585` while using Venturi. The local
+server streams app and egui/wgpu scopes; close the viewer when finished.
+The feature is disabled by default; normal builds have no Puffin server or
+GPU telemetry.
+
+The feature also exposes compositor GPU timing hooks through `wgpu-profiler`.
+A caller must request `vv_render::telemetry::FEATURES` on a supported device,
+call `Compositor::enable_profiling()`, and retrieve the submission timings with
+`finish_profiling()`. These timings cover compositor GPU submissions, not
+physical display presentation, and are separate from the CPU Puffin stream.
 
 ### Where unit tests live
 
