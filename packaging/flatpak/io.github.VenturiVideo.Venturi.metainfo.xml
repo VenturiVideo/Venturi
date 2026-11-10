@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.VenturiVideo.Venturi</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Venturi</name>
+  <summary>Edit videos with a multitrack timeline</summary>
+  <developer id="io.github.venturivideo"><name>Venturi contributors</name></developer>
+  <description>
+    <p>Venturi is a video editor with multitrack editing, keyframes, audio mixing,
+    effects, titles and GPU compositing.</p>
+    <p>This package includes FFmpeg and the codecs needed for software export,
+    audio recording and pitch-corrected playback.</p>
+  </description>
+  <launchable type="desktop-id">io.github.VenturiVideo.Venturi.desktop</launchable>
+  <url type="homepage">https://github.com/VenturiVideo/Venturi</url>
+  <url type="bugtracker">https://github.com/VenturiVideo/Venturi/issues</url>
+  <url type="vcs-browser">https://github.com/VenturiVideo/Venturi</url>
+  <provides><mediatype>application/x-venturi-project</mediatype></provides>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.8.2" date="2026-11-01" type="development">
+      <description><p>Initial development Flatpak package.</p></description>
+    </release>
+  </releases>
+</component>
