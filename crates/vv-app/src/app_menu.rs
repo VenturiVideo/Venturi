@@ -34,6 +34,7 @@ impl VenturiApp {
         let menu_paste = std::mem::take(&mut self.menu_paste_pending);
         let mut open_compound = false;
         let mut exit_compound = false;
+        let mut reset_ui_scale = false;
         ui.input(|i| {
             arrow_input.1 = i.time;
             // Mouse "back" button, as in a web browser.
@@ -153,6 +154,7 @@ impl VenturiApp {
             if pressed(Action::OpenSettings) {
                 self.open_settings(settings_dialog::Section::General);
             }
+            reset_ui_scale = pressed(Action::ResetUiScale);
             // Only collected: handled outside here, see above.
             let pasted_text = i
                 .events
@@ -222,6 +224,9 @@ impl VenturiApp {
             } else {
                 self.open_selected_pool_compound();
             }
+        }
+        if reset_ui_scale {
+            ui.ctx().set_zoom_factor(1.0);
         }
         self.timeline_state.open_selected_compound = open_compound && !pool_focused;
         self.exit_compound_requested = exit_compound;
