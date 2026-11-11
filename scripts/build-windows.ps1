@@ -18,7 +18,8 @@ try {
     if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
     New-Item -ItemType Directory -Force $stage | Out-Null
 
-    Copy-Item 'target\release\vv-app.exe' (Join-Path $stage 'venturi.exe')
+    $target = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $root 'target' }
+    Copy-Item (Join-Path $target 'release\vv-app.exe') (Join-Path $stage 'venturi.exe')
     Copy-Item (Join-Path $env:FFMPEG_DIR 'bin\*.dll') $stage
     Copy-Item 'LICENSE' (Join-Path $stage 'LICENSE.txt')
     Copy-Item (Join-Path $env:FFMPEG_DIR 'LICENSE.txt') (Join-Path $stage 'FFMPEG-LICENSE.txt')
