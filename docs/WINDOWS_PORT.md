@@ -76,8 +76,11 @@ Export keeps x264, NVENC and Vulkan encode.
 
 On Linux the editor serves attach mode on a Unix socket; on Windows it now
 serves a named pipe, `\\.\pipe\venturi-<user>-mcp-<pid>.sock`. Remote clients
-are refused and the pipe's default security admits only the current user.
-`venturi mcp --attach` finds the running windows the same way as on Linux.
+are refused, and the pipe's access list admits the current user only:
+Windows' default one would let every local account read it. Since any
+account can create a pipe under any free name, `venturi mcp --attach` also
+checks that the pipe it opens is served by the process its name says, run
+by the same user, before passing anything through.
 
 ### OpenTimelineIO paths
 

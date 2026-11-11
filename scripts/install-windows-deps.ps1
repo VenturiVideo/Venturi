@@ -39,11 +39,26 @@ if (-not (Test-Path (Join-Path $ffmpeg 'bin\avcodec-*.dll'))) {
     # GPL shared build: libx264, librubberband, the voiceover encoders, NVENC,
     # Vulkan and D3D11VA, as the other platforms' own builds.
     $name = "ffmpeg-n$FfmpegBranch-latest-win64-gpl-shared-$FfmpegBranch"
-    $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/$name.zip"
+    $release = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest'
+    $url = "$release/$name.zip"
     New-Item -ItemType Directory -Force $deps | Out-Null
     $zip = Join-Path $deps 'ffmpeg.zip'
     Write-Host "Downloading $url"
     Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+    # Catches a truncated or altered download, not a compromised release.
+    $sums = (Invoke-WebRequest -Uri "$release/checksums.sha256" -UseBasicParsing).Content
+    if ($sums -is [byte[]]) { $sums = [System.Text.Encoding]::ASCII.GetString($sums) }
+    $line = ($sums -split "`n") | Where-Object { $_ -match "\s$([regex]::Escape($name)).zip\s*$" }
+    if (-not $line) {
+        Remove-Item $zip
+        throw "No checksum for $name.zip in $release/checksums.sha256"
+    }
+    $expected = ($line -split '\s+')[0]
+    $actual = (Get-FileHash -Algorithm SHA256 $zip).Hash
+    if ($actual -ne $expected) {
+        Remove-Item $zip
+        throw "Checksum mismatch for $name.zip: expected $expected, got $actual"
+    }
     Expand-Archive -Path $zip -DestinationPath $deps -Force
     Rename-Item (Join-Path $deps $name) $ffmpeg
     Remove-Item $zip

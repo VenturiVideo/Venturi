@@ -70,3 +70,23 @@ fn a_second_server_cannot_take_a_served_name() {
     let _server = SocketServer::start_at(handle.clone(), path.clone()).unwrap();
     assert!(SocketServer::start_at(handle, path).is_err());
 }
+
+#[test]
+fn the_bridge_accepts_a_pipe_this_user_serves_only_under_its_own_pid() {
+    let pid = std::process::id();
+    let path = test_pipe(u32::MAX - 3);
+    let (handle, _inbox) = channel(|| {});
+    let _server = SocketServer::start_at(handle, path.clone()).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let pipe = tokio::net::windows::named_pipe::ClientOptions::new()
+            .open(&path)
+            .unwrap();
+        crate::pipe_security::check_server(&pipe, pid).unwrap();
+        let posing = crate::pipe_security::check_server(&pipe, pid + 1).unwrap_err();
+        assert_eq!(posing.kind(), std::io::ErrorKind::PermissionDenied);
+    });
+}

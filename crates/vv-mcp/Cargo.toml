@@ -21,6 +21,9 @@ vv-session = { path = "../vv-session" }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_System_Threading"] }
+
 [dev-dependencies]
 rmcp = { version = "3.4.1", features = ["client"] }
 tokio = { version = "1", features = ["macros", "rt", "io-util"] }

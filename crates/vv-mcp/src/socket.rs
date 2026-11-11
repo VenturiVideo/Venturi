@@ -231,11 +231,14 @@ fn pipe_instance(
     path: &Path,
     first: bool,
 ) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeServer> {
-    tokio::net::windows::named_pipe::ServerOptions::new()
-        // Another process must not be serving under this editor's name.
+    let mut security = crate::pipe_security::OwnerOnly::new()?;
+    let mut options = tokio::net::windows::named_pipe::ServerOptions::new();
+    // Another process must not be serving under this editor's name.
+    options
         .first_pipe_instance(first)
-        .reject_remote_clients(true)
-        .create(path)
+        .reject_remote_clients(true);
+    // SAFETY: valid security attributes, read during the call only.
+    unsafe { options.create_with_security_attributes_raw(path, security.as_raw()) }
 }
 
 #[cfg(windows)]
@@ -343,12 +346,18 @@ fn pump(from: &mut impl std::io::Read, to: &mut impl std::io::Write) -> std::io:
 
 #[cfg(windows)]
 pub fn bridge_stdio(pid: Option<u32>) -> std::io::Result<()> {
-    let path = choose(pid, &live_sockets(&socket_dir()))?;
+    let live = live_sockets(&socket_dir());
+    let path = choose(pid, &live)?;
+    let server_pid = live
+        .iter()
+        .find_map(|(pid, p)| (*p == path).then_some(*pid))
+        .expect("chosen among the live pipes");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     let result = runtime.block_on(async {
         let pipe = tokio::net::windows::named_pipe::ClientOptions::new().open(&path)?;
+        crate::pipe_security::check_server(&pipe, server_pid)?;
         let (mut from_pipe, mut to_pipe) = tokio::io::split(pipe);
         let (mut stdin, mut stdout) = (tokio::io::stdin(), tokio::io::stdout());
         // A pipe has no half-close: the end of stdin ends the bridge.

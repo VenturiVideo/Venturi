@@ -4761,6 +4761,7 @@ dependencies = [
  "vv-plugin",
  "vv-render",
  "vv-session",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
