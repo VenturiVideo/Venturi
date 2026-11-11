@@ -61,6 +61,37 @@ export LD_LIBRARY_PATH="/path/to/local/library/:$LD_LIBRARY_PATH"
 
 to use a different local version.
 
+### Windows
+
+Windows 11 x64, with the MSVC toolchain. One script installs what is missing
+(Rust through rustup, the Visual Studio 2022 Build Tools with the C++
+workload, LLVM for libclang) with `winget`, and downloads a shared GPL build
+of FFmpeg (the branch `scripts/build-ffmpeg.sh` builds elsewhere, from
+[BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds)) into
+`%LOCALAPPDATA%\venturi-deps\ffmpeg` (`VENTURI_DEPS` changes the folder):
+
+```powershell
+scripts\install-windows-deps.ps1
+```
+
+Then, in every new PowerShell session, before `cargo`:
+
+```powershell
+. scripts\windows-env.ps1
+```
+
+It sets `FFMPEG_DIR` and `LIBCLANG_PATH`, puts the FFmpeg DLLs and
+`ffmpeg.exe` on `PATH` (the app and the tests load them from there) and
+points libclang at the MSVC headers through `INCLUDE`: with a newer Visual
+Studio installed without its C++ tools, the bindings otherwise fail on
+`'stdint.h' file not found`.
+
+The window renders through Direct3D 12 or Vulkan, whichever `wgpu` picks;
+Vulkan video decoding and export need the GPU vendor's driver. Settings,
+the library and the VST3 scan live in `%APPDATA%\venturi`, the caches in
+`%LOCALAPPDATA%\venturi`. VST3 plugins are found in
+`%COMMONPROGRAMFILES%\VST3` and `%LOCALAPPDATA%\Programs\Common\VST3`.
+
 ## Build
 
 From the workspace root:
@@ -246,10 +277,20 @@ codesign -vvv --deep /Applications/Venturi.app          # signature intact?
 A missing `x` is fixed with `chmod +x` on that file, a broken signature with
 `codesign --force --deep --sign - /Applications/Venturi.app`.
 
+### Windows (x64)
+
+```powershell
+scripts\build-windows.ps1
+```
+
+Produces `target\windows\Venturi-x86_64-windows.zip`: `venturi.exe` next to
+the FFmpeg DLLs, to unpack anywhere. Needs the dependencies of the
+[Windows](#windows) section.
+
 ### Releases
 
-`.github/workflows/release.yml` builds the AppImages (x86_64, aarch64) and the
-macOS dmg. Pushing a `v*` tag also publishes a GitHub release with the generated
+`.github/workflows/release.yml` builds the AppImages (x86_64, aarch64), the
+macOS dmg and the Windows zip. Pushing a `v*` tag also publishes a GitHub release with the generated
 artifacts attached and notes generated from the commits:
 
 ```sh

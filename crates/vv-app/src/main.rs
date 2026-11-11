@@ -1,6 +1,9 @@
 //! egui window: media pool, viewer, properties panel, timeline. The
 //! viewer composes on the GPU the active clips of all the video tracks and passes
 //! the texture to egui-wgpu without readback (plans/REFACTOR_PIPELINE.md B2).
+// A release opened from Explorer must not bring up a console window; debug
+// builds keep it for the logs.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 #[macro_use]
 extern crate rust_i18n;
@@ -5019,6 +5022,8 @@ fn app_icon() -> Option<egui::IconData> {
 }
 
 fn main() -> eframe::Result<()> {
+    #[cfg(windows)]
+    attach_parent_console();
     env_logger::init();
 
     let mut args: Vec<String> = std::env::args().skip(1).collect();
@@ -5120,6 +5125,22 @@ fn main() -> eframe::Result<()> {
             Ok(Box::new(app))
         }),
     )
+}
+
+/// A GUI-subsystem process gets no console: run from a terminal, it borrows
+/// the terminal's so `mcp` and the logs still print there. Pipes set up by an
+/// MCP client are already valid handles and are left alone.
+#[cfg(windows)]
+fn attach_parent_console() {
+    use windows_sys::Win32::System::Console::{
+        ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
+    };
+    // SAFETY: plain queries; attaching fails harmlessly without a parent console.
+    unsafe {
+        if GetStdHandle(STD_OUTPUT_HANDLE).is_null() && GetStdHandle(STD_ERROR_HANDLE).is_null() {
+            AttachConsole(ATTACH_PARENT_PROCESS);
+        }
+    }
 }
 
 /// `vv-app mcp [project.vvproj]`: an MCP server on stdin/stdout, no window.

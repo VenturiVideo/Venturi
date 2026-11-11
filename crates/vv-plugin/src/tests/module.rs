@@ -1,4 +1,4 @@
-use super::{LoadError, Registry, c_str, cached, linux_binary, sdk_arch_dir, so_file_name};
+use super::{LoadError, Registry, c_str, cached, linux_binary, sdk_arch_dir};
 use std::ffi::c_char;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -196,6 +196,7 @@ mod macos {
 #[cfg(unix)]
 #[test]
 fn the_so_name_keeps_the_stem_bytes() {
+    use super::so_file_name;
     use std::ffi::OsStr;
     use std::os::unix::ffi::{OsStrExt, OsStringExt};
     let raw = OsStr::from_bytes(b"Caf\xe9");
@@ -262,4 +263,32 @@ fn the_mapped_folder_wins_and_a_missing_binary_reports_the_mapped_path() {
         bundle.join("Contents/i386-linux/Missing.so")
     );
     let _ = std::fs::remove_dir_all(&bundle);
+}
+
+#[test]
+fn rust_arch_maps_to_the_windows_bundle_folder() {
+    use super::windows_arch_dir;
+    assert_eq!(windows_arch_dir("x86_64"), "x86_64-win");
+    assert_eq!(windows_arch_dir("aarch64"), "arm64-win");
+    assert_eq!(windows_arch_dir("x86"), "x86-win");
+}
+
+#[cfg(windows)]
+#[test]
+fn a_windows_bundle_resolves_to_its_dll_and_a_bare_dll_to_itself() {
+    use super::{binary_path, windows_arch_dir};
+    let dir = std::env::temp_dir().join(format!("vv-module-win-{}", std::process::id()));
+    let bundle = dir.join("Gain.vst3");
+    assert_eq!(
+        binary_path(&bundle).unwrap(),
+        bundle
+            .join("Contents")
+            .join(windows_arch_dir(std::env::consts::ARCH))
+            .join("Gain.vst3")
+    );
+    std::fs::create_dir_all(&dir).unwrap();
+    let bare = dir.join("Legacy.vst3");
+    std::fs::write(&bare, b"").unwrap();
+    assert_eq!(binary_path(&bare).unwrap(), bare);
+    std::fs::remove_dir_all(&dir).unwrap();
 }

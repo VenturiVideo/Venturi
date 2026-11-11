@@ -73,3 +73,35 @@ jobs:
 
       - name: Test
         run: cargo test -p vv-plugin
+
+  # The Windows build, VST3 loader and MCP pipe: the Linux job covers the
+  # rest of the workspace, whose GPU and audio tests need devices the runner
+  # lacks.
+  windows:
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Rust, MSVC and LLVM come with the runner: this only fetches FFmpeg.
+      - name: Install dependencies
+        run: scripts\install-windows-deps.ps1
+
+      - name: Clippy
+        run: |
+          . scripts\windows-env.ps1
+          cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: |
+          . scripts\windows-env.ps1
+          cargo test -p vv-core -p vv-plugin
+          cargo test -p vv-mcp socket::

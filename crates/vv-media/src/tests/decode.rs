@@ -683,6 +683,23 @@ fn open_with_hw_decodes_the_same_frames_as_software() {
     assert_same_frames(&decode_all(hw), &want);
 }
 
+/// D3D11VA alone: used where the machine has it, with the frames of software
+/// decoding either way.
+#[cfg(windows)]
+#[test]
+fn d3d11va_decodes_the_same_frames_as_software() {
+    let _budget = HW_BUDGET_LOCK.lock().unwrap();
+    let (_dir, path) = make_test_clip_with_gop_and_bframes("hw_d3d11va.mp4", 2, 25, 2);
+    let want = decode_all(Decoder::open(&path).unwrap());
+    let device = crate::hw::HwDevice::D3d11va;
+    let devices = std::slice::from_ref(&device);
+    let hw = Decoder::open_with(&path, devices, crate::hw::HwPriority::Normal).unwrap();
+    if crate::hw::available(&device) {
+        assert_eq!(hw.hw_device(), Some(&device));
+    }
+    assert_same_frames(&decode_all(hw), &want);
+}
+
 #[test]
 fn a_silent_software_fallback_of_ffmpeg_reopens_the_decoder_in_software() {
     let (_dir, path) = make_test_clip_with_gop_and_bframes("hw_silent_fallback.mp4", 2, 25, 2);

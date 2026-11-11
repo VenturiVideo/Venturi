@@ -33,8 +33,13 @@ impl PluginInfo {
 
 pub fn default_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    if cfg!(target_os = "macos") {
+    let home = vv_core::dirs::home_dir();
+    if cfg!(windows) {
+        let var = |name| std::env::var_os(name).map(PathBuf::from);
+        // User dir first, as on macOS.
+        dirs.extend(var("LOCALAPPDATA").map(|d| d.join("Programs").join("Common").join("VST3")));
+        dirs.extend(var("COMMONPROGRAMFILES").map(|d| d.join("VST3")));
+    } else if cfg!(target_os = "macos") {
         // User dirs first: the first copy of a class id wins the scan dedupe.
         dirs.extend(home.map(|h| h.join("Library/Audio/Plug-Ins/VST3")));
         dirs.push(PathBuf::from("/Library/Audio/Plug-Ins/VST3"));

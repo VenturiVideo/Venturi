@@ -806,6 +806,8 @@ fn the_audio_guard_releases_busy_on_panic() {
     assert!(AudioGuard::try_acquire(&busy).is_some());
 }
 
+// The SDK's C enums are i32 on MSVC and u32 elsewhere, where the casts are needed.
+#[cfg_attr(windows, allow(clippy::unnecessary_cast))]
 #[test]
 fn process_mode_maps_to_the_sdk_constants() {
     use vst3::Steinberg::Vst::ProcessModes_;

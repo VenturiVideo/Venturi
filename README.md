@@ -29,6 +29,34 @@ Built for editing, picture and sound, with timelines that travel to and from oth
 
 ---
 
+## 🪟 Windows fork
+
+This is a fork of [VenturiVideo/Venturi](https://github.com/VenturiVideo/Venturi)
+that **ports Venturi to Windows 11 x64**. The editor runs natively on Windows
+with the same features as on Linux:
+
+- GPU compositing through Vulkan or Direct3D 12;
+- hardware decoding on NVDEC, Vulkan video and, new, **Direct3D 11 (D3D11VA)**;
+  export on x264, NVENC or Vulkan;
+- **VST3 plugins**, scanned in the standard Windows folders, with their own
+  editor windows;
+- the **MCP server**, attach mode included, over a named pipe;
+- settings in `%APPDATA%\venturi`, caches in `%LOCALAPPDATA%\venturi`;
+- no console window when opened from Explorer.
+
+**Download:** `Venturi-x86_64-windows.zip` from the
+[Releases](https://github.com/baleight/Venturi/releases/latest) page. Unpack
+it and run `venturi.exe`: FFmpeg is included.
+
+**Build from source:** run `scripts\install-windows-deps.ps1` once, then
+`. scripts\windows-env.ps1` and `cargo run -p vv-app` in PowerShell. See
+[Windows in docs/BUILDING.md](docs/BUILDING.md#windows).
+
+What changed and why, file by file: [docs/WINDOWS_PORT.md](docs/WINDOWS_PORT.md).
+Linux and macOS builds are unchanged.
+
+---
+
 Venturi does little, and does it well. It is an editing-focused NLE:
 multi-track cutting, the transforms and tools you actually reach for while
 editing, keyframes on every parameter, transitions, compound clips, ripple
@@ -44,9 +72,9 @@ the part that has to be perfect.
 
 - **Fast playback and scrubbing.** Timeline-wide frame cache, optional
   background proxies, playback up to 8x with pitch-preserved audio.
-- **Hardware accelerated.** Decoding on NVDEC, Vulkan video or VideoToolbox,
-  compositing on the GPU (Vulkan, Metal), export on NVENC, Vulkan or
-  VideoToolbox, with software as the fallback.
+- **Hardware accelerated.** Decoding on NVDEC, Vulkan video, VideoToolbox or
+  Direct3D 11, compositing on the GPU (Vulkan, Metal, Direct3D 12), export on
+  NVENC, Vulkan or VideoToolbox, with software as the fallback.
 - **Professional timeline workflow.** Track scrubbing with audio, ripple
   delete, compound clips, copy/paste properties, copy/paste of clips and
   media between projects and Venturi windows, magnet snapping, clip speed
@@ -59,7 +87,7 @@ the part that has to be perfect.
   balance, meters and an effect chain: 6-band equalizer and 3-band
   multiband compressor over the live spectrum, normalization (sample
   peak, true peak or EBU R128 loudness, per clip or per track), mono,
-  VST3 plugins (macOS and Linux).
+  VST3 plugins.
   Voiceover recorded straight onto the timeline.
 - **Keyframes done right.** Every parameter is keyframable: crop, zoom,
   rotation, position, speed, opacity, audio gain. A dedicated curve editor
@@ -76,7 +104,8 @@ the part that has to be perfect.
   Claude Code import, cut, measure audio, look at frames and export, on its
   own or in the window you are editing. See [docs/MCP.md](docs/MCP.md).
 - **Linux first.** Developed and tested on Linux, not ported to it. Also runs
-  on Apple Silicon Macs, and possibly Windows.
+  on Apple Silicon Macs and on Windows 11 (x64, built from source for now:
+  see [Windows](docs/BUILDING.md#windows)).
 
 ## Install
 

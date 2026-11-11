@@ -1232,7 +1232,26 @@ fn url_to_path(url: &str, base_dir: &Path) -> Option<PathBuf> {
             bytes.push(byte);
         }
     }
-    Some(PathBuf::from(String::from_utf8(bytes).ok()?))
+    let path = String::from_utf8(bytes).ok()?;
+    #[cfg(windows)]
+    let path = windows_path(&path);
+    Some(PathBuf::from(path))
+}
+
+/// The reverse of the export's `windows_url_path`; a path without a drive
+/// (a URL written on another system) stays as it is.
+#[cfg(windows)]
+fn windows_path(url_path: &str) -> String {
+    let drive = |p: &str| {
+        let bytes = p.as_bytes();
+        bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+    };
+    match url_path.strip_prefix('/') {
+        Some(rest) if drive(rest) => rest.replace('/', "\\"),
+        Some(_) => url_path.to_owned(),
+        None if url_path.is_empty() => String::new(),
+        None => format!("\\\\{}", url_path.replace('/', "\\")),
+    }
 }
 
 #[cfg(test)]

@@ -10,6 +10,17 @@ fn git(args: &[&str]) -> Option<String> {
 }
 
 fn main() {
+    #[cfg(windows)]
+    {
+        let icon = "../../media/icons/windows/venturi-video.ico";
+        println!("cargo:rerun-if-changed={icon}");
+        let mut resource = winresource::WindowsResource::new();
+        resource.set_icon(icon);
+        if let Err(e) = resource.compile() {
+            println!("cargo:warning=no exe icon: {e}");
+        }
+    }
+
     let version = git(&["describe", "--tags", "--exact-match", "HEAD"])
         .or_else(|| git(&["rev-parse", "--short", "HEAD"]))
         .unwrap_or_else(|| "unknown".into());

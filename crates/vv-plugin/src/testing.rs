@@ -134,6 +134,11 @@ fn build_bundle() -> PathBuf {
     let bundle = root.join(format!("{BUNDLE}.vst3"));
     let (dir, file) = if cfg!(target_os = "macos") {
         ("MacOS".to_string(), BUNDLE.to_string())
+    } else if cfg!(windows) {
+        (
+            format!("{}-win", std::env::consts::ARCH),
+            format!("{BUNDLE}.vst3"),
+        )
     } else {
         (
             format!("{}-linux", std::env::consts::ARCH),
@@ -146,7 +151,12 @@ fn build_bundle() -> PathBuf {
     let call = CALLS.fetch_add(1, Ordering::Relaxed);
     let tmp = root.join(format!(".{BUNDLE}-{}-{call}.tmp", std::process::id()));
     std::fs::copy(&cdylib, &tmp).expect("copy fixture binary");
-    std::fs::rename(&tmp, bin_dir.join(file)).expect("install fixture binary");
+    let installed = bin_dir.join(file);
+    if let Err(e) = std::fs::rename(&tmp, &installed) {
+        // Windows will not replace a DLL another process has loaded: it has the same bytes.
+        assert!(installed.is_file(), "install fixture binary: {e}");
+        let _ = std::fs::remove_file(&tmp);
+    }
     bundle
 }
 
@@ -173,7 +183,10 @@ fn cdylib_path(cargo_json: &str) -> Option<PathBuf> {
         })
         .flat_map(|m| m["filenames"].as_array().cloned().unwrap_or_default())
         .filter_map(|f| f.as_str().map(PathBuf::from))
-        .find(|p| p.extension().is_some_and(|e| e == "dylib" || e == "so"))
+        .find(|p| {
+            p.extension()
+                .is_some_and(|e| e == "dylib" || e == "so" || e == "dll")
+        })
 }
 
 #[cfg(test)]
