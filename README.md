@@ -45,7 +45,7 @@ with the same features as on Linux:
 - no console window when opened from Explorer.
 
 **Download:** `Venturi-x86_64-windows.zip` from the
-[Releases](https://github.com/baleight/Venturi/releases/latest) page. Unpack
+[Releases](https://github.com/baleight/Venturi-Windows/releases/latest) page. Unpack
 it and run `venturi.exe`: FFmpeg is included.
 
 **Build from source:** run `scripts\install-windows-deps.ps1` once, then

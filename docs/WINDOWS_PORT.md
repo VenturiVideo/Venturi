@@ -11,7 +11,7 @@ Windows gets its own behind `cfg(windows)`.
 ## Download
 
 Get `Venturi-x86_64-windows.zip` from the
-[Releases](https://github.com/baleight/Venturi/releases) page, unpack it
+[Releases](https://github.com/baleight/Venturi-Windows/releases) page, unpack it
 anywhere and run `venturi.exe`. FFmpeg's DLLs ship next to the executable;
 nothing else needs installing. A GPU driver with Vulkan or Direct3D 12 is
 required, as on every recent Windows machine.
