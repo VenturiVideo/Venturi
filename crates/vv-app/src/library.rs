@@ -1,4 +1,5 @@
-//! User library shared by all projects, in `$XDG_DATA_HOME/venturi/library`:
+//! User library shared by all projects, in `$XDG_DATA_HOME/venturi/library`
+//! (`%APPDATA%` on Windows):
 //! assets (pool items, their files copied in) and attribute presets, one
 //! JSON file each so they can be synced or handed around one by one, and the
 //! folders the assets are sorted in.
@@ -125,13 +126,7 @@ pub(crate) struct Library {
 
 impl Library {
     pub fn default_root() -> Option<PathBuf> {
-        let data = std::env::var_os("XDG_DATA_HOME")
-            .filter(|d| !d.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share"))
-            })?;
-        Some(data.join("venturi").join("library"))
+        Some(vv_core::dirs::data_dir()?.join("venturi").join("library"))
     }
 
     /// Unreadable entries are skipped with a message, never fatal.

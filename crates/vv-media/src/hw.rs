@@ -16,6 +16,7 @@ pub enum HwDevice {
     /// `None`: the driver's first device; else the GPU whose name contains
     /// the string (FFmpeg matches it against `deviceName`).
     Vulkan(Option<String>),
+    D3d11va,
 }
 
 impl HwDevice {
@@ -24,6 +25,7 @@ impl HwDevice {
             Self::VideoToolbox => ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
             Self::Cuda => ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA,
             Self::Vulkan(_) => ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VULKAN,
+            Self::D3d11va => ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA,
         }
     }
 }

@@ -44,14 +44,12 @@ pub enum MediaError {
 }
 
 /// Global cache directory `$XDG_CACHE_HOME/venturi/<name>` (or
-/// `~/.cache/...`, or the system temp dir without `HOME`).
+/// `~/.cache/...`, `%LOCALAPPDATA%` on Windows, the system temp dir last).
 pub fn cache_dir(name: &str) -> std::path::PathBuf {
-    use std::path::PathBuf;
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
-        .unwrap_or_else(std::env::temp_dir);
-    base.join("venturi").join(name)
+    vv_core::dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("venturi")
+        .join(name)
 }
 
 /// Test fixture (vv-app's too): generates `output` with the ffmpeg CLI.

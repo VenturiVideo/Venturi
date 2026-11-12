@@ -92,6 +92,7 @@ fn modes_round_trip_through_their_ids() {
         HwDecodeMode::Off,
         HwDecodeMode::Nvdec,
         HwDecodeMode::Vulkan,
+        HwDecodeMode::D3d11va,
     ] {
         assert_eq!(HwDecodeMode::from_id(mode.id()), Some(mode));
     }
@@ -105,4 +106,16 @@ fn device_labels_name_the_backend_and_the_gpu() {
         device_label(&vulkan(&intel())),
         "Vulkan, Intel(R) UHD Graphics 620"
     );
+}
+
+#[test]
+fn windows_auto_tries_d3d11va_after_nvdec_and_before_vulkan() {
+    let nvidia_desktop = resolve(HwDecodeMode::Auto, &[nvidia()], false);
+    assert_eq!(
+        with_d3d11va(nvidia_desktop),
+        [HwDevice::Cuda, HwDevice::D3d11va, vulkan(&nvidia())]
+    );
+    let hybrid = resolve(HwDecodeMode::Auto, &[nvidia(), intel()], false);
+    assert_eq!(with_d3d11va(hybrid), [HwDevice::D3d11va, vulkan(&intel())]);
+    assert_eq!(with_d3d11va(Vec::new()), [HwDevice::D3d11va]);
 }

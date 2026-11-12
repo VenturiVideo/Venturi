@@ -1196,7 +1196,10 @@ impl Compositor {
     /// for the app today and for the tests.
     pub fn new_headless_with_precision(precision: ProcessingPrecision) -> Self {
         let (adapter, (device, queue)) = pollster::block_on(async {
-            let instance = wgpu::Instance::default();
+            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+                backends: crate::backends(),
+                ..wgpu::InstanceDescriptor::new_without_display_handle()
+            });
             let adapter = instance
                 .request_adapter(&wgpu::RequestAdapterOptions::default())
                 .await
