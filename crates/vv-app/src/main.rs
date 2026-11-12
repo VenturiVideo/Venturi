@@ -1922,10 +1922,10 @@ impl VenturiApp {
             .compositor
             .get()
             .render_layers_to_texture(&render_layers, output);
-        let pixels = self
-            .compositor
-            .get()
-            .read_rgba_texture(&texture, texture.width(), texture.height());
+        let pixels =
+            self.compositor
+                .get()
+                .read_rgba_texture(&texture, texture.width(), texture.height());
         grade_panel::balance_edits(section, grade, &pixels);
     }
 
@@ -2168,8 +2168,9 @@ impl VenturiApp {
                 }
                 _ => 1,
             };
-            let mut provider = frame_provider::GpuCompounds::new(render_ahead, self.compositor.get())
-                .with_preview_divisor(self.settings.preview_resolution.divisor());
+            let mut provider =
+                frame_provider::GpuCompounds::new(render_ahead, self.compositor.get())
+                    .with_preview_divisor(self.settings.preview_resolution.divisor());
             let track_layers = frame_provider::track_layers_at(
                 &self.session.project,
                 timeline,
