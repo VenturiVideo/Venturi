@@ -270,6 +270,22 @@ pub(crate) enum Browsed {
     Asset(String),
 }
 
+/// Set from eframe's device at startup; the headless fallback is only for
+/// tests, so the app never opens a second GPU device.
+#[derive(Default)]
+struct LazyCompositor(std::cell::OnceCell<vv_render::Compositor>);
+
+impl LazyCompositor {
+    fn get(&self) -> &vv_render::Compositor {
+        self.0.get_or_init(vv_render::Compositor::new_headless)
+    }
+
+    fn get_mut(&mut self) -> &mut vv_render::Compositor {
+        self.get();
+        self.0.get_mut().unwrap()
+    }
+}
+
 struct VenturiApp {
     session: vv_session::Session,
     timeline_id: Option<TimelineId>,
@@ -366,7 +382,7 @@ struct VenturiApp {
     /// frames and transform are read. `None` on a gap or during the preview
     /// from the media pool.
     active_clip: Option<(usize, ClipId)>,
-    compositor: vv_render::Compositor,
+    compositor: LazyCompositor,
     /// Opened on the first change made with the pointer down, closed on
     /// release: a drag is a single undo step.
     edit_drag_group: Option<vv_core::GroupMark>,
@@ -554,7 +570,7 @@ impl Default for VenturiApp {
             waveform_missing: Default::default(),
             waveform_partial: Default::default(),
             active_clip: None,
-            compositor: vv_render::Compositor::new_headless(),
+            compositor: LazyCompositor::default(),
             edit_drag_group: None,
             mask_focus: None,
             mask_overlay: Default::default(),
@@ -1904,9 +1920,11 @@ impl VenturiApp {
             .collect();
         let texture = self
             .compositor
+            .get()
             .render_layers_to_texture(&render_layers, output);
         let pixels = self
             .compositor
+            .get()
             .read_rgba_texture(&texture, texture.width(), texture.height());
         grade_panel::balance_edits(section, grade, &pixels);
     }
@@ -2029,6 +2047,7 @@ impl VenturiApp {
         // frame of the same size.
         let texture = self
             .compositor
+            .get()
             .render_layers_to_owned_texture_transparent(&render_layers, output);
         drop(render_layers);
         let source = (*texture).clone();
@@ -2041,8 +2060,8 @@ impl VenturiApp {
     /// composition rather than where it is set.
     fn sync_compositor_precision(&mut self) {
         let precision = self.session.project.precision;
-        if self.compositor.precision() != precision {
-            self.compositor.set_precision(precision);
+        if self.compositor.get().precision() != precision {
+            self.compositor.get_mut().set_precision(precision);
             self.viewer_content = None;
             self.scope_frame = None;
         }
@@ -2076,6 +2095,7 @@ impl VenturiApp {
             .collect();
         let texture = self
             .compositor
+            .get()
             .render_layers_to_texture(&render_layers, output);
         drop(render_layers);
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -2148,7 +2168,7 @@ impl VenturiApp {
                 }
                 _ => 1,
             };
-            let mut provider = frame_provider::GpuCompounds::new(render_ahead, &self.compositor)
+            let mut provider = frame_provider::GpuCompounds::new(render_ahead, self.compositor.get())
                 .with_preview_divisor(self.settings.preview_resolution.divisor());
             let track_layers = frame_provider::track_layers_at(
                 &self.session.project,
@@ -2177,7 +2197,7 @@ impl VenturiApp {
             }
             groups.push((clip.effects.matte, track_layers));
         }
-        let mut provider = frame_provider::GpuCompounds::new(render_ahead, &self.compositor)
+        let mut provider = frame_provider::GpuCompounds::new(render_ahead, self.compositor.get())
             .with_preview_divisor(self.settings.preview_resolution.divisor());
         Some(frame_provider::stack_layers(
             groups,
@@ -5060,6 +5080,11 @@ fn main() -> eframe::Result<()> {
         viewport,
         wgpu_options: eframe::WgpuConfiguration {
             wgpu_setup: eframe::egui_wgpu::WgpuSetupCreateNew {
+                instance_descriptor: wgpu::InstanceDescriptor {
+                    backends: vv_render::backends(),
+                    ..eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle()
+                        .instance_descriptor
+                },
                 device_descriptor: std::sync::Arc::new(|adapter| wgpu::DeviceDescriptor {
                     label: Some("egui wgpu device"),
                     required_limits: vv_render::device_limits(adapter),
@@ -5108,11 +5133,14 @@ fn main() -> eframe::Result<()> {
             // Opened immediately: opening the audio stream blocks for hundreds of ms.
             app.timeline_audio = Some(TimelineAudio::new());
             if let Some(render_state) = cc.wgpu_render_state.clone() {
-                app.compositor = vv_render::Compositor::new(
-                    &render_state.adapter,
-                    std::sync::Arc::new(render_state.device.clone()),
-                    std::sync::Arc::new(render_state.queue.clone()),
-                    app.session.project.precision,
+                app.compositor = LazyCompositor(
+                    vv_render::Compositor::new(
+                        &render_state.adapter,
+                        std::sync::Arc::new(render_state.device.clone()),
+                        std::sync::Arc::new(render_state.queue.clone()),
+                        app.session.project.precision,
+                    )
+                    .into(),
                 );
                 app.egui_render_state = Some(render_state);
             }
