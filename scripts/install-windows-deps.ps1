@@ -1,5 +1,6 @@
 # Installs what building Venturi on Windows x64 needs: Rust, the MSVC build
-# tools, LLVM (libclang, for the FFmpeg bindings) and a shared FFmpeg build.
+# tools, LLVM (libclang, for the FFmpeg bindings), Inno Setup (the installer)
+# and a shared FFmpeg build.
 # Safe to run again: what is already there is skipped.
 param(
     # The FFmpeg branch scripts/build-ffmpeg.sh builds on the other platforms.
@@ -31,6 +32,14 @@ if (-not $hasVc) {
 
 if (-not (Test-Path (Join-Path $env:ProgramFiles 'LLVM\bin\libclang.dll'))) {
     Install-WingetPackage 'LLVM.LLVM'
+}
+
+$isccPaths = @(
+    (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'),
+    (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe')
+)
+if (-not ($isccPaths | Where-Object { Test-Path $_ })) {
+    Install-WingetPackage 'JRSoftware.InnoSetup'
 }
 
 $deps = if ($env:VENTURI_DEPS) { $env:VENTURI_DEPS } else { Join-Path $env:LOCALAPPDATA 'venturi-deps' }

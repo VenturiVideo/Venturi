@@ -130,7 +130,9 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: Venturi-windows-x86_64
-          path: target/windows/Venturi-*.zip
+          path: |
+            target/windows/Venturi-*.zip
+            target/windows/Venturi-*-setup.exe
           if-no-files-found: error
 
   release:

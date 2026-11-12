@@ -284,8 +284,11 @@ scripts\build-windows.ps1
 ```
 
 Produces `target\windows\Venturi-x86_64-windows.zip`: `venturi.exe` next to
-the FFmpeg DLLs, to unpack anywhere. Needs the dependencies of the
-[Windows](#windows) section.
+the FFmpeg DLLs, to unpack anywhere, and
+`target\windows\Venturi-<version>-x86_64-setup.exe`, a single-file installer
+(Inno Setup, `packaging\windows\venturi.iss`): per-user without admin rights,
+Start menu entry, `.vvproj` association and uninstaller. Needs the
+dependencies of the [Windows](#windows) section.
 
 ### Releases
 

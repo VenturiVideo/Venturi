@@ -1,5 +1,6 @@
 # Builds the release and packs it with the FFmpeg DLLs into
-# target\windows\Venturi-x86_64-windows.zip. Needs scripts\install-windows-deps.ps1.
+# target\windows\Venturi-x86_64-windows.zip and the installer
+# target\windows\Venturi-<version>-x86_64-setup.exe. Needs scripts\install-windows-deps.ps1.
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'windows-env.ps1')
@@ -28,6 +29,17 @@ try {
     if (Test-Path $zip) { Remove-Item $zip }
     Compress-Archive -Path $stage -DestinationPath $zip
     Write-Host "Built $zip"
+
+    $iscc = @(
+        (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source,
+        (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe')
+    ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+    if (-not $iscc) { throw 'Inno Setup (ISCC.exe) not found: run scripts\install-windows-deps.ps1' }
+    $version = (Select-String -Path 'Cargo.toml' -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+    & $iscc /Q "/DAppVersion=$version" "/DStage=$stage" 'packaging\windows\venturi.iss'
+    if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
+    Write-Host "Built $(Join-Path $out "Venturi-$version-x86_64-setup.exe")"
 }
 finally {
     Pop-Location
