@@ -800,8 +800,10 @@ fn clip_audio_failures<'a>(
             }
         }
     }
-    let audible: HashSet<ClipId> = playing().map(|clip| clip.id).collect();
+    // Built on the first failure only: this runs on every repaint.
+    let mut audible: Option<HashSet<ClipId>> = None;
     for failure in levels.filter(|f| f.timeline == timeline_id) {
+        let audible = audible.get_or_insert_with(|| playing().map(|clip| clip.id).collect());
         // Measures are keyed by content: a failure stored by a clip since
         // disabled stays alive while an identical clip still asks for it.
         let clip = failure.measured.clip.filter(|id| audible.contains(id));
