@@ -421,6 +421,14 @@ props.volume:
   en: "Volume"
   it: "Volume"
 
+props.fade_in:
+  en: "Fade in"
+  it: "Entrata"
+
+props.fade_out:
+  en: "Fade out"
+  it: "Uscita"
+
 props.no_audio_clip:
   en: "No audio clip selected."
   it: "Nessuna clip audio selezionata."
