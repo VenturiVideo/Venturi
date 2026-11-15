@@ -78,6 +78,12 @@ the part that has to be perfect.
 - **Linux first.** Developed and tested on Linux, not ported to it. Also runs
   on Apple Silicon Macs, and possibly Windows.
 
+Media, Effects, Timeline, Viewer, Mixer, Color, Animation Curves and Properties
+can open as separate native windows. Use **Detach** and **Reattach** to move
+panels between their original locations and native windows. See
+[panel windows](docs/PANELS.md) for input handling, saved settings and current
+backend limitations.
+
 ## Install
 
 On Linux (x86_64 or aarch64), download and run the
