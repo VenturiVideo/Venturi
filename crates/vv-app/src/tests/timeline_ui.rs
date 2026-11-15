@@ -69,6 +69,45 @@ fn nice_tick_interval_secs_grows_with_zoom_to_keep_ticks_readable() {
 }
 
 #[test]
+fn timeline_zoom_shortcuts_do_not_also_scale_the_interface() {
+    for key in [egui::Key::Plus, egui::Key::Equals, egui::Key::Minus] {
+        let ctx = egui::Context::default();
+        crate::ui_scale::configure(&ctx);
+        ctx.set_zoom_factor(1.25);
+        ctx.run_ui(egui::RawInput::default(), |_| {})
+            .textures_delta
+            .clear();
+        let mut app = crate::VenturiApp::default();
+        let before = app.timeline_state.pixels_per_sec;
+        let input = egui::RawInput {
+            events: vec![
+                egui::Event::ModifiersChanged(egui::Modifiers::COMMAND),
+                egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                },
+            ],
+            ..Default::default()
+        };
+        ctx.run_ui(input, |ui| app.handle_shortcuts(ui))
+            .textures_delta
+            .clear();
+        ctx.run_ui(egui::RawInput::default(), |_| {})
+            .textures_delta
+            .clear();
+        if key == egui::Key::Minus {
+            assert!(app.timeline_state.pixels_per_sec < before);
+        } else {
+            assert!(app.timeline_state.pixels_per_sec > before);
+        }
+        assert_eq!(ctx.zoom_factor(), 1.25, "timeline shortcut: {key:?}");
+    }
+}
+
+#[test]
 fn format_timecode_includes_frames_and_hours() {
     // 25 fps: 5 seconds = frame 125, shows HH:MM:SS:FF
     assert_eq!(format_timecode(5.0, 25.0), "00:00:05:00");

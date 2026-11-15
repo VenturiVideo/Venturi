@@ -95,6 +95,13 @@ not establish the cause of every compositor-specific modifier issue.
 `vv-app mcp` runs the MCP server for AI agents instead of the window, and
 `vv-app --mcp` opens the window with it on: see [MCP.md](MCP.md).
 
+File → Settings → Appearance adjusts the interface scale, with presets or a
+custom percentage from 20% to 500%. It scales both text and controls in addition
+to the monitor's display scaling. The choice is saved automatically and restored
+on startup. Restore 100% resets it; the default shortcut is Ctrl+0 (Cmd+0 on
+macOS), configurable in Shortcuts. Ctrl/Cmd +/- continues to zoom the timeline.
+This changes the editor interface, not project dimensions or exported media.
+
 To install the binary, the `.desktop` file, the icons and the `.vvproj` MIME
 type (so the file manager opens projects with Venturi) into `~/.local` (or
 `/usr/local` as root):
