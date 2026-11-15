@@ -176,22 +176,28 @@ impl VenturiApp {
             recorded.channels,
         )
         .map_err(|e| e.to_string())?;
-        let meta = vv_media::probe_media(&path).map_err(|e| e.to_string())?;
+        let mut meta = vv_media::probe_media(&path).map_err(|e| e.to_string())?;
+        // Ignore codec padding but retain the media tail beyond the rounded clip.
+        meta.duration_frames = ((recorded.seconds() * meta.fps.as_f64()).ceil() as FrameIdx).max(1);
 
         let group = self.session.history.begin_group();
         let media_id = self.session.add_media(path, meta.clone());
         let project = &mut self.session.project;
         let rate = Rational::conform_rate(project.timelines[timeline].fps, meta.fps);
+        let take_len = ((recorded.seconds() * project.timelines[timeline].fps.as_f64()).round()
+            as FrameIdx)
+            .max(1);
         let clips = tracks
             .iter()
             .map(|&track| {
-                let clip = Clip::from_source_range(
+                let clip = Clip::new(
                     project.alloc_clip_id(),
                     ClipSource::Media(media_id),
                     0,
-                    meta.duration_frames,
                     start,
+                    take_len,
                     rate,
+                    Rational::one(),
                 );
                 (track, clip, None::<u64>)
             })
