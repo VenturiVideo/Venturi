@@ -820,6 +820,85 @@ fn a_pitch_corrected_compound_clip_stretches_its_nested_timeline() {
     assert_eq!(out[0], 0.9);
 }
 
+#[test]
+fn a_snapshot_is_not_ready_where_a_pitch_corrected_stretch_is_pending() {
+    let (project, compound) = project_with_long_compound();
+    let mut clip = sped_up_clip(compound, Rational::new(2, 1), 2);
+    clip.pitch_correction = true;
+    let tl = timeline(vec![audio_track(vec![clip])]);
+    let mut pending = FakeStretch::default();
+    let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut pending);
+    assert!(!snap.is_ready(0..20), "stretch pending");
+    assert!(snap.is_ready(1000..2000), "nothing plays there");
+    let mut ready = FakeStretch {
+        ready: true,
+        ..FakeStretch::default()
+    };
+    let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut ready);
+    assert!(snap.is_ready(0..20), "stretch ready");
+}
+
+#[test]
+fn a_pending_stretch_is_not_pending_past_the_audio_of_its_compound() {
+    let (project, compound) = project_with_compound();
+    let mut clip = sped_up_clip(compound, Rational::new(2, 1), 200);
+    clip.pitch_correction = true;
+    clip.source_offset = 0;
+    let tl = timeline(vec![audio_track(vec![clip])]);
+    let mut pending = FakeStretch::default();
+    let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut pending);
+    let (asked, _) = pending.asked[0].clone();
+    let tail = asked.end / 2 + 2;
+    assert!(!snap.is_ready(0..1), "stretch pending");
+    assert!(snap.is_ready(tail..tail + 10), "no audio there");
+}
+
+#[test]
+fn a_nested_stretch_waits_for_a_pending_stretch_inside_it() {
+    let (project, compound) = project_with_long_compound();
+    let mut inner = sped_up_clip(compound, Rational::new(2, 1), 2);
+    inner.pitch_correction = true;
+    let nested = timeline(vec![audio_track(vec![inner])]);
+    let request = |frames| StretchRequest {
+        project: &project,
+        input: StretchInput::Nested {
+            timeline: &nested,
+            depth: 0,
+            scope: 0,
+        },
+        frames,
+        tempo: 2.0,
+        sample_rate: RATE,
+        channels: 1,
+        key: 0,
+    };
+    let mut pending = FakeStretch::default();
+    assert!(matches!(
+        request(0..20).stretch_with(&mut pending),
+        ClipAudio::Pending
+    ));
+}
+
+#[test]
+fn a_snapshot_is_ready_where_a_pitch_corrected_stretch_is_missing() {
+    struct Failed;
+    impl AudioSource for Failed {
+        fn file(&mut self, path: &Path, stream: usize) -> ClipAudio {
+            buffers(path, stream).map_or(ClipAudio::Missing, ClipAudio::Ready)
+        }
+
+        fn stretched(&mut self, _: StretchRequest) -> ClipAudio {
+            ClipAudio::Missing
+        }
+    }
+    let (project, compound) = project_with_long_compound();
+    let mut clip = sped_up_clip(compound, Rational::new(2, 1), 2);
+    clip.pitch_correction = true;
+    let tl = timeline(vec![audio_track(vec![clip])]);
+    let snap = MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut Failed);
+    assert!(snap.is_ready(0..20));
+}
+
 /// Stretch keys of two pitch-corrected copies of `media`, one placement apart.
 fn copy_stretch_keys(project: &Project, media: vv_core::MediaId) -> Vec<u64> {
     let copies = [0, 10].map(|start| {
