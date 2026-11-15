@@ -369,6 +369,111 @@ fn insert_media_creates_an_audio_track_per_stream_and_links_everything() {
 }
 
 #[test]
+fn inserting_video_uses_free_audio_tracks_without_replacing_existing_clips() {
+    let (mut project, tl) =
+        project_with_tracks(&[TrackKind::Video, TrackKind::Audio, TrackKind::Audio]);
+    let mut history = History::default();
+    let existing = put(&mut project, &mut history, tl, 1, 0, 100);
+    let media_id = media(&mut project, 2);
+    let before = snapshot(&project, tl);
+    let position = history.position();
+    let clips = insert_media(
+        &mut project,
+        &mut history,
+        tl,
+        MediaInsert {
+            media_id,
+            source_in: 0,
+            source_out: 50,
+            video: true,
+            audio: true,
+        },
+        10,
+        TargetTracks {
+            video: Some(0),
+            extra_audio: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(project.timelines[tl].tracks[1].clips[0].id, existing);
+    assert_eq!(spans(&project, tl, 1), vec![(0, 100, 0)]);
+    assert_eq!(
+        clips.iter().map(|(track, _)| *track).collect::<Vec<_>>(),
+        vec![0, 2, 3]
+    );
+    assert_eq!(history.position(), position + 1);
+    history.undo(&mut project);
+    assert_eq!(snapshot(&project, tl), before);
+    assert_eq!(project.timelines[tl].tracks.len(), 3);
+    history.redo(&mut project);
+    assert_eq!(spans(&project, tl, 1), vec![(0, 100, 0)]);
+    assert_eq!(project.timelines[tl].tracks.len(), 4);
+}
+
+#[test]
+fn inserting_video_reuses_nonoverlapping_audio_but_skips_locked_tracks() {
+    let (mut project, tl) =
+        project_with_tracks(&[TrackKind::Video, TrackKind::Audio, TrackKind::Audio]);
+    let mut history = History::default();
+    lock(&mut project, &mut history, tl, 1);
+    put(&mut project, &mut history, tl, 2, 0, 10);
+    let media_id = media(&mut project, 1);
+    let clips = insert_media(
+        &mut project,
+        &mut history,
+        tl,
+        MediaInsert {
+            media_id,
+            source_in: 0,
+            source_out: 50,
+            video: true,
+            audio: true,
+        },
+        10,
+        TargetTracks {
+            video: Some(0),
+            extra_audio: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(clips[1].0, 2);
+    assert_eq!(spans(&project, tl, 2), vec![(0, 10, 0), (10, 60, 0)]);
+    assert_eq!(project.timelines[tl].tracks.len(), 3);
+}
+
+#[test]
+fn an_explicit_first_audio_destination_does_not_overwrite_other_streams() {
+    let (mut project, tl) =
+        project_with_tracks(&[TrackKind::Video, TrackKind::Audio, TrackKind::Audio]);
+    let mut history = History::default();
+    put(&mut project, &mut history, tl, 1, 0, 100);
+    let media_id = media(&mut project, 2);
+    let clips = insert_media(
+        &mut project,
+        &mut history,
+        tl,
+        MediaInsert {
+            media_id,
+            source_in: 0,
+            source_out: 50,
+            video: true,
+            audio: true,
+        },
+        10,
+        TargetTracks {
+            video: Some(0),
+            extra_audio: Some(2),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        clips.iter().map(|(track, _)| *track).collect::<Vec<_>>(),
+        vec![0, 2, 3]
+    );
+    assert_eq!(spans(&project, tl, 1), vec![(0, 100, 0)]);
+}
+
+#[test]
 fn insert_media_of_an_unknown_media_does_nothing() {
     let (mut project, tl) = project_with_tracks(&[TrackKind::Video]);
     let mut history = History::default();
