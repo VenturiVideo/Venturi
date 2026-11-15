@@ -402,9 +402,8 @@ impl RenderAhead {
 
 impl Drop for RenderAhead {
     fn drop(&mut self) {
-        // A cycle reads `Stop` only once it ends: a jump breaks it off now.
+        // A cycle reads `Stop` only once it ends: `stopped` breaks it off now.
         self.shared.target.stopped.store(true, Ordering::Relaxed);
-        self.shared.target.jumps.fetch_add(1, Ordering::Relaxed);
         let _ = self.tx.send(Command::Stop);
         if let Some(h) = self.handle.take() {
             let _ = h.join();
