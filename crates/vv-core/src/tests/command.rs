@@ -323,3 +323,142 @@ fn the_processing_precision_is_an_undoable_step() {
     history.redo(&mut project);
     assert_eq!(project.precision, ProcessingPrecision::Standard);
 }
+
+#[test]
+fn camera_shake_keyframes_support_edit_move_interpolation_and_undo() {
+    let (mut project, tl) = project();
+    let id = project.alloc_clip_id();
+    let mut clip = crate::Clip::from_source_range(
+        id,
+        crate::ClipSource::SolidColor,
+        0,
+        100,
+        0,
+        Rational::one(),
+    );
+    clip.effects
+        .filters
+        .push(crate::ClipFilter::new(FilterKind::CameraShake));
+    project.timelines[tl].tracks[0].clips.push(clip);
+    let mut history = History::default();
+    let target = KeyframeTarget::CameraShake(crate::ShakeParam::MotionScale);
+    let track = |p: &Project| {
+        p.timelines[tl].clip(0, id).unwrap().effects.filters[0]
+            .shake
+            .track(crate::ShakeParam::MotionScale)
+            .clone()
+    };
+    history.do_command(
+        &mut project,
+        Box::new(UpsertKeyframe::new(
+            tl,
+            0,
+            id,
+            10,
+            KeyframeValue::CameraShake(crate::ShakeParam::MotionScale, 0.75),
+            Interpolation::Linear,
+        )),
+    );
+    assert_eq!(
+        track(&project).keyframe_at(10),
+        Some((0.75, Interpolation::Linear))
+    );
+    history.do_command(
+        &mut project,
+        Box::new(MoveKeyframes::new(tl, 0, id, vec![(target, 10)], 5)),
+    );
+    assert_eq!(track(&project).keyframe_at(10), None);
+    assert!(track(&project).keyframe_at(15).is_some());
+    history.do_command(
+        &mut project,
+        Box::new(SetKeyframeInterpolation::new(
+            tl,
+            0,
+            id,
+            vec![(target, 15)],
+            Interpolation::EaseOut,
+        )),
+    );
+    assert_eq!(
+        track(&project).keyframe_at(15),
+        Some((0.75, Interpolation::EaseOut))
+    );
+    history.do_command(
+        &mut project,
+        Box::new(RemoveKeyframe::new(tl, 0, id, target, 15)),
+    );
+    assert!(track(&project).is_constant());
+    for _ in 0..4 {
+        history.undo(&mut project);
+    }
+    assert!(track(&project).is_constant());
+    for _ in 0..4 {
+        history.redo(&mut project);
+    }
+    assert!(track(&project).is_constant());
+    history.undo(&mut project);
+    assert_eq!(
+        track(&project).keyframe_at(15),
+        Some((0.75, Interpolation::EaseOut))
+    );
+}
+
+#[test]
+fn splitting_animated_camera_shake_preserves_both_halves_exactly() {
+    let (mut project, tl) = project();
+    let id = project.alloc_clip_id();
+    let mut clip = crate::Clip::from_source_range(
+        id,
+        crate::ClipSource::SolidColor,
+        0,
+        100,
+        0,
+        Rational::one(),
+    );
+    let mut filter = crate::ClipFilter::new(FilterKind::CameraShake);
+    filter
+        .shake
+        .track_mut(crate::ShakeParam::Speed)
+        .upsert(0, 1.0, Interpolation::EaseInOut);
+    filter
+        .shake
+        .track_mut(crate::ShakeParam::Speed)
+        .upsert(40, 5.0, Interpolation::Linear);
+    filter
+        .shake
+        .track_mut(crate::ShakeParam::Speed)
+        .upsert(90, 2.0, Interpolation::Linear);
+    filter
+        .shake
+        .track_mut(crate::ShakeParam::MotionScale)
+        .upsert(0, 0.0, Interpolation::Linear);
+    filter
+        .shake
+        .track_mut(crate::ShakeParam::MotionScale)
+        .upsert(90, 1.5, Interpolation::EaseOut);
+    clip.effects.filters.push(filter);
+    project.timelines[tl].tracks[0].clips.push(clip.clone());
+    SplitClip::new(tl, 0, id, 55).apply(&mut project);
+    for frame in 0..100 {
+        let half = project.timelines[tl].tracks[0]
+            .clips
+            .iter()
+            .find(|c| c.contains(frame))
+            .unwrap();
+        let mut before = crate::Transform::default();
+        let mut after = before;
+        clip.effects.filters[0].shake.apply(
+            &mut before,
+            clip.source_frame_at(frame),
+            25.0,
+            (1920, 1080),
+        );
+        half.effects.filters[0].shake.apply(
+            &mut after,
+            half.source_frame_at(frame),
+            25.0,
+            (1920, 1080),
+        );
+        assert_eq!(before, after, "frame {frame}");
+    }
+}

@@ -171,7 +171,8 @@ fn filter_shader_id(kind: vv_core::FilterKind) -> f32 {
         vv_core::FilterKind::Exposure => 2.0,
         vv_core::FilterKind::BoxBlur
         | vv_core::FilterKind::GaussianBlur
-        | vv_core::FilterKind::DropShadow => 0.0,
+        | vv_core::FilterKind::DropShadow
+        | vv_core::FilterKind::CameraShake => 0.0,
     }
 }
 

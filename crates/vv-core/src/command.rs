@@ -2287,6 +2287,7 @@ pub enum KeyframeValue {
     FilterGrow(FilterKind, f32),
     /// Of the clip's color correction.
     Grade(GradeParam, f32),
+    CameraShake(crate::ShakeParam, f32),
     /// Of the clip's mask at that index.
     Mask(usize, MaskParam, f32),
     /// Of a text clip.
@@ -2373,6 +2374,7 @@ pub enum KeyframeTarget {
     FilterOffset(FilterKind, Axis),
     FilterGrow(FilterKind),
     Grade(GradeParam),
+    CameraShake(crate::ShakeParam),
     Mask(usize, MaskParam),
     Text,
 }
@@ -2389,6 +2391,7 @@ impl KeyframeValue {
             Self::FilterOffset(kind, axis, _) => KeyframeTarget::FilterOffset(kind, axis),
             Self::FilterGrow(kind, _) => KeyframeTarget::FilterGrow(kind),
             Self::Grade(param, _) => KeyframeTarget::Grade(param),
+            Self::CameraShake(param, _) => KeyframeTarget::CameraShake(param),
             Self::Mask(index, param, _) => KeyframeTarget::Mask(index, param),
             Self::Text(_) => KeyframeTarget::Text,
         }
@@ -2401,6 +2404,13 @@ fn filter_mut(effects: &mut EffectStack, kind: FilterKind) -> Option<&mut ClipFi
 
 fn grade_track_mut(effects: &mut EffectStack, param: GradeParam) -> Option<&mut Keyframed<f32>> {
     filter_mut(effects, FilterKind::ColorCorrection).map(|f| f.grade.track_mut(param))
+}
+
+fn shake_track_mut(
+    effects: &mut EffectStack,
+    param: crate::ShakeParam,
+) -> Option<&mut Keyframed<f32>> {
+    filter_mut(effects, FilterKind::CameraShake).map(|f| f.shake.track_mut(param))
 }
 
 fn mask_track_mut(
@@ -2454,6 +2464,9 @@ fn take_keyframe(
         KeyframeTarget::Grade(param) => grade_track_mut(effects, param)
             .and_then(|k| k.remove_at(frame))
             .map(|(v, i)| (KeyframeValue::Grade(param, v), i)),
+        KeyframeTarget::CameraShake(param) => shake_track_mut(effects, param)
+            .and_then(|k| k.remove_at(frame))
+            .map(|(v, i)| (KeyframeValue::CameraShake(param, v), i)),
         KeyframeTarget::Mask(index, param) => mask_track_mut(effects, index, param)
             .and_then(|k| k.remove_at(frame))
             .map(|(v, i)| (KeyframeValue::Mask(index, param, v), i)),
@@ -2509,6 +2522,11 @@ fn put_keyframe(
                 filter.grow.upsert(frame, v, interpolation);
             }
         }
+        KeyframeValue::CameraShake(param, v) => {
+            if let Some(track) = shake_track_mut(effects, param) {
+                track.upsert(frame, v, interpolation);
+            }
+        }
         KeyframeValue::Grade(param, v) => {
             if let Some(track) = grade_track_mut(effects, param) {
                 track.upsert(frame, v, interpolation);
@@ -2558,6 +2576,9 @@ fn set_keyframe_interpolation(
         }
         KeyframeTarget::Grade(param) => {
             grade_track_mut(effects, param).and_then(|k| k.set_interpolation(frame, interpolation))
+        }
+        KeyframeTarget::CameraShake(param) => {
+            shake_track_mut(effects, param).and_then(|k| k.set_interpolation(frame, interpolation))
         }
         KeyframeTarget::Mask(index, param) => mask_track_mut(effects, index, param)
             .and_then(|k| k.set_interpolation(frame, interpolation)),
