@@ -97,6 +97,13 @@ fn guess_matrix(space: color::Space, height: u32) -> ColorMatrix {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Threads of the software decoders this thread opens, 0 = one per core:
+    /// what depends on the thread count must not depend on the test machine.
+    static SOFTWARE_THREADS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Decoder open on a single video stream of a media. Not `Sync`: every
 /// decode thread (e.g. the decode-ahead in `playback`) owns its own
 /// instance.
@@ -188,9 +195,13 @@ impl Decoder {
         let lease = lease.filter(|_| hw.is_some());
         // Multithreaded decode: a seek decodes from the last keyframe up to
         // the target, in parallel it is much faster.
+        #[cfg(not(test))]
+        let software_threads = 0;
+        #[cfg(test)]
+        let software_threads = SOFTWARE_THREADS.get();
         decoder_ctx.set_threading(ffmpeg::threading::Config {
             kind: ffmpeg::threading::Type::Frame,
-            count: if hw.is_some() { 1 } else { 0 },
+            count: if hw.is_some() { 1 } else { software_threads },
         });
         let decoder = decoder_ctx.video()?;
 
@@ -588,6 +599,12 @@ impl Decoder {
         }
 
         loop {
+            // Frames already decoded go out before the next packet goes in:
+            // a decoder holding more than one (dav1d with several threads)
+            // refuses packets with EAGAIN until they are read.
+            if self.decoder.receive_frame(&mut decoded).is_ok() {
+                return Ok(Some(self.raw_frame(decoded)));
+            }
             // `Packet::read` does not unref the previous packet: reusing one
             // would leak every packet read.
             let mut packet = ffmpeg::Packet::empty();
@@ -610,9 +627,6 @@ impl Decoder {
                     });
                     self.set_skip_nonref(skip);
                     self.decoder.send_packet(&packet)?;
-                    if self.decoder.receive_frame(&mut decoded).is_ok() {
-                        return Ok(Some(self.raw_frame(decoded)));
-                    }
                 }
                 Err(ffmpeg::Error::Eof) => {
                     self.decoder.send_eof()?;
