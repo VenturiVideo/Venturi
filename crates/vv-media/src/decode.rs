@@ -160,6 +160,17 @@ impl Decoder {
         hw: &[crate::hw::HwDevice],
         priority: crate::hw::HwPriority,
     ) -> Result<Self, crate::MediaError> {
+        Self::open_with_threads(path, hw, priority, 0)
+    }
+
+    /// `software_threads`: 0 = one per core. Tests pin it so that what
+    /// depends on the thread count does not depend on the machine.
+    fn open_with_threads(
+        path: &Path,
+        hw: &[crate::hw::HwDevice],
+        priority: crate::hw::HwPriority,
+        software_threads: usize,
+    ) -> Result<Self, crate::MediaError> {
         crate::probe::ensure_init();
 
         let ictx = ffmpeg::format::input(&path)?;
@@ -190,7 +201,7 @@ impl Decoder {
         // the target, in parallel it is much faster.
         decoder_ctx.set_threading(ffmpeg::threading::Config {
             kind: ffmpeg::threading::Type::Frame,
-            count: if hw.is_some() { 1 } else { 0 },
+            count: if hw.is_some() { 1 } else { software_threads },
         });
         let decoder = decoder_ctx.video()?;
 
@@ -588,6 +599,12 @@ impl Decoder {
         }
 
         loop {
+            // Frames already decoded go out before the next packet goes in:
+            // a decoder holding more than one (dav1d with several threads)
+            // refuses packets with EAGAIN until they are read.
+            if self.decoder.receive_frame(&mut decoded).is_ok() {
+                return Ok(Some(self.raw_frame(decoded)));
+            }
             // `Packet::read` does not unref the previous packet: reusing one
             // would leak every packet read.
             let mut packet = ffmpeg::Packet::empty();
@@ -610,9 +627,6 @@ impl Decoder {
                     });
                     self.set_skip_nonref(skip);
                     self.decoder.send_packet(&packet)?;
-                    if self.decoder.receive_frame(&mut decoded).is_ok() {
-                        return Ok(Some(self.raw_frame(decoded)));
-                    }
                 }
                 Err(ffmpeg::Error::Eof) => {
                     self.decoder.send_eof()?;

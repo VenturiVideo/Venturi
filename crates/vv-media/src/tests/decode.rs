@@ -921,3 +921,36 @@ fn keyframe_before_decodes_the_keyframe_alone_and_a_seek_resumes_after_it() {
         "usable again after a seek"
     );
 }
+
+/// dav1d with several threads holds more than one decoded frame, and FFmpeg
+/// refuses the next packet with EAGAIN until they are read: decoding (and
+/// exporting) AV1 failed after a few frames with "Resource temporarily
+/// unavailable" on machines with 6 or more cores.
+#[test]
+fn av1_decodes_to_the_end_with_many_decoder_threads() {
+    let dir = crate::test_support::TempDir::new("vv-media-decode-test");
+    let path = dir.join("av1.mkv");
+    crate::test_support::ffmpeg(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=320x240:rate=25:duration=2",
+            "-c:v",
+            "libaom-av1",
+            "-cpu-used",
+            "8",
+            "-pix_fmt",
+            "yuv420p",
+        ],
+        &path,
+    );
+    let mut decoder =
+        Decoder::open_with_threads(&path, &[], crate::hw::HwPriority::Normal, 16).unwrap();
+
+    let mut frames = 0;
+    while decoder.next_frame().unwrap().is_some() {
+        frames += 1;
+    }
+    assert_eq!(frames, 50);
+}
