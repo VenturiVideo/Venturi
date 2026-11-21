@@ -244,3 +244,19 @@ fn a_cancelled_search_returns_nothing() {
     let references = vec![reference("/old/rana.mov", meta(10, 64, 48))];
     assert!(search(&references, &dir, &only(&[Criterion::Name]), &progress).is_none());
 }
+
+#[test]
+fn files_under_skips_hidden_directories_below_the_base() {
+    let dir = temp_dir("hidden");
+    let trash = dir.join(".local/share/Trash/files");
+    std::fs::create_dir_all(&trash).unwrap();
+    std::fs::write(trash.join("rana.mp4"), b"x").unwrap();
+    std::fs::create_dir(dir.join("media")).unwrap();
+    std::fs::write(dir.join("media/rospo.mp4"), b"x").unwrap();
+    std::fs::write(dir.join(".rana.mp4"), b"x").unwrap();
+
+    let mut found = files_under(&dir);
+    found.sort();
+    assert_eq!(found, vec![dir.join(".rana.mp4"), dir.join("media/rospo.mp4")]);
+    assert_eq!(files_under(&trash), vec![trash.join("rana.mp4")]);
+}
