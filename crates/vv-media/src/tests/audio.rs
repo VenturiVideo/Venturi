@@ -590,3 +590,68 @@ fn a_seeked_decode_matches_the_full_decode_on_vbr_mp3() {
     );
     assert_seek_matches_full_decode(&path, 1e-4);
 }
+
+#[test]
+fn reached_comes_after_every_sample_before_it() {
+    let dir = crate::test_support::TempDir::new("vv-media-audio-test");
+    for (name, codec) in [("reached.mkv", "pcm_s16le"), ("reached.mp4", "aac")] {
+        let path = dir.join(name);
+        let sine = |secs| format!("sine=sample_rate=48000:duration={secs}");
+        let (late, short, long) = (sine(10), sine(2), sine(90));
+        crate::test_support::ffmpeg(
+            &[
+                "-itsoffset",
+                "45",
+                "-f",
+                "lavfi",
+                "-i",
+                &late,
+                "-f",
+                "lavfi",
+                "-i",
+                &short,
+                "-f",
+                "lavfi",
+                "-i",
+                &long,
+                "-map",
+                "0",
+                "-map",
+                "1",
+                "-map",
+                "2",
+                "-c:a",
+                codec,
+            ],
+            &path,
+        );
+        for from in [0, 48_000 * 50] {
+            let reached = std::cell::RefCell::new([0_u64; 3]);
+            decode_audio_streams_tracked(
+                &path,
+                &[0, 1, 2],
+                48_000,
+                from,
+                |slot, _, at, _| {
+                    let reached = reached.borrow()[slot];
+                    assert!(
+                        at >= reached,
+                        "{name} from {from}: stream {slot} at {at} after {reached}"
+                    );
+                    ControlFlow::Continue(())
+                },
+                |slot, frame| {
+                    let mut reached = reached.borrow_mut();
+                    reached[slot] = reached[slot].max(frame);
+                },
+            )
+            .unwrap();
+            let reached = reached.into_inner();
+            assert!(
+                reached[1] > 48_000 * 2,
+                "{name} from {from}: short stream reached {}",
+                reached[1]
+            );
+        }
+    }
+}

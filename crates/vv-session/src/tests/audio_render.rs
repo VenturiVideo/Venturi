@@ -874,6 +874,96 @@ fn a_cancelled_render_stops_at_the_next_chunk() {
     assert_eq!(chunks, 1);
 }
 
+/// `(stream 0, stream 1)` of a two-stream mkv at 48 kHz, each a sine of
+/// `secs` with stream 0 starting `offset` seconds into the file.
+fn two_streams(dir: &TempDir, name: &str, secs: (u32, u32), offset: u32) -> PathBuf {
+    let sine = |freq, secs| format!("sine=frequency={freq}:sample_rate=48000:duration={secs}");
+    let (first, second) = (sine(440, secs.0), sine(660, secs.1));
+    let offset = offset.to_string();
+    source(
+        dir,
+        name,
+        &[
+            "-itsoffset",
+            &offset,
+            "-f",
+            "lavfi",
+            "-i",
+            &first,
+            "-f",
+            "lavfi",
+            "-i",
+            &second,
+            "-map",
+            "0",
+            "-map",
+            "1",
+            "-c:a",
+            "pcm_s16le",
+        ],
+    )
+}
+
+#[test]
+fn a_stream_shorter_than_its_window_does_not_buffer_the_others_to_the_end() {
+    let dir = TempDir::new("vv-audio-render-test");
+    let path = two_streams(&dir, "short_and_long.mkv", (1, 120), 0);
+    let mut reader = Reader::open(path, vec![0, 1], 0);
+    let rate = PROJECT_SAMPLE_RATE as u64;
+    let blocks = reader.read(0, 0..2 * rate).unwrap();
+    assert!(blocks.end() >= rate - BLOCK_FRAMES && blocks.end() <= 2 * rate);
+    let held = reader.kept[1].end();
+    assert!(held <= 34 * rate, "{held} frames of the long stream held");
+}
+
+#[test]
+fn a_stream_starting_late_in_the_file_is_read_whole() {
+    let dir = TempDir::new("vv-audio-render-test");
+    let path = two_streams(&dir, "late.mkv", (30, 120), 45);
+    let mut reader = Reader::open(path, vec![0, 1], 0);
+    let rate = PROJECT_SAMPLE_RATE as u64;
+    assert_eq!(reader.read(0, 0..2 * rate).unwrap().end(), 2 * rate);
+}
+
+#[test]
+fn a_resampled_stream_ending_first_keeps_its_last_samples() {
+    let dir = TempDir::new("vv-audio-render-test");
+    let path = source(
+        &dir,
+        "resampled.mkv",
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=44100:duration=1",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=660:sample_rate=48000:duration=60",
+            "-map",
+            "0",
+            "-map",
+            "1",
+            "-c:a",
+            "pcm_s16le",
+        ],
+    );
+    let rate = PROJECT_SAMPLE_RATE as u64;
+    let samples = |streams| {
+        let blocks = Reader::open(path.clone(), streams, 0)
+            .read(0, 0..2 * rate)
+            .unwrap();
+        blocks.to_vec(0..blocks.end())
+    };
+    let (with_sibling, alone) = (samples(vec![0, 1]), samples(vec![0]));
+    assert!(
+        with_sibling == alone,
+        "{} samples, {} read alone",
+        with_sibling.len(),
+        alone.len()
+    );
+}
+
 #[test]
 fn a_decode_thread_gone_without_an_end_fails_the_render() {
     let (tx, decoded) = sync_channel(1);
@@ -887,6 +977,7 @@ fn a_decode_thread_gone_without_an_end_fails_the_render() {
             blocks: VecDeque::new(),
             filling: new_block(),
         }],
+        reached: vec![0],
         ended: false,
         read_from: vec![None],
         used: false,

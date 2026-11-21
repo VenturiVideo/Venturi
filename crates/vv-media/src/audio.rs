@@ -45,6 +45,13 @@ const MAX_ORIGIN_PACKETS: usize = 2000;
 /// Frames decoded from the start of each stream before a seek.
 const ORIGIN_FRAMES: usize = 8;
 
+/// How far the packets of different streams can be out of timestamp order.
+/// The mov and avi demuxers reorder by timestamp within 1 s; Matroska and
+/// MPEG-TS follow the file, which ffmpeg's muxers interleave within 10 s
+/// (`max_interleave_delta`): 30 s leaves room for files muxed less tightly.
+/// Not knowable per file: there is no per-stream EOF.
+const INTERLEAVE_SLACK_SECS: f64 = 30.0;
+
 /// Timestamps further than this from the samples counted are a jump in the
 /// stream (a gap, an overlap): placed by timestamp, as the video is, so a
 /// decode from the start and one from a seek agree. Above the rounding of
@@ -132,6 +139,15 @@ impl StreamDecoder {
             fed: 0,
             next: 0,
         })
+    }
+
+    /// Container time of output frame 0, once the anchor gives it: before,
+    /// frames are placed by count, not by timestamp.
+    fn origin_secs(&self) -> Option<f64> {
+        let anchor = self.anchor?;
+        Some(
+            anchor.ts as f64 * self.time_base - anchor.position as f64 / self.in_rate.max(1) as f64,
+        )
     }
 
     fn resamples(&self) -> bool {
@@ -305,6 +321,7 @@ pub fn decode_audio_streams_streaming(
         out_rate,
         None,
         |slot, channels, _, chunk| on_chunk(slot, channels, chunk),
+        |_, _| {},
     )
 }
 
@@ -320,9 +337,30 @@ pub fn decode_audio_streams_from(
     from: u64,
     on_chunk: impl FnMut(usize, u16, u64, &[f32]) -> ControlFlow<()>,
 ) -> Result<Vec<Option<(u32, u16)>>, crate::MediaError> {
+    decode_audio_streams_tracked(path, stream_indices, out_rate, from, on_chunk, |_, _| {})
+}
+
+/// Like `decode_audio_streams_from`, also calling `on_reached(i, frame)`
+/// once no sample of stream `i` before `frame` is left to deliver: a stream
+/// that ends before the file is known to be over without reading on to EOF.
+pub fn decode_audio_streams_tracked(
+    path: &Path,
+    stream_indices: &[usize],
+    out_rate: u32,
+    from: u64,
+    on_chunk: impl FnMut(usize, u16, u64, &[f32]) -> ControlFlow<()>,
+    on_reached: impl FnMut(usize, u64),
+) -> Result<Vec<Option<(u32, u16)>>, crate::MediaError> {
     let seek_to = from as f64 / out_rate.max(1) as f64 - SEEK_PREROLL_SECS;
     let seek_to = (seek_to > 0.0).then_some(seek_to);
-    decode_streams(path, stream_indices, Some(out_rate), seek_to, on_chunk)
+    decode_streams(
+        path,
+        stream_indices,
+        Some(out_rate),
+        seek_to,
+        on_chunk,
+        on_reached,
+    )
 }
 
 fn decode_streams(
@@ -331,6 +369,7 @@ fn decode_streams(
     out_rate: Option<u32>,
     seek_to: Option<f64>,
     mut on_chunk: impl FnMut(usize, u16, u64, &[f32]) -> ControlFlow<()>,
+    mut on_reached: impl FnMut(usize, u64),
 ) -> Result<Vec<Option<(u32, u16)>>, crate::MediaError> {
     crate::probe::ensure_init();
 
@@ -362,6 +401,8 @@ fn decode_streams(
     }
 
     let mut samples = Vec::new();
+    // Container time of the furthest packet read.
+    let mut clock = f64::NEG_INFINITY;
     loop {
         // `Packet::read` does not unref the previous packet: reusing one
         // would leak every packet read.
@@ -377,6 +418,29 @@ fn decode_streams(
                 stream.decoder.send_packet(&packet)?;
                 if stream.drain(slot, &mut samples, &mut on_chunk)?.is_break() {
                     return Ok(formats);
+                }
+                // Muxers interleave on the start of a packet, not its end.
+                let Some(ts) = packet.dts().or(packet.pts()) else {
+                    continue;
+                };
+                clock = clock.max(ts as f64 * stream.time_base);
+                let past = clock - INTERLEAVE_SLACK_SECS;
+                for (i, entry) in decoders.iter_mut().enumerate() {
+                    let Some((_, other)) = entry else { continue };
+                    let Some(origin) = other.origin_secs().filter(|&o| past > o) else {
+                        continue;
+                    };
+                    let reached = ((past - origin) * other.out_rate as f64) as u64;
+                    // Idle that long, the stream has ended or has a gap: what
+                    // the resampler holds back would otherwise come only at
+                    // EOF, after `reached`. A gap restarts it anyway.
+                    if reached > other.next && other.resampler.delay().is_some() {
+                        if other.flush(i, &mut samples, &mut on_chunk)?.is_break() {
+                            return Ok(formats);
+                        }
+                        other.resampler = other.fresh_resampler()?;
+                    }
+                    on_reached(i, reached);
                 }
             }
             Err(ffmpeg::Error::Eof) => break,
@@ -462,9 +526,7 @@ fn seek(
             })
         });
         fresh.placing = true;
-        if let Some(anchor) = fresh.anchor {
-            let start = anchor.ts as f64 * fresh.time_base
-                - anchor.position as f64 / fresh.in_rate.max(1) as f64;
+        if let Some(start) = fresh.origin_secs() {
             first_secs = first_secs.min(start);
         }
         *old = fresh;
