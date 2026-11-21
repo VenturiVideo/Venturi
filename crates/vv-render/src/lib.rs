@@ -4,6 +4,8 @@
 pub mod compositor;
 pub mod scopes;
 mod smooth_cut;
+#[cfg(feature = "performance")]
+pub mod telemetry;
 pub mod text;
 
 pub use compositor::{

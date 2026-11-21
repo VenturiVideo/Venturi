@@ -841,6 +841,8 @@ impl GradeUniform {
 }
 
 pub struct Compositor {
+    #[cfg(feature = "performance")]
+    telemetry: Mutex<Option<crate::telemetry::GpuTelemetry>>,
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
     work: WorkPipelines,
@@ -1106,6 +1108,8 @@ impl Compositor {
         });
 
         let compositor = Self {
+            #[cfg(feature = "performance")]
+            telemetry: Mutex::new(None),
             device,
             queue,
             work,
@@ -1122,6 +1126,30 @@ impl Compositor {
         };
         compositor.log_work_format();
         compositor
+    }
+
+    #[cfg_attr(not(feature = "performance"), allow(unused_variables))]
+    fn submit_encoder(&self, encoder: wgpu::CommandEncoder, label: &str) {
+        #[cfg(feature = "performance")]
+        if let Some(telemetry) = self.telemetry.lock().unwrap().as_mut() {
+            telemetry.submit(&self.device, &self.queue, encoder, label);
+            return;
+        }
+        self.queue.submit(Some(encoder.finish()));
+    }
+
+    #[cfg(feature = "performance")]
+    pub fn enable_profiling(&self) -> bool {
+        *self.telemetry.lock().unwrap() = crate::telemetry::GpuTelemetry::new(&self.device);
+        self.telemetry.lock().unwrap().is_some()
+    }
+
+    #[cfg(feature = "performance")]
+    pub fn finish_profiling(&self) -> Option<crate::telemetry::GpuReport> {
+        self.telemetry.lock().unwrap().take().map(|mut telemetry| {
+            let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+            telemetry.finish(&self.queue)
+        })
     }
 
     /// The device and queue the compositor's textures live on: a `Scopes`
@@ -1299,7 +1327,7 @@ impl Compositor {
             pass.dispatch_workgroups(groups_x, groups_y, 1);
         }
         encoder.copy_buffer_to_buffer(storage, 0, readback, 0, buffer_size);
-        self.queue.submit(Some(encoder.finish()));
+        self.submit_encoder(encoder, "i420");
         give_back(&mut self.scratch.lock().unwrap(), [work]);
 
         self.map_read(readback, |data| data[..len].to_vec())
@@ -1351,7 +1379,7 @@ impl Compositor {
                 depth_or_array_layers: 1,
             },
         );
-        self.queue.submit(Some(encoder.finish()));
+        self.submit_encoder(encoder, "readback");
 
         self.map_read(&output_buffer, |data| {
             let mut out = Vec::with_capacity((unpadded_bytes_per_row * height) as usize);
@@ -1482,7 +1510,7 @@ impl Compositor {
             wgpu::LoadOp::Load,
             Some((&bind_group, &self.work.matte)),
         );
-        self.queue.submit(Some(encoder.finish()));
+        self.submit_encoder(encoder, "matte");
         give_back(&mut self.scratch.lock().unwrap(), [matte_texture]);
         PooledTexture {
             texture: Some(out),
@@ -1532,7 +1560,7 @@ impl Compositor {
             wgpu::LoadOp::Clear(TRANSPARENT),
             Some((&bind_group, &self.resolve_pipeline)),
         );
-        self.queue.submit(Some(encoder.finish()));
+        self.submit_encoder(encoder, "resolve");
         // A copy stays in the pool: the next frame of the same size draws
         // over it, after the GPU has finished with this one (same queue).
         give_back(&mut self.pool.lock().unwrap().outputs, [output.clone()]);
@@ -1601,7 +1629,7 @@ impl Compositor {
     }
 
     fn submit(&self, rec: Recording) {
-        self.queue.submit(Some(rec.encoder.finish()));
+        self.submit_encoder(rec.encoder, "compose");
         give_back(
             &mut self.scratch.lock().unwrap(),
             rec.scratch.into_iter().flatten(),
