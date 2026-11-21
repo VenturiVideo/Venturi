@@ -418,18 +418,28 @@ fn decode_streams(
                 if stream.drain(slot, &mut samples, &mut on_chunk)?.is_break() {
                     return Ok(formats);
                 }
-                let Some(ts) = packet.pts().or(packet.dts()) else {
+                // Muxers interleave on the start of a packet, not its end.
+                let Some(ts) = packet.dts().or(packet.pts()) else {
                     continue;
                 };
-                clock = clock.max((ts + packet.duration()) as f64 * stream.time_base);
+                clock = clock.max(ts as f64 * stream.time_base);
                 let past = clock - INTERLEAVE_SLACK_SECS;
-                for (i, entry) in decoders.iter().enumerate() {
-                    if let Some((_, other)) = entry
-                        && let Some(origin) = other.origin_secs()
-                        && past > origin
-                    {
-                        on_reached(i, ((past - origin) * other.out_rate as f64) as u64);
+                for (i, entry) in decoders.iter_mut().enumerate() {
+                    let Some((_, other)) = entry else { continue };
+                    let Some(origin) = other.origin_secs().filter(|&o| past > o) else {
+                        continue;
+                    };
+                    let reached = ((past - origin) * other.out_rate as f64) as u64;
+                    // Idle that long, the stream has ended or has a gap: what
+                    // the resampler holds back would otherwise come only at
+                    // EOF, after `reached`. A gap restarts it anyway.
+                    if reached > other.next && other.resampler.delay().is_some() {
+                        if other.flush(i, &mut samples, &mut on_chunk)?.is_break() {
+                            return Ok(formats);
+                        }
+                        other.resampler = other.fresh_resampler()?;
                     }
+                    on_reached(i, reached);
                 }
             }
             Err(ffmpeg::Error::Eof) => break,

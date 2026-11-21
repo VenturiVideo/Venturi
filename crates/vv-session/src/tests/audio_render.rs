@@ -926,6 +926,45 @@ fn a_stream_starting_late_in_the_file_is_read_whole() {
 }
 
 #[test]
+fn a_resampled_stream_ending_first_keeps_its_last_samples() {
+    let dir = TempDir::new("vv-audio-render-test");
+    let path = source(
+        &dir,
+        "resampled.mkv",
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=44100:duration=1",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=660:sample_rate=48000:duration=60",
+            "-map",
+            "0",
+            "-map",
+            "1",
+            "-c:a",
+            "pcm_s16le",
+        ],
+    );
+    let rate = PROJECT_SAMPLE_RATE as u64;
+    let samples = |streams| {
+        let blocks = Reader::open(path.clone(), streams, 0)
+            .read(0, 0..2 * rate)
+            .unwrap();
+        blocks.to_vec(0..blocks.end())
+    };
+    let (with_sibling, alone) = (samples(vec![0, 1]), samples(vec![0]));
+    assert!(
+        with_sibling == alone,
+        "{} samples, {} read alone",
+        with_sibling.len(),
+        alone.len()
+    );
+}
+
+#[test]
 fn a_decode_thread_gone_without_an_end_fails_the_render() {
     let (tx, decoded) = sync_channel(1);
     drop(tx);
