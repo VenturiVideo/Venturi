@@ -597,11 +597,11 @@ fn reached_comes_after_every_sample_before_it() {
     for (name, codec) in [("reached.mkv", "pcm_s16le"), ("reached.mp4", "aac")] {
         let path = dir.join(name);
         let sine = |secs| format!("sine=sample_rate=48000:duration={secs}");
-        let (late, short, long) = (sine(10), sine(2), sine(60));
+        let (late, short, long) = (sine(10), sine(2), sine(90));
         crate::test_support::ffmpeg(
             &[
                 "-itsoffset",
-                "15",
+                "45",
                 "-f",
                 "lavfi",
                 "-i",
@@ -625,7 +625,7 @@ fn reached_comes_after_every_sample_before_it() {
             ],
             &path,
         );
-        for from in [0, 48_000 * 20] {
+        for from in [0, 48_000 * 50] {
             let reached = std::cell::RefCell::new([0_u64; 3]);
             decode_audio_streams_tracked(
                 &path,

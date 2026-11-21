@@ -48,8 +48,9 @@ const ORIGIN_FRAMES: usize = 8;
 /// How far the packets of different streams can be out of timestamp order.
 /// The mov and avi demuxers reorder by timestamp within 1 s; Matroska and
 /// MPEG-TS follow the file, which ffmpeg's muxers interleave within 10 s
-/// (`max_interleave_delta`). Not knowable per file: there is no per-stream EOF.
-const INTERLEAVE_SLACK_SECS: f64 = 10.0;
+/// (`max_interleave_delta`): 30 s leaves room for files muxed less tightly.
+/// Not knowable per file: there is no per-stream EOF.
+const INTERLEAVE_SLACK_SECS: f64 = 30.0;
 
 /// Timestamps further than this from the samples counted are a jump in the
 /// stream (a gap, an overlap): placed by timestamp, as the video is, so a

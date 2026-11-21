@@ -913,13 +913,13 @@ fn a_stream_shorter_than_its_window_does_not_buffer_the_others_to_the_end() {
     let blocks = reader.read(0, 0..2 * rate).unwrap();
     assert!(blocks.end() >= rate - BLOCK_FRAMES && blocks.end() <= 2 * rate);
     let held = reader.kept[1].end();
-    assert!(held <= 14 * rate, "{held} frames of the long stream held");
+    assert!(held <= 34 * rate, "{held} frames of the long stream held");
 }
 
 #[test]
 fn a_stream_starting_late_in_the_file_is_read_whole() {
     let dir = TempDir::new("vv-audio-render-test");
-    let path = two_streams(&dir, "late.mkv", (30, 60), 15);
+    let path = two_streams(&dir, "late.mkv", (30, 120), 45);
     let mut reader = Reader::open(path, vec![0, 1], 0);
     let rate = PROJECT_SAMPLE_RATE as u64;
     assert_eq!(reader.read(0, 0..2 * rate).unwrap().end(), 2 * rate);
