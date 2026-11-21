@@ -257,6 +257,9 @@ fn files_under_skips_hidden_directories_below_the_base() {
 
     let mut found = files_under(&dir);
     found.sort();
-    assert_eq!(found, vec![dir.join(".rana.mp4"), dir.join("media/rospo.mp4")]);
+    assert_eq!(
+        found,
+        vec![dir.join(".rana.mp4"), dir.join("media/rospo.mp4")]
+    );
     assert_eq!(files_under(&trash), vec![trash.join("rana.mp4")]);
 }
