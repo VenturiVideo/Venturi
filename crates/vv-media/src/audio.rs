@@ -45,8 +45,10 @@ const MAX_ORIGIN_PACKETS: usize = 2000;
 /// Frames decoded from the start of each stream before a seek.
 const ORIGIN_FRAMES: usize = 8;
 
-/// How far the packets of different streams can be out of timestamp order:
-/// ffmpeg's muxers interleave within 10 s by default (`max_interleave_delta`).
+/// How far the packets of different streams can be out of timestamp order.
+/// The mov and avi demuxers reorder by timestamp within 1 s; Matroska and
+/// MPEG-TS follow the file, which ffmpeg's muxers interleave within 10 s
+/// (`max_interleave_delta`). Not knowable per file: there is no per-stream EOF.
 const INTERLEAVE_SLACK_SECS: f64 = 10.0;
 
 /// Timestamps further than this from the samples counted are a jump in the
@@ -138,15 +140,13 @@ impl StreamDecoder {
         })
     }
 
-    /// Container time of output frame 0, once a frame or the anchor gives it.
+    /// Container time of output frame 0, once the anchor gives it: before,
+    /// frames are placed by count, not by timestamp.
     fn origin_secs(&self) -> Option<f64> {
-        match self.anchor {
-            Some(anchor) => Some(
-                anchor.ts as f64 * self.time_base
-                    - anchor.position as f64 / self.in_rate.max(1) as f64,
-            ),
-            None => Some(self.firsts.first()?.0? as f64 * self.time_base),
-        }
+        let anchor = self.anchor?;
+        Some(
+            anchor.ts as f64 * self.time_base - anchor.position as f64 / self.in_rate.max(1) as f64,
+        )
     }
 
     fn resamples(&self) -> bool {
