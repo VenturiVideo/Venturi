@@ -1030,6 +1030,11 @@ enum Decoded {
         at: u64,
         samples: Vec<f32>,
     },
+    /// Nothing of the stream in `slot` before `frame` is left to come.
+    Reached {
+        slot: usize,
+        frame: u64,
+    },
     End(Result<(), String>),
 }
 
@@ -1041,6 +1046,8 @@ struct Reader {
     streams: Vec<usize>,
     decoded: Receiver<Decoded>,
     kept: Vec<KeptStream>,
+    /// Per stream, the frame before which the decode has delivered it all.
+    reached: Vec<u64>,
     ended: bool,
     /// Per stream, the first frame read during the current chunk.
     read_from: Vec<Option<u64>>,
@@ -1143,6 +1150,7 @@ impl Reader {
                     filling: new_block(),
                 })
                 .collect(),
+            reached: vec![0; n],
             ended: false,
             read_from: vec![None; n],
             used: false,
@@ -1164,9 +1172,14 @@ impl Reader {
     /// Up to the end of the file if it comes first.
     fn read(&mut self, stream: usize, frames: Range<u64>) -> Result<SampleBlocks, ExportError> {
         let slot = self.streams.iter().position(|s| *s == stream).unwrap();
-        while self.kept[slot].end() < frames.end && !self.ended {
+        // Waiting for the end of the file instead would keep the other
+        // streams decoded up to it when this one ends first.
+        while self.kept[slot].end() < frames.end && self.reached[slot] < frames.end && !self.ended {
             match self.decoded.recv() {
                 Ok(Decoded::Samples { slot, at, samples }) => self.append(slot, at, &samples),
+                Ok(Decoded::Reached { slot, frame }) => {
+                    self.reached[slot] = self.reached[slot].max(frame);
+                }
                 Ok(Decoded::End(Err(e))) => return Err(ExportError::Failed(e)),
                 Ok(Decoded::End(Ok(()))) => self.ended = true,
                 // The decode thread panicked: its audio would play as silence.
@@ -1214,7 +1227,9 @@ fn new_block() -> Vec<f32> {
 }
 
 fn decode_into(path: &Path, streams: &[usize], from: u64, tx: &SyncSender<Decoded>) {
-    let result = vv_media::decode_audio_streams_from(
+    // Reported every block, not every packet: fewer messages to the reader.
+    let mut sent = vec![0; streams.len()];
+    let result = vv_media::decode_audio_streams_tracked(
         path,
         streams,
         PROJECT_SAMPLE_RATE,
@@ -1226,6 +1241,13 @@ fn decode_into(path: &Path, streams: &[usize], from: u64, tx: &SyncSender<Decode
                 Ok(()) => ControlFlow::Continue(()),
                 // The render is done with this reader.
                 Err(_) => ControlFlow::Break(()),
+            }
+        },
+        |slot, frame| {
+            if frame >= sent[slot] + BLOCK_FRAMES {
+                sent[slot] = frame;
+                // A gone reader stops the decode at its next chunk.
+                let _ = tx.send(Decoded::Reached { slot, frame });
             }
         },
     );
