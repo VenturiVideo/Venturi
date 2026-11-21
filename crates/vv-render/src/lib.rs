@@ -15,6 +15,16 @@ pub use scopes::{ScopeKind, Scopes};
 /// same wgpu version as the compositor.
 pub use wgpu;
 
+/// `WGPU_BACKEND` wins; otherwise DX12 on Windows, where some Intel
+/// Vulkan drivers crash natively in `request_device`.
+pub fn backends() -> wgpu::Backends {
+    wgpu::Backends::from_env().unwrap_or(if cfg!(windows) {
+        wgpu::Backends::DX12 | wgpu::Backends::GL
+    } else {
+        wgpu::Backends::PRIMARY | wgpu::Backends::GL
+    })
+}
+
 /// The Vulkan adapters of the machine, without opening them.
 pub fn vulkan_adapters() -> Vec<wgpu::AdapterInfo> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {

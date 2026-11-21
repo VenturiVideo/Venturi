@@ -1,5 +1,7 @@
 //! A stereo gain VST3 used as a host test fixture. The VST3 API is raw FFI, so
 //! the trait impls are unsafe by nature; nothing here may panic across it.
+// The SDK's C enums are i32 on MSVC and u32 elsewhere, where the casts are needed.
+#![cfg_attr(windows, allow(clippy::unnecessary_cast))]
 use std::ffi::{CString, c_char, c_void};
 use std::ptr;
 use std::sync::Mutex;
@@ -884,5 +886,17 @@ extern "C" fn ModuleEntry(_library_handle: *mut c_void) -> bool {
 #[cfg(target_os = "linux")]
 #[unsafe(no_mangle)]
 extern "C" fn ModuleExit() -> bool {
+    true
+}
+
+#[cfg(windows)]
+#[unsafe(no_mangle)]
+extern "system" fn InitDll() -> bool {
+    true
+}
+
+#[cfg(windows)]
+#[unsafe(no_mangle)]
+extern "system" fn ExitDll() -> bool {
     true
 }

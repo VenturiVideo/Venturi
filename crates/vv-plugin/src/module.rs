@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::ffi::c_char;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::ffi::c_void;
 use std::mem::ManuallyDrop;
 use std::path::{Path, PathBuf};
@@ -128,7 +128,7 @@ fn cached<T: Clone>(
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn stem(bundle: &Path) -> Result<&std::ffi::OsStr, String> {
     bundle
         .file_stem()
@@ -163,8 +163,30 @@ fn binary_path(bundle: &Path) -> Result<PathBuf, String> {
     Ok(linux_binary(bundle, stem(bundle)?, &arch))
 }
 
+#[cfg(windows)]
+fn binary_path(bundle: &Path) -> Result<PathBuf, String> {
+    // Before bundles, a plugin was the DLL itself, named `.vst3`.
+    if bundle.is_file() {
+        return Ok(bundle.to_path_buf());
+    }
+    let mut file = stem(bundle)?.to_os_string();
+    file.push(".vst3");
+    Ok(bundle
+        .join("Contents")
+        .join(windows_arch_dir(std::env::consts::ARCH))
+        .join(file))
+}
+
+#[cfg(any(windows, test))]
+fn windows_arch_dir(arch: &str) -> String {
+    match arch {
+        "aarch64" => "arm64-win".into(),
+        _ => format!("{arch}-win"),
+    }
+}
+
 // VST3 bundle folders use `uname -m` names, which differ from Rust's ARCH.
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(any(target_os = "linux", test))]
 fn sdk_arch_dir(arch: &str, big_endian: bool) -> String {
     match (arch, big_endian) {
         ("x86", _) => "i386-linux".into(),
@@ -175,7 +197,7 @@ fn sdk_arch_dir(arch: &str, big_endian: bool) -> String {
 }
 
 // Falls back to any `*-linux` folder holding the binary (armv8l, i686, ...).
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(any(target_os = "linux", test))]
 fn linux_binary(bundle: &Path, stem: &std::ffi::OsStr, arch_dir: &str) -> PathBuf {
     let contents = bundle.join("Contents");
     let file = so_file_name(stem);
@@ -193,14 +215,14 @@ fn linux_binary(bundle: &Path, stem: &std::ffi::OsStr, arch_dir: &str) -> PathBu
         .unwrap_or(mapped)
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(any(target_os = "linux", test))]
 fn so_file_name(stem: &std::ffi::OsStr) -> std::ffi::OsString {
     let mut name = stem.to_os_string();
     name.push(".so");
     name
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 fn binary_path(_bundle: &Path) -> Result<PathBuf, String> {
     Err("VST3 plugins are not supported on this platform".into())
 }
@@ -213,14 +235,14 @@ pub fn bundle_binary(bundle: &Path) -> Option<PathBuf> {
     binary_path(bundle).ok()
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 fn load(_bundle: &Path) -> Result<Module, LoadError> {
     Err(LoadError::early(
         "VST3 plugins are not supported on this platform",
     ))
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn load(bundle: &Path) -> Result<Module, LoadError> {
     #[cfg(target_os = "macos")]
     let cf_bundle = bundle_ref(bundle)?;
@@ -274,6 +296,20 @@ fn open(bin: &Path) -> Result<(ManuallyDrop<libloading::Library>, *mut c_void), 
     ))
 }
 
+#[cfg(windows)]
+fn open(bin: &Path) -> Result<(ManuallyDrop<libloading::Library>, *mut c_void), libloading::Error> {
+    use libloading::os::windows::{LOAD_WITH_ALTERED_SEARCH_PATH, Library};
+    // The DLLs a plugin ships next to its binary must resolve from there.
+    let flags = if bin.is_absolute() {
+        LOAD_WITH_ALTERED_SEARCH_PATH
+    } else {
+        0
+    };
+    // SAFETY: loading a plugin runs its initialisers; that is what hosting means.
+    let lib = unsafe { Library::load_with_flags(bin, flags)? };
+    Ok((ManuallyDrop::new(lib.into()), std::ptr::null_mut()))
+}
+
 #[cfg(target_os = "macos")]
 fn enter(
     library: &libloading::Library,
@@ -308,6 +344,18 @@ fn enter(library: &libloading::Library, handle: *mut c_void) -> Result<(), Strin
     ok.then_some(()).ok_or_else(|| "ModuleEntry failed".into())
 }
 
+#[cfg(windows)]
+fn enter(library: &libloading::Library, _handle: *mut c_void) -> Result<(), String> {
+    // SAFETY: InitDll is the optional VST3 Windows entry point with this signature.
+    let ok = unsafe {
+        let Ok(entry) = library.get::<unsafe extern "system" fn() -> bool>(b"InitDll\0") else {
+            return Ok(());
+        };
+        entry()
+    };
+    ok.then_some(()).ok_or_else(|| "InitDll failed".into())
+}
+
 // Plugins fill these arrays; a missing NUL must not read past the end.
 pub(crate) fn c_str(chars: &[c_char]) -> String {
     let len = chars.iter().position(|&c| c == 0).unwrap_or(chars.len());
@@ -315,10 +363,12 @@ pub(crate) fn c_str(chars: &[c_char]) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn exit(library: &libloading::Library) {
     let name: &[u8] = if cfg!(target_os = "macos") {
         b"bundleExit\0"
+    } else if cfg!(windows) {
+        b"ExitDll\0"
     } else {
         b"ModuleExit\0"
     };

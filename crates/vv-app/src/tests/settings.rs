@@ -390,7 +390,12 @@ fn a_blocked_bundle_is_retried_only_once_it_changed_on_disk() {
     let bundle = dir.join("Crash.vst3");
     #[cfg(target_os = "macos")]
     let binary = bundle.join("Contents/MacOS/Crash");
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    let binary = bundle.join(format!(
+        "Contents/{}-win/Crash.vst3",
+        std::env::consts::ARCH
+    ));
+    #[cfg(not(any(target_os = "macos", windows)))]
     let binary = bundle.join(format!(
         "Contents/{}-linux/Crash.so",
         std::env::consts::ARCH
@@ -408,7 +413,10 @@ fn a_blocked_bundle_is_retried_only_once_it_changed_on_disk() {
 
     let later = std::time::SystemTime::UNIX_EPOCH
         + std::time::Duration::from_secs(recorded.unwrap() + 1000);
-    std::fs::File::open(&binary)
+    // Write access: Windows refuses to change the times of a read-only handle.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&binary)
         .unwrap()
         .set_modified(later)
         .unwrap();

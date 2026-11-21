@@ -570,9 +570,7 @@ pub fn default_output_path(
 ) -> PathBuf {
     let dir = match project_path.and_then(Path::parent) {
         Some(dir) => dir.to_path_buf(),
-        None => std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_default(),
+        None => vv_core::dirs::home_dir().unwrap_or_default(),
     };
     let file_name: String = format!("{project_name}-{timeline_name}.mp4")
         .chars()

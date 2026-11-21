@@ -25,7 +25,10 @@ mod platform;
 #[cfg(target_os = "linux")]
 #[path = "editor/x11.rs"]
 mod platform;
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(windows)]
+#[path = "editor/windows.rs"]
+mod platform;
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 mod platform {
     use std::ffi::c_void;
     use std::rc::Rc;

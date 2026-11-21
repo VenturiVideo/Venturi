@@ -431,6 +431,10 @@ fn hw_decode_settings(ui: &mut egui::Ui, settings: &mut Settings) -> bool {
             }
             HwDecodeMode::Off => (t!("settings.hw_decode_off"), None),
             HwDecodeMode::Nvdec => (t!("settings.hw_decode_nvdec"), None),
+            HwDecodeMode::D3d11va => (
+                t!("settings.hw_decode_d3d11va"),
+                Some(t!("settings.hw_decode_d3d11va_hint")),
+            ),
             HwDecodeMode::Vulkan => (
                 t!("settings.hw_decode_vulkan"),
                 Some(t!("settings.hw_decode_vulkan_hint")),

@@ -8,6 +8,8 @@ mod host;
 mod ids;
 mod json;
 mod media_tools;
+#[cfg(windows)]
+mod pipe_security;
 mod server;
 mod socket;
 mod stdout_guard;
