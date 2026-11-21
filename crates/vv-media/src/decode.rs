@@ -97,13 +97,6 @@ fn guess_matrix(space: color::Space, height: u32) -> ColorMatrix {
     }
 }
 
-#[cfg(test)]
-thread_local! {
-    /// Threads of the software decoders this thread opens, 0 = one per core:
-    /// what depends on the thread count must not depend on the test machine.
-    static SOFTWARE_THREADS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
 /// Decoder open on a single video stream of a media. Not `Sync`: every
 /// decode thread (e.g. the decode-ahead in `playback`) owns its own
 /// instance.
@@ -167,6 +160,17 @@ impl Decoder {
         hw: &[crate::hw::HwDevice],
         priority: crate::hw::HwPriority,
     ) -> Result<Self, crate::MediaError> {
+        Self::open_with_threads(path, hw, priority, 0)
+    }
+
+    /// `software_threads`: 0 = one per core. Tests pin it so that what
+    /// depends on the thread count does not depend on the machine.
+    fn open_with_threads(
+        path: &Path,
+        hw: &[crate::hw::HwDevice],
+        priority: crate::hw::HwPriority,
+        software_threads: usize,
+    ) -> Result<Self, crate::MediaError> {
         crate::probe::ensure_init();
 
         let ictx = ffmpeg::format::input(&path)?;
@@ -195,10 +199,6 @@ impl Decoder {
         let lease = lease.filter(|_| hw.is_some());
         // Multithreaded decode: a seek decodes from the last keyframe up to
         // the target, in parallel it is much faster.
-        #[cfg(not(test))]
-        let software_threads = 0;
-        #[cfg(test)]
-        let software_threads = SOFTWARE_THREADS.get();
         decoder_ctx.set_threading(ffmpeg::threading::Config {
             kind: ffmpeg::threading::Type::Frame,
             count: if hw.is_some() { 1 } else { software_threads },

@@ -945,10 +945,8 @@ fn av1_decodes_to_the_end_with_many_decoder_threads() {
         ],
         &path,
     );
-    SOFTWARE_THREADS.set(16);
-    let decoder = Decoder::open(&path);
-    SOFTWARE_THREADS.set(0);
-    let mut decoder = decoder.unwrap();
+    let mut decoder =
+        Decoder::open_with_threads(&path, &[], crate::hw::HwPriority::Normal, 16).unwrap();
 
     let mut frames = 0;
     while decoder.next_frame().unwrap().is_some() {
