@@ -40,7 +40,8 @@ const READER_QUEUE: usize = 64;
 const WARM_UP_FRAMES: u64 = PROJECT_SAMPLE_RATE as u64 / 4;
 /// Levels kept in `$XDG_CACHE_HOME/venturi/levels` at most, oldest first.
 const MAX_ON_DISK_BYTES: u64 = 256 << 20;
-/// The same for the session.
+/// The same for the session, per `LevelCache`: each `on_disk()` builds its
+/// own state, so the preview and an export bound their parts separately.
 const MAX_IN_MEMORY_BYTES: usize = 64 << 20;
 /// A `.tmp` older than this is a write a crash cut short.
 const MAX_TMP_AGE_SECS: u64 = 60 * 60;
@@ -496,13 +497,6 @@ struct SharedLevels {
 #[derive(Default)]
 struct LevelsState {
     parts: HashMap<u64, CachedParts>,
-    /// Keys of `parts` that are also on disk, oldest first, with the
-    /// generation they were queued in: an entry left behind by `forget`, or
-    /// by a newer queueing of the same key, is skipped rather than searched for.
-    droppable: VecDeque<(u64, u64)>,
-    /// The live generation of each queued key.
-    queued: HashMap<u64, u64>,
-    generation: u64,
     /// `cached_bytes` of the parts in `parts`.
     bytes: usize,
     /// Being measured by a thread: another one waits for them instead of
@@ -516,6 +510,11 @@ struct LevelsState {
 struct CachedParts {
     parts: LevelParts,
     sources: Option<Vec<Stamp>>,
+    /// The part has a file behind it, so the memory it holds can be given
+    /// back: a read from the file brings it again. A write that failed, or a
+    /// degraded measure, leaves it `false`, and only the measure that made
+    /// it reads it back.
+    on_disk: bool,
 }
 
 impl Default for LevelCache {
@@ -668,8 +667,9 @@ impl LevelCache {
             CachedParts {
                 parts: part.clone(),
                 sources: Some(sources),
+                // Read back from the file, so the file is what backs it.
+                on_disk: true,
             },
-            true,
         );
         Some(part)
     }
@@ -755,16 +755,16 @@ impl LevelCache {
             CachedParts {
                 parts: part.clone(),
                 sources: sources.map(<[Stamp]>::to_vec),
+                on_disk,
             },
-            on_disk,
         );
         state.measuring.remove(&key);
         self.shared.measured.notify_all();
     }
 }
 
-/// What a part costs besides its own buffers: its map entry and queue slot.
-const ENTRY_BYTES: usize = std::mem::size_of::<CachedParts>() + 2 * std::mem::size_of::<u64>();
+/// What a part costs besides its own buffers: its map entry.
+const ENTRY_BYTES: usize = std::mem::size_of::<CachedParts>();
 
 fn cached_bytes(cached: &CachedParts) -> usize {
     let sources = cached
@@ -778,61 +778,40 @@ fn cached_bytes(cached: &CachedParts) -> usize {
     sources + segments + ENTRY_BYTES
 }
 
-/// Keeps `cached` and drops the oldest parts over the budget. A part without a
-/// file is not droppable: the measure that made it reads it back.
-fn remember(
-    state: &mut LevelsState,
-    max_bytes: usize,
-    key: u64,
-    cached: CachedParts,
-    on_disk: bool,
-) {
+/// Keeps `cached` and drops the parts over the budget that a file backs.
+fn remember(state: &mut LevelsState, max_bytes: usize, key: u64, cached: CachedParts) {
     let bytes = cached_bytes(&cached);
     match state.parts.insert(key, cached) {
         Some(old) => state.bytes = state.bytes + bytes - cached_bytes(&old),
         None => state.bytes += bytes,
     }
-    // A key already queued keeps its place: this write may be its first.
-    if on_disk && !state.queued.contains_key(&key) {
-        let generation = state.generation;
-        state.generation += 1;
-        state.queued.insert(key, generation);
-        state.droppable.push_back((key, generation));
-    }
-    drop_oldest_parts(state, max_bytes);
+    drop_on_disk_parts(state, max_bytes);
 }
 
-/// Drops a part's bookkeeping with it; the queue entry stays and is skipped.
+/// Drops a part with its bytes.
 fn forget(state: &mut LevelsState, key: u64) {
     if let Some(old) = state.parts.remove(&key) {
         state.bytes -= cached_bytes(&old);
     }
-    state.queued.remove(&key);
-    // Skipped entries cost nothing to read but would pile up under frequent
-    // invalidation: compact once they outnumber the live ones.
-    if state.droppable.len() > 2 * state.queued.len() + 64 {
-        let queued = &state.queued;
-        state
-            .droppable
-            .retain(|(key, generation)| queued.get(key) == Some(generation));
-    }
 }
 
-/// Drops the oldest parts that are also on disk, until `state` holds
-/// `max_bytes`.
-fn drop_oldest_parts(state: &mut LevelsState, max_bytes: usize) {
-    while state.bytes > max_bytes {
-        let Some((oldest, generation)) = state.droppable.pop_front() else {
-            break;
-        };
-        if state.queued.get(&oldest) != Some(&generation) {
-            continue;
-        }
-        state.queued.remove(&oldest);
-        if let Some(old) = state.parts.remove(&oldest) {
-            state.bytes -= cached_bytes(&old);
-        }
+/// Drops parts that are also on disk, until the state holds `max_bytes`.
+/// With the budget a backstop, one pass is enough: order hardly matters, and
+/// a part without a file is never dropped — the measure that made it reads
+/// it back.
+fn drop_on_disk_parts(state: &mut LevelsState, max_bytes: usize) {
+    if state.bytes <= max_bytes {
+        return;
     }
+    let mut bytes = state.bytes;
+    state.parts.retain(|_, cached| {
+        if bytes > max_bytes && cached.on_disk {
+            bytes -= cached_bytes(cached);
+            return false;
+        }
+        true
+    });
+    state.bytes = bytes;
 }
 
 /// Drops the `.level` files least recently used until `dir` holds `max_bytes`,

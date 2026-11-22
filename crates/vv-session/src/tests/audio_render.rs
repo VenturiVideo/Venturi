@@ -2047,36 +2047,40 @@ fn the_levels_on_disk_drop_the_oldest_files_over_their_budget() {
 }
 
 #[test]
-fn the_levels_in_memory_drop_the_oldest_parts_over_their_budget() {
-    let loudness = |segments: usize| CachedParts {
+fn the_levels_in_memory_drop_a_part_with_a_file_over_their_budget() {
+    let loudness = |segments: usize, on_disk: bool| CachedParts {
         parts: LevelParts::Loudness {
             segment_frames: FRAME_SAMPLES as usize,
             segments: vec![0.5; segments],
             tail: (0.0, 0),
         },
         sources: None,
+        on_disk,
     };
-    let one = cached_bytes(&loudness(100));
+    let one = cached_bytes(&loudness(100, true));
     let mut state = LevelsState::default();
-    // Four parts of one unit each in a budget of three: the first goes.
+    // Four parts of one unit each in a budget of three: one goes, and with
+    // the budget a backstop, which one hardly matters.
     for key in 0..4 {
-        remember(&mut state, 3 * one, key, loudness(100), true);
+        remember(&mut state, 3 * one, key, loudness(100, true));
     }
     assert_eq!(state.parts.len(), 3);
-    assert!(!state.parts.contains_key(&0), "the first one went");
-    assert!(state.parts.contains_key(&3));
     assert_eq!(state.bytes, 3 * one);
 
-    // Measuring the same key again does not grow the droppable ones.
-    remember(&mut state, 10 * one, 3, loudness(100), true);
-    assert_eq!(state.droppable.len(), 3);
-    assert_eq!(state.bytes, 3 * one);
+    // A part measured again replaces the one it superseded, byte for byte.
+    let mut state = LevelsState::default();
+    for key in 0..4 {
+        remember(&mut state, 10 * one, key, loudness(100, true));
+    }
+    assert_eq!(state.bytes, 4 * one);
+    remember(&mut state, 10 * one, 3, loudness(100, true));
+    assert_eq!(state.bytes, 4 * one);
 
     // A part with no copy on disk is never dropped: the measure that made it
     // reads it back.
     let mut state = LevelsState::default();
-    remember(&mut state, one / 2, 7, loudness(100), false);
-    assert_eq!(state.parts.len(), 1, "not droppable, so it stays");
+    remember(&mut state, one / 2, 7, loudness(100, false));
+    assert_eq!(state.parts.len(), 1, "not on disk, so it stays");
 }
 
 #[test]
@@ -2086,80 +2090,55 @@ fn a_cache_of_peaks_reaches_the_budget_too() {
     let peak = || CachedParts {
         parts: LevelParts::Peak(0.5),
         sources: None,
+        on_disk: true,
     };
     let one = cached_bytes(&peak());
     assert!(one > 0, "a peak entry is not free");
     let mut state = LevelsState::default();
     for key in 0..4 {
-        remember(&mut state, 2 * one, key, peak(), true);
+        remember(&mut state, 2 * one, key, peak());
     }
     assert_eq!(state.parts.len(), 2, "the budget bounds peaks too");
-    assert!(!state.parts.contains_key(&0));
 }
 
 #[test]
-fn forgetting_a_part_drops_its_bytes_and_its_place_in_the_queue() {
+fn forgetting_a_part_drops_its_bytes() {
     let peak = || CachedParts {
         parts: LevelParts::Peak(0.5),
         sources: None,
+        on_disk: true,
     };
     let one = cached_bytes(&peak());
     let mut state = LevelsState::default();
-    remember(&mut state, 10 * one, 7, peak(), true);
-    assert_eq!((state.bytes, state.droppable.len()), (one, 1));
+    remember(&mut state, 10 * one, 7, peak());
+    assert_eq!(state.bytes, one);
     forget(&mut state, 7);
     assert!(state.parts.is_empty());
     assert_eq!(state.bytes, 0);
-    assert!(state.queued.is_empty(), "the key left the queue");
-
-    // The queue keeps the stale entry; a part queued under the same key again
-    // must not be dropped by it.
-    remember(&mut state, 10 * one, 7, peak(), true);
-    remember(&mut state, 10 * one, 8, peak(), true);
-    drop_oldest_parts(&mut state, one);
-    assert!(!state.parts.contains_key(&7), "the older part went");
-    assert!(state.parts.contains_key(&8), "the stale entry took no part");
 }
 
 #[test]
-fn stale_queue_entries_are_compacted() {
-    let peak = || CachedParts {
-        parts: LevelParts::Peak(0.5),
-        sources: None,
-    };
-    let mut state = LevelsState::default();
-    for key in 0..1000 {
-        remember(&mut state, usize::MAX, key, peak(), true);
-        forget(&mut state, key);
-    }
-    assert!(state.queued.is_empty());
-    assert!(
-        state.droppable.len() <= 65,
-        "{} skipped entries kept",
-        state.droppable.len()
-    );
-}
-
-#[test]
-fn a_key_written_after_a_failed_write_joins_the_queue() {
+fn a_key_written_after_a_failed_write_is_backed_by_the_file() {
     // A nested measure can `put` the same key twice: its first write may have
-    // failed and the second succeeded, and the key must become droppable then.
-    let peak = || CachedParts {
+    // failed and the second succeeded, and the part must be backed by the
+    // file then, so the budget may drop it.
+    let peak = |on_disk: bool| CachedParts {
         parts: LevelParts::Peak(0.5),
         sources: Some(vec![Stamp {
             path: PathBuf::from("a.wav"),
             len: 1,
             modified_nanos: 0,
         }]),
+        on_disk,
     };
-    let one = cached_bytes(&peak());
+    let one = cached_bytes(&peak(true));
     let mut state = LevelsState::default();
-    remember(&mut state, 10 * one, 7, peak(), false);
-    assert!(state.droppable.is_empty(), "no file, so it stays");
-    remember(&mut state, 10 * one, 7, peak(), true);
-    assert_eq!(state.droppable.len(), 1, "the second one wrote it");
-    remember(&mut state, 10 * one, 7, peak(), true);
-    assert_eq!(state.droppable.len(), 1, "and it is queued once");
+    remember(&mut state, 10 * one, 7, peak(false));
+    assert!(!state.parts[&7].on_disk, "no file, so it stays");
+    remember(&mut state, 10 * one, 7, peak(true));
+    assert!(state.parts[&7].on_disk, "the second one wrote it");
+    drop_on_disk_parts(&mut state, 0);
+    assert!(!state.parts.contains_key(&7), "the file backs it now");
 }
 
 #[test]
@@ -2189,10 +2168,7 @@ fn a_level_whose_file_write_fails_is_not_droppable() {
         false,
     );
     let state = cache.shared.state.lock().unwrap();
-    assert!(
-        state.droppable.is_empty(),
-        "no file, so it is never dropped"
-    );
+    assert!(!state.parts[&1].on_disk, "no file, so it is never dropped");
     assert_eq!(state.parts.len(), 1);
     drop(state);
     let _ = std::fs::remove_file(&file);
@@ -2218,10 +2194,8 @@ fn a_written_level_is_the_droppable_one() {
     };
     cache.put(1, &part, Some(std::slice::from_ref(&stamp)), false);
     let state = cache.shared.state.lock().unwrap();
-    let queued: Vec<u64> = state.droppable.iter().map(|(key, _)| *key).collect();
-    assert_eq!(
-        queued,
-        vec![1],
+    assert!(
+        state.parts[&1].on_disk,
         "the file is there, so the session may drop it"
     );
     assert_eq!(
@@ -2229,6 +2203,7 @@ fn a_written_level_is_the_droppable_one() {
         cached_bytes(&CachedParts {
             parts: part.clone(),
             sources: Some(vec![stamp]),
+            on_disk: true,
         })
     );
     drop(state);
@@ -2271,6 +2246,12 @@ fn a_level_read_back_is_the_last_one_the_prune_drops() {
     assert_eq!(cache.get(1), Some(part));
     let touched = std::fs::metadata(&path).unwrap().modified().unwrap();
     assert!(touched > old, "a read back counts as use");
+    // The part the read back re-kept is on disk, so the budget may drop it.
+    {
+        let mut state = cache.shared.state.lock().unwrap();
+        drop_on_disk_parts(&mut state, 0);
+        assert!(state.parts.is_empty(), "the file backs the read-back part");
+    }
     let _ = std::fs::remove_dir_all(&root);
 }
 
