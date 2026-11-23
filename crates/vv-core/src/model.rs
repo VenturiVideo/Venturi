@@ -812,6 +812,41 @@ impl Rgba {
             a: 1.0,
         }
     }
+
+    /// `#RRGGBB`, alpha left out.
+    pub fn to_hex(self) -> String {
+        let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        format!(
+            "#{:02X}{:02X}{:02X}",
+            byte(self.r),
+            byte(self.g),
+            byte(self.b)
+        )
+    }
+
+    /// An opaque color from `#RRGGBB`, `RRGGBB` or the short `#RGB`.
+    pub fn from_hex(text: &str) -> Option<Self> {
+        let digits = text.trim();
+        let digits = digits.strip_prefix('#').unwrap_or(digits);
+        if !digits.is_ascii() || !digits.chars().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        let channel = |i: usize, len: usize| {
+            let v = u8::from_str_radix(&digits[i * len..(i + 1) * len], 16).ok()?;
+            Some(if len == 1 { v * 17 } else { v } as f32 / 255.0)
+        };
+        let len = match digits.len() {
+            6 => 2,
+            3 => 1,
+            _ => return None,
+        };
+        Some(Self {
+            r: channel(0, len)?,
+            g: channel(1, len)?,
+            b: channel(2, len)?,
+            a: 1.0,
+        })
+    }
 }
 
 impl From<[f32; 4]> for Rgba {
@@ -1117,6 +1152,7 @@ pub enum FilterKind {
     GaussianBlur,
     Exposure,
     DropShadow,
+    ChromaKey,
 }
 
 impl FilterKind {
@@ -1134,6 +1170,31 @@ impl FilterKind {
     pub fn has_grade(self) -> bool {
         self == Self::ColorCorrection
     }
+
+    /// Whether `ClipFilter::radius` and `grow` are timeline pixels, to be
+    /// scaled with the frame; the chroma key's are percentages.
+    pub fn sizes_in_pixels(self) -> bool {
+        self != Self::ChromaKey
+    }
+}
+
+/// Defaults of a `ChromaKey` filter: `amount` is the tolerance, `radius`
+/// the softness and `grow` the spill suppression, all 0-100.
+pub const DEFAULT_KEY_COLOR: Rgba = Rgba {
+    r: 0.0,
+    g: 1.0,
+    b: 0.0,
+    a: 1.0,
+};
+pub const DEFAULT_KEY_TOLERANCE: f32 = 35.0;
+pub const DEFAULT_KEY_SOFTNESS: f32 = 20.0;
+pub const DEFAULT_KEY_SPILL: f32 = 50.0;
+
+/// BT.709 Cb and Cr of a non-linear RGB color, each in -0.5..=0.5: the
+/// space where the chroma key measures how far a pixel is from the key.
+pub fn chroma_of(c: Rgba) -> [f32; 2] {
+    let y = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+    [(c.b - y) / 1.8556, (c.r - y) / 1.5748]
 }
 
 /// Bounds of `ClipFilter::amount` for `Exposure`, in stops. Wide enough to
@@ -1227,19 +1288,20 @@ pub struct ClipFilter {
     pub kind: FilterKind,
     pub enabled: bool,
     /// Blurs and drop shadow (its softness): in timeline pixels, for blurs as
-    /// seen with the clip at zoom 1.
+    /// seen with the clip at zoom 1. Chroma key: softness, 0-100.
     pub radius: Keyframed<f32>,
     pub direction: Keyframed<BlurDirection>,
-    /// Exposure: in stops. Drop shadow: opacity, 0-100.
+    /// Exposure: in stops. Drop shadow: opacity, 0-100. Chroma key:
+    /// tolerance, 0-100.
     pub amount: Keyframed<f32>,
     /// Color correction only.
     pub grade: GradeTracks,
     /// Drop shadow only: in timeline pixels, Y upwards.
     pub offset: [Keyframed<f32>; 2],
-    /// Drop shadow only: how much it is thickened before the softness, in
-    /// timeline pixels.
+    /// Drop shadow: how much it is thickened before the softness, in
+    /// timeline pixels. Chroma key: spill suppression, 0-100.
     pub grow: Keyframed<f32>,
-    /// Drop shadow only.
+    /// Drop shadow: its color. Chroma key: the key color.
     pub color: Rgba,
 }
 
@@ -1286,6 +1348,7 @@ enum StoredFilterKind {
     GaussianBlur,
     Exposure,
     DropShadow,
+    ChromaKey,
 }
 
 impl From<StoredClipFilter> for ClipFilter {
@@ -1300,6 +1363,7 @@ impl From<StoredClipFilter> for ClipFilter {
             StoredFilterKind::GaussianBlur => (FilterKind::GaussianBlur, stored.grade),
             StoredFilterKind::Exposure => (FilterKind::Exposure, stored.grade),
             StoredFilterKind::DropShadow => (FilterKind::DropShadow, stored.grade),
+            StoredFilterKind::ChromaKey => (FilterKind::ChromaKey, stored.grade),
         };
         Self {
             kind,
@@ -1336,13 +1400,13 @@ impl FilterValue {
     pub const fn new(kind: FilterKind) -> Self {
         Self {
             kind,
-            radius: DEFAULT_BLUR_RADIUS,
+            radius: default_radius(kind),
             direction: BlurDirection::Both,
             amount: default_amount(kind),
             grade: GradeValue::NEUTRAL,
             offset: DEFAULT_SHADOW_OFFSET,
-            grow: 0.0,
-            color: Rgba::BLACK,
+            grow: default_grow(kind),
+            color: default_color(kind),
         }
     }
 }
@@ -1350,7 +1414,29 @@ impl FilterValue {
 const fn default_amount(kind: FilterKind) -> f32 {
     match kind {
         FilterKind::DropShadow => DEFAULT_SHADOW_OPACITY,
+        FilterKind::ChromaKey => DEFAULT_KEY_TOLERANCE,
         _ => 0.0,
+    }
+}
+
+const fn default_radius(kind: FilterKind) -> f32 {
+    match kind {
+        FilterKind::ChromaKey => DEFAULT_KEY_SOFTNESS,
+        _ => DEFAULT_BLUR_RADIUS,
+    }
+}
+
+const fn default_grow(kind: FilterKind) -> f32 {
+    match kind {
+        FilterKind::ChromaKey => DEFAULT_KEY_SPILL,
+        _ => 0.0,
+    }
+}
+
+const fn default_color(kind: FilterKind) -> Rgba {
+    match kind {
+        FilterKind::ChromaKey => DEFAULT_KEY_COLOR,
+        _ => Rgba::BLACK,
     }
 }
 
@@ -1359,13 +1445,13 @@ impl ClipFilter {
         Self {
             kind,
             enabled: true,
-            radius: Keyframed::constant(DEFAULT_BLUR_RADIUS),
+            radius: Keyframed::constant(default_radius(kind)),
             direction: Keyframed::constant(BlurDirection::Both),
             amount: Keyframed::constant(default_amount(kind)),
             grade: GradeTracks::default(),
             offset: default_shadow_offset(),
-            grow: default_shadow_grow(),
-            color: Rgba::BLACK,
+            grow: Keyframed::constant(default_grow(kind)),
+            color: default_color(kind),
         }
     }
 
@@ -3396,3 +3482,7 @@ mod timeline_tests;
 #[cfg(test)]
 #[path = "tests/model_audio_effect.rs"]
 mod audio_effect_tests;
+
+#[cfg(test)]
+#[path = "tests/model_rgba.rs"]
+mod rgba_tests;

@@ -355,7 +355,9 @@ fn target_label(target: KeyframeTarget) -> String {
         },
         KeyframeTarget::Gain => t!("keyframes.gain").to_string(),
         KeyframeTarget::Color => t!("keyframes.color").to_string(),
-        KeyframeTarget::FilterRadius(kind @ vv_core::FilterKind::DropShadow) => format!(
+        KeyframeTarget::FilterRadius(
+            kind @ (vv_core::FilterKind::DropShadow | vv_core::FilterKind::ChromaKey),
+        ) => format!(
             "{} {}",
             crate::timeline_ui::filter_label(kind),
             t!("props.softness")
@@ -375,12 +377,22 @@ fn target_label(target: KeyframeTarget) -> String {
             crate::timeline_ui::filter_label(kind),
             t!("props.opacity")
         ),
+        KeyframeTarget::FilterAmount(kind @ vv_core::FilterKind::ChromaKey) => format!(
+            "{} {}",
+            crate::timeline_ui::filter_label(kind),
+            t!("key.tolerance")
+        ),
         KeyframeTarget::FilterAmount(kind) => crate::timeline_ui::filter_label(kind).to_string(),
         KeyframeTarget::FilterOffset(kind, axis) => format!(
             "{} {} {}",
             crate::timeline_ui::filter_label(kind),
             t!("props.offset"),
             axis.label()
+        ),
+        KeyframeTarget::FilterGrow(kind @ vv_core::FilterKind::ChromaKey) => format!(
+            "{} {}",
+            crate::timeline_ui::filter_label(kind),
+            t!("key.spill")
         ),
         KeyframeTarget::FilterGrow(kind) => format!(
             "{} {}",

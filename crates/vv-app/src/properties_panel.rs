@@ -528,6 +528,61 @@ pub(crate) fn color_row(ui: &mut egui::Ui, label: &str, color: &mut vv_core::Rgb
     })
 }
 
+/// Swatch, hex field and eyedropper toggle of a key color: all three read
+/// and write `color`, so a pick shows up in the field and a typed value in
+/// the swatch.
+pub(crate) fn key_color_field(
+    ui: &mut egui::Ui,
+    color: &mut vv_core::Rgba,
+    picking: &mut bool,
+) -> bool {
+    let mut rgb = [color.r, color.g, color.b];
+    let mut changed = ui.color_edit_button_rgb(&mut rgb).changed();
+    if changed {
+        *color = vv_core::Rgba::from([rgb[0], rgb[1], rgb[2], 1.0]);
+    }
+    changed |= hex_field(ui, color);
+    let hint = if *picking {
+        t!("key.eyedropper_active")
+    } else {
+        t!("key.eyedropper")
+    };
+    crate::icon_toggle(ui, picking, crate::ToolbarIcon::Eyedropper).on_hover_text(hint);
+    changed
+}
+
+/// `#RRGGBB` of `color`. A full six-digit value applies while typing; a
+/// short one on Enter or when leaving the field; anything else reverts.
+fn hex_field(ui: &mut egui::Ui, color: &mut vv_core::Rgba) -> bool {
+    let id = egui::Id::new("key_color_hex");
+    let draft = id.with("draft");
+    let mut text = ui
+        .data(|d| d.get_temp::<String>(draft))
+        .unwrap_or_else(|| color.to_hex());
+    let response = ui
+        .add(
+            egui::TextEdit::singleline(&mut text)
+                .id(id)
+                .desired_width(64.0)
+                .char_limit(7)
+                .font(egui::TextStyle::Monospace),
+        )
+        .on_hover_text(t!("key.hex_hint"));
+    let digits = text.trim().trim_start_matches('#').len();
+    let typed = vv_core::Rgba::from_hex(&text)
+        .filter(|_| (response.changed() && digits == 6) || response.lost_focus())
+        .filter(|c| c.to_hex() != color.to_hex());
+    if response.has_focus() {
+        ui.data_mut(|d| d.insert_temp(draft, text));
+    } else {
+        ui.data_mut(|d| d.remove::<String>(draft));
+    }
+    if let Some(typed) = typed {
+        *color = typed;
+    }
+    typed.is_some()
+}
+
 /// Header of a toggleable section: switch and title, whose context menu
 /// resets the whole section (`true` if chosen).
 pub(crate) fn title_section_header(ui: &mut egui::Ui, title: &str, enabled: &mut bool) -> bool {
@@ -2445,6 +2500,35 @@ impl VenturiApp {
                                                         ] {
                                                             let mut value = value;
                                                             let row = param_row(ui, &label, Some(key), |ui| slider_field(ui, &mut value, 0.0..=max, 0.5, 1));
+                                                            let set = set(kind, value);
+                                                            let target = set.target();
+                                                            if row.changed {
+                                                                keyframes.push((KeyframeEdit::Set(set), target));
+                                                            }
+                                                            if row.toggled_keyframe {
+                                                                keyframes.push((KeyframeEdit::Toggle(key.on_keyframe), target));
+                                                            }
+                                                            *reset |= row.reset;
+                                                            goto = goto.or(row.goto);
+                                                        }
+                                                    }
+                                                    if kind == vv_core::FilterKind::ChromaKey {
+                                                        let mut color = filter.color;
+                                                        let mut picking = self.eyedropper == Some(primary.clip_id);
+                                                        let row = param_row(ui, &t!("key.color"), None, |ui| key_color_field(ui, &mut color, &mut picking));
+                                                        if row.changed {
+                                                            new_color = Some(color);
+                                                        }
+                                                        reset_color |= row.reset;
+                                                        self.eyedropper = picking.then_some(primary.clip_id);
+
+                                                        for (label, value, key, set, reset) in [
+                                                            (t!("key.tolerance"), filter.amount, filter.amount_key, vv_core::KeyframeValue::FilterAmount as fn(_, _) -> _, &mut reset_amount),
+                                                            (t!("props.softness"), filter.radius, filter.radius_key, vv_core::KeyframeValue::FilterRadius, &mut reset_radius),
+                                                            (t!("key.spill"), filter.grow, filter.grow_key, vv_core::KeyframeValue::FilterGrow, &mut reset_grow),
+                                                        ] {
+                                                            let mut value = value;
+                                                            let row = param_row(ui, &label, Some(key), |ui| slider_field(ui, &mut value, 0.0..=100.0, 0.5, 1));
                                                             let set = set(kind, value);
                                                             let target = set.target();
                                                             if row.changed {

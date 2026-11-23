@@ -100,7 +100,7 @@ struct EffectStack {
     gain_db: Keyframed<f32>,
     color: Option<Keyframed<Rgba>>,   // SolidColor and Text
     title: Option<TitleParams>,       // Text only
-    filters: Vec<ClipFilter>,         // color correction, exposure, box/gaussian blur, drop shadow, in order
+    filters: Vec<ClipFilter>,         // color correction, exposure, box/gaussian blur, drop shadow, chroma key, in order
     transition_in: Option<Transition>, transition_out: Option<Transition>,
     blend_mode: BlendMode,            // 15 separable modes
     masks: Vec<ClipMask>,             // rectangle/ellipse/path, combined in order
@@ -449,7 +449,9 @@ Done:
   shadows/midtones/highlights/offset wheels, per-range saturation and
   ranges, black & white preset; exposure; box and gaussian blur with
   keyframable radius and direction; drop shadow with keyframable offset,
-  grow, softness and opacity); a Color window with GPU scopes
+  grow, softness and opacity; chroma key on the BT.709 CbCr distance, with
+  keyframable tolerance, softness and spill suppression, its key color
+  picked from the clip's frame in the viewer or typed in hex); a Color window with GPU scopes
   (waveform, RGB parade, vectorscope, histogram) of the viewer's frame next
   to the color wheels; masks
   (rectangle, ellipse, bezier path; feather, invert, add/subtract/intersect;

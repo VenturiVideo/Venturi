@@ -954,3 +954,43 @@ fn av1_decodes_to_the_end_with_many_decoder_threads() {
     }
     assert_eq!(frames, 50);
 }
+
+fn uniform_frame(y: u8, u: u8, v: u8, full_range: bool) -> FrameYuv420 {
+    FrameYuv420 {
+        width: 4,
+        height: 2,
+        y: vec![y; 8],
+        chroma: Chroma::Interleaved([u, v].repeat(2)),
+        chroma_width: 2,
+        chroma_height: 1,
+        matrix: ColorMatrix::Bt709,
+        full_range,
+        alpha: None,
+    }
+}
+
+#[test]
+fn rgb_at_converts_with_the_frame_matrix_and_range() {
+    let close = |got: [u8; 3], expected: [u8; 3]| {
+        assert!(
+            got.iter().zip(expected).all(|(g, e)| g.abs_diff(e) <= 2),
+            "got={got:?} expected={expected:?}"
+        );
+    };
+    // BT.709 limited-range pure green.
+    close(uniform_frame(173, 42, 26, false).rgb_at(1, 1), [0, 255, 0]);
+    close(
+        uniform_frame(235, 128, 128, false).rgb_at(0, 0),
+        [255, 255, 255],
+    );
+    close(
+        uniform_frame(128, 128, 128, true).rgb_at(3, 0),
+        [128, 128, 128],
+    );
+}
+
+#[test]
+fn rgb_at_clamps_points_past_the_edges() {
+    let frame = uniform_frame(173, 42, 26, false);
+    assert_eq!(frame.rgb_at(100, 100), frame.rgb_at(3, 1));
+}

@@ -2715,3 +2715,120 @@ fn an_empty_matte_hides_the_layer() {
     let (center, _) = matted_red_over_blue(&[], vv_core::MatteMode::Alpha);
     assert_close_rgba(center, [0, 0, 255, 255]);
 }
+
+/// `layer` keyed with `key` over an opaque blue layer: the first pixel.
+fn keyed_over_blue(
+    compositor: &Compositor,
+    layer: vv_core::Rgba,
+    key: vv_core::FilterValue,
+) -> [u8; 4] {
+    let filters = [key];
+    let out = compositor.render_layers(
+        &[
+            Layer::new(LayerContent::Solid(BLUE), Transform::default()),
+            Layer {
+                filters: &filters,
+                ..Layer::new(LayerContent::Solid(layer), Transform::default())
+            },
+        ],
+        OutputFrame::exact(4, 4),
+    );
+    out.as_chunks::<4>().0[0]
+}
+
+fn chroma_key(key: vv_core::Rgba) -> vv_core::FilterValue {
+    vv_core::FilterValue {
+        color: key,
+        ..vv_core::FilterValue::new(vv_core::FilterKind::ChromaKey)
+    }
+}
+
+#[test]
+fn the_chroma_key_removes_its_color_and_keeps_the_others() {
+    let compositor = Compositor::new_headless();
+    let screen = vv_core::Rgba::from_hex("#00B140").unwrap();
+    let darker_screen = vv_core::Rgba::from_hex("#008A32").unwrap();
+    let key = chroma_key(screen);
+    assert_close_rgba(keyed_over_blue(&compositor, screen, key), [0, 0, 255, 255]);
+    assert_close_rgba(
+        keyed_over_blue(&compositor, darker_screen, key),
+        [0, 0, 255, 255],
+    );
+    assert_close_rgba(keyed_over_blue(&compositor, RED, key), [255, 0, 0, 255]);
+    let skin = vv_core::Rgba::from_hex("#E0B090").unwrap();
+    assert_close_rgba(
+        keyed_over_blue(&compositor, skin, key),
+        [0xE0, 0xB0, 0x90, 255],
+    );
+}
+
+#[test]
+fn the_chroma_key_softness_leaves_a_partial_alpha_near_the_tolerance() {
+    let compositor = Compositor::new_headless();
+    let green = vv_core::Rgba::from_hex("#00FF00").unwrap();
+    // Halfway between the key and grey, in chroma.
+    let near = vv_core::Rgba::from_hex("#40C040").unwrap();
+    let hard = vv_core::FilterValue {
+        amount: 30.0,
+        radius: 0.0,
+        grow: 0.0,
+        ..chroma_key(green)
+    };
+    let soft = vv_core::FilterValue {
+        radius: 60.0,
+        ..hard
+    };
+    let hard_pixel = keyed_over_blue(&compositor, near, hard);
+    let soft_pixel = keyed_over_blue(&compositor, near, soft);
+    assert_close_rgba(hard_pixel, [0x40, 0xC0, 0x40, 255]);
+    assert!(
+        soft_pixel[2] > 40 && soft_pixel[2] < 215,
+        "partly see-through: {soft_pixel:?}"
+    );
+}
+
+#[test]
+fn the_chroma_key_spill_suppression_takes_the_key_hue_out_of_what_stays() {
+    let compositor = Compositor::new_headless();
+    let green = vv_core::Rgba::from_hex("#00FF00").unwrap();
+    // Grey with a green cast, outside the tolerance.
+    let tinted = vv_core::Rgba::from_hex("#80A080").unwrap();
+    let key = |spill: f32| vv_core::FilterValue {
+        amount: 10.0,
+        radius: 0.0,
+        grow: spill,
+        ..chroma_key(green)
+    };
+    let kept = keyed_over_blue(&compositor, tinted, key(0.0));
+    assert_close_rgba(kept, [0x80, 0xA0, 0x80, 255]);
+    let despilled = keyed_over_blue(&compositor, tinted, key(100.0));
+    assert!(
+        despilled[0].abs_diff(despilled[1]) <= 3 && despilled[1].abs_diff(despilled[2]) <= 3,
+        "neutral once the green is gone: {despilled:?}"
+    );
+}
+
+#[test]
+fn the_chroma_key_spill_suppression_reaches_a_green_cast_on_another_hue() {
+    let compositor = Compositor::new_headless();
+    let screen = vv_core::Rgba::from_hex("#00B140").unwrap();
+    let key = |spill: f32| vv_core::FilterValue {
+        grow: spill,
+        ..chroma_key(screen)
+    };
+    // Skin with green spill: still orange, but green above red and blue's mean.
+    let cast = vv_core::Rgba::from_hex("#C8C090").unwrap();
+    let kept = keyed_over_blue(&compositor, cast, key(0.0));
+    assert_close_rgba(kept, [0xC8, 0xC0, 0x90, 255]);
+    let despilled = keyed_over_blue(&compositor, cast, key(100.0));
+    assert!(
+        despilled[0] as i16 - despilled[1] as i16 > 0x18 && despilled[1] < kept[1],
+        "green pulled under red: {despilled:?}"
+    );
+    // Clean skin has no green to spare: untouched.
+    let skin = vv_core::Rgba::from_hex("#E0B090").unwrap();
+    assert_close_rgba(
+        keyed_over_blue(&compositor, skin, key(100.0)),
+        [0xE0, 0xB0, 0x90, 255],
+    );
+}
