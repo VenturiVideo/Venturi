@@ -47,6 +47,7 @@ pub enum Action {
     ImportMedia,
     Export,
     OpenSettings,
+    ResetUiScale,
     ZoomIn,
     ZoomOut,
     AddMarker,
@@ -57,7 +58,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 40] = [
+    pub const ALL: [Action; 41] = [
         Action::TogglePlayback,
         Action::FastPlayback,
         Action::StepBackward,
@@ -91,6 +92,7 @@ impl Action {
         Action::ImportMedia,
         Action::Export,
         Action::OpenSettings,
+        Action::ResetUiScale,
         Action::ZoomIn,
         Action::ZoomOut,
         Action::AddMarker,
@@ -136,6 +138,7 @@ impl Action {
             Action::ImportMedia => "import_media",
             Action::Export => "export",
             Action::OpenSettings => "open_settings",
+            Action::ResetUiScale => "reset_ui_scale",
             Action::ZoomIn => "zoom_in",
             Action::ZoomOut => "zoom_out",
             Action::AddMarker => "add_marker",
@@ -187,7 +190,8 @@ impl Action {
             | Action::SaveProjectAs
             | Action::ImportMedia
             | Action::Export
-            | Action::OpenSettings => t!("action_category.file"),
+            | Action::OpenSettings
+            | Action::ResetUiScale => t!("action_category.file"),
             Action::ZoomIn
             | Action::ZoomOut
             | Action::AddMarker
@@ -265,6 +269,7 @@ impl Action {
             Action::OpenSettings => vec![ctrl(Key::Comma)],
             // "=" is the unshifted "+" of US layouts.
             Action::ZoomIn => vec![ctrl(Key::Plus), ctrl(Key::Equals)],
+            Action::ResetUiScale => vec![ctrl(Key::Num0)],
             Action::ZoomOut => vec![ctrl(Key::Minus)],
             Action::AddMarker => vec![plain(Key::M)],
             Action::SelectTool => vec![plain(Key::V)],

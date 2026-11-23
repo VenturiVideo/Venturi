@@ -6,6 +6,18 @@ settings.title:
 settings.section_general:
   en: General
   it: Generali
+settings.section_appearance:
+  en: Appearance
+  it: Aspetto
+settings.ui_scale:
+  en: Interface scale
+  it: Scala interfaccia
+settings.ui_scale_reset:
+  en: Restore 100%
+  it: Ripristina 100%
+settings.ui_scale_hint:
+  en: "Scales text and controls on top of the monitor's display scaling. Saved automatically."
+  it: "Ingrandisce testo e controlli rispetto alla scala del monitor. Salvataggio automatico."
 settings.section_playback:
   en: Playback
   it: Playback
@@ -321,6 +333,9 @@ action.export:
 action.open_settings:
   en: Settings
   it: Impostazioni
+action.reset_ui_scale:
+  en: Reset interface scale
+  it: Ripristina scala interfaccia
 action.zoom_in:
   en: Zoom timeline in
   it: Zoom avanti timeline
