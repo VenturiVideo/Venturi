@@ -1592,11 +1592,11 @@ fn ripple_delete_of_two_unlinked_clips_on_the_same_range_closes_it_once() {
     app.ripple_delete_selected();
 
     let tl = &app.session.project.timelines[timeline_id];
-    for track in 0..2 {
-        assert_eq!(tl.tracks[track].clips.len(), 2);
-        assert_eq!(tl.tracks[track].clips[0].timeline_start, 0);
+    for track in &tl.tracks[..2] {
+        assert_eq!(track.clips.len(), 2);
+        assert_eq!(track.clips[0].timeline_start, 0);
         assert_eq!(
-            tl.tracks[track].clips[1].timeline_start, 10,
+            track.clips[1].timeline_start, 10,
             "moved back by 10, not 20"
         );
     }

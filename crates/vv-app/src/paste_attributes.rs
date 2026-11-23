@@ -561,6 +561,7 @@ fn merge(
             Attribute::Filters => {
                 let size = (sx * sy).sqrt();
                 let filters = source.effects.filters.iter().map(|f| {
+                    let size = if f.kind.sizes_in_pixels() { size } else { 1.0 };
                     let mut filter = vv_core::ClipFilter {
                         radius: scaled(&f.radius, size),
                         direction: remap.apply(&f.direction),

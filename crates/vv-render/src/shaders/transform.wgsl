@@ -33,6 +33,8 @@ struct TransformUniform {
     filters: array<vec4<f32>, 2>,
     // The scalar parameter of each slot of `filters`.
     filter_params: array<vec4<f32>, 2>,
+    // Further parameters of each slot (see `filter_extra` in compositor.rs).
+    filter_extra: array<vec4<f32>, 8>,
 };
 
 @group(0) @binding(0) var y_tex: texture_2d<f32>;
@@ -131,6 +133,39 @@ fn apply_filter(rgb: vec3<f32>, id: f32, param: f32) -> vec3<f32> {
         return clamp(pow(linear, vec3<f32>(1.0 / 2.2)), vec3<f32>(0.0), vec3<f32>(1.0));
     }
     return rgb;
+}
+
+// Chroma key, OBS style: alpha from how far the pixel's BT.709 CbCr is from
+// the key's. `extra`: key Cb, key Cr, softness, spill suppression (see
+// `filter_extra` in compositor.rs). Returns the despilled color and the
+// alpha factor.
+fn chroma_key(rgb: vec3<f32>, tolerance: f32, extra: vec4<f32>) -> vec4<f32> {
+    let luma = dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let chroma = vec2<f32>((rgb.b - luma) / 1.8556, (rgb.r - luma) / 1.5748);
+    let key = extra.xy;
+    // 100% spans half the distance between the most opposite chromas.
+    let past = distance(chroma, key) - tolerance / 100.0 * 0.5;
+    let softness = extra.z * 0.5;
+    var alpha = select(1.0, 0.0, past <= 0.0);
+    if (softness > 0.0) {
+        alpha = clamp(past / softness, 0.0, 1.0);
+    }
+    // Despill: the key's dominant channel is held to the mean of the other
+    // two, and the luma it loses goes back to all three.
+    let key_rgb = vec3<f32>(0.5 + 1.5748 * key.y, 0.0, 0.5 + 1.8556 * key.x);
+    let key_g = (0.5 - 0.2126 * key_rgb.r - 0.0722 * key_rgb.b) / 0.7152;
+    var dominant = 1;
+    if (key_rgb.r > key_g && key_rgb.r >= key_rgb.b) {
+        dominant = 0;
+    } else if (key_rgb.b > key_g) {
+        dominant = 2;
+    }
+    var despilled = rgb;
+    let excess = max(rgb[dominant] - 0.5 * (rgb[(dominant + 1) % 3] + rgb[(dominant + 2) % 3]), 0.0)
+        * extra.w;
+    despilled[dominant] = despilled[dominant] - excess;
+    despilled = despilled + vec3<f32>(luma - dot(despilled, vec3<f32>(0.2126, 0.7152, 0.0722)));
+    return vec4<f32>(clamp(despilled, vec3<f32>(0.0), vec3<f32>(1.0)), alpha);
 }
 
 // Shadows/midtones/highlights weights of a pixel of luma `y`: soft, summing to 1.
@@ -376,8 +411,13 @@ fn shade(in: VertexOutput) -> vec4<f32> {
     }
     for (var slot = 0; slot < 8; slot = slot + 1) {
         let id = filter_id_at(transform.filters, slot);
-        if (id > 0.5) {
-            rgb = apply_filter(rgb, id, filter_id_at(transform.filter_params, slot));
+        let param = filter_id_at(transform.filter_params, slot);
+        if (id > 2.5 && id < 3.5) {
+            let keyed = chroma_key(rgb, param, transform.filter_extra[slot]);
+            rgb = keyed.rgb;
+            out_alpha = out_alpha * keyed.a;
+        } else if (id > 0.5) {
+            rgb = apply_filter(rgb, id, param);
         }
     }
     // 1x1 placeholder for a layer without real per-pixel coverage: it always

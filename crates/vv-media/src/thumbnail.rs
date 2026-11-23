@@ -1,7 +1,7 @@
 //! RGBA thumbnail of a media for the media pool: a single frame,
 //! converted on CPU (too small to justify the compositor).
 
-use crate::decode::{ColorMatrix, Decoder, FrameYuv420};
+use crate::decode::{Decoder, FrameYuv420};
 use std::path::Path;
 
 pub struct Thumbnail {
@@ -38,42 +38,13 @@ pub fn generate_thumbnail(
 fn downscale_to_rgba(frame: &FrameYuv420, max_width: u32) -> Thumbnail {
     let width = frame.width.min(max_width).max(1);
     let height = ((frame.height as u64 * width as u64) / frame.width.max(1) as u64).max(1) as u32;
-    let (kr, kb) = match frame.matrix {
-        ColorMatrix::Bt601 => (0.299, 0.114),
-        ColorMatrix::Bt709 => (0.2126, 0.0722),
-        ColorMatrix::Bt2020 => (0.2627, 0.0593),
-    };
-    let kg = 1.0 - kr - kb;
     let mut rgba = Vec::with_capacity((width * height * 4) as usize);
     for ty in 0..height {
-        let sy = (ty as u64 * frame.height as u64 / height as u64) as usize;
-        let cy = (sy * frame.chroma_height as usize / frame.height as usize)
-            .min(frame.chroma_height as usize - 1);
+        let sy = (ty as u64 * frame.height as u64 / height as u64) as u32;
         for tx in 0..width {
-            let sx = (tx as u64 * frame.width as u64 / width as u64) as usize;
-            let cx = (sx * frame.chroma_width as usize / frame.width as usize)
-                .min(frame.chroma_width as usize - 1);
-            let y = frame.y[sy * frame.width as usize + sx] as f32;
-            let (u, v) = frame.chroma_at(cx, cy);
-            let (u, v) = (u as f32 - 128.0, v as f32 - 128.0);
-            let (y, u, v) = if frame.full_range {
-                (y, u, v)
-            } else {
-                (
-                    (y - 16.0) * 255.0 / 219.0,
-                    u * 255.0 / 224.0,
-                    v * 255.0 / 224.0,
-                )
-            };
-            let r = y + 2.0 * (1.0 - kr) * v;
-            let b = y + 2.0 * (1.0 - kb) * u;
-            let g = (y - kr * r - kb * b) / kg;
-            rgba.extend_from_slice(&[
-                r.clamp(0.0, 255.0) as u8,
-                g.clamp(0.0, 255.0) as u8,
-                b.clamp(0.0, 255.0) as u8,
-                255,
-            ]);
+            let sx = (tx as u64 * frame.width as u64 / width as u64) as u32;
+            let [r, g, b] = frame.rgb_at(sx, sy);
+            rgba.extend_from_slice(&[r, g, b, 255]);
         }
     }
     Thumbnail {

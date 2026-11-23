@@ -71,6 +71,38 @@ impl FrameYuv420 {
             Chroma::Interleaved(uv) => (uv[2 * i], uv[2 * i + 1]),
         }
     }
+
+    /// RGB of the pixel at `(x, y)`, clamped into the frame.
+    pub fn rgb_at(&self, x: u32, y: u32) -> [u8; 3] {
+        let x = x.min(self.width.saturating_sub(1)) as usize;
+        let y = y.min(self.height.saturating_sub(1)) as usize;
+        let cx = (x * self.chroma_width as usize / self.width.max(1) as usize)
+            .min(self.chroma_width.saturating_sub(1) as usize);
+        let cy = (y * self.chroma_height as usize / self.height.max(1) as usize)
+            .min(self.chroma_height.saturating_sub(1) as usize);
+        let (kr, kb) = match self.matrix {
+            ColorMatrix::Bt601 => (0.299, 0.114),
+            ColorMatrix::Bt709 => (0.2126, 0.0722),
+            ColorMatrix::Bt2020 => (0.2627, 0.0593),
+        };
+        let kg = 1.0 - kr - kb;
+        let luma = self.y[y * self.width as usize + x] as f32;
+        let (u, v) = self.chroma_at(cx, cy);
+        let (u, v) = (u as f32 - 128.0, v as f32 - 128.0);
+        let (luma, u, v) = if self.full_range {
+            (luma, u, v)
+        } else {
+            (
+                (luma - 16.0) * 255.0 / 219.0,
+                u * 255.0 / 224.0,
+                v * 255.0 / 224.0,
+            )
+        };
+        let r = luma + 2.0 * (1.0 - kr) * v;
+        let b = luma + 2.0 * (1.0 - kb) * u;
+        let g = (luma - kr * r - kb * b) / kg;
+        [r, g, b].map(|c| c.clamp(0.0, 255.0) as u8)
+    }
 }
 
 /// Bytes of an 8-bit YUV420 `width`x`height` frame, to estimate cache

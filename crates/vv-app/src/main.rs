@@ -11,6 +11,7 @@ mod color_window;
 mod compressor_panel;
 mod eq_panel;
 mod export_dialog;
+mod eyedropper;
 mod forced_relink_dialog;
 mod grade_panel;
 mod hw_decode;
@@ -371,6 +372,8 @@ struct VenturiApp {
     /// transform's.
     mask_focus: Option<(ClipId, usize)>,
     mask_overlay: mask_overlay::MaskOverlayState,
+    /// The clip whose chroma key color the next click on the viewer picks.
+    eyedropper: Option<ClipId>,
 
     /// Last handled playhead: it tells the one moved by the clock (no seek)
     /// from the one moved by the user.
@@ -555,6 +558,7 @@ impl Default for VenturiApp {
             edit_drag_group: None,
             mask_focus: None,
             mask_overlay: Default::default(),
+            eyedropper: None,
             last_synced_playhead: 0,
             browsing: None,
             browse_playhead: 0,
@@ -2742,6 +2746,10 @@ impl VenturiApp {
         video_targets: &[PanelTarget],
         pending: &mut Vec<BoxedCommand>,
     ) {
+        if self.show_eyedropper(ui, rect, area, video_targets, pending) {
+            self.overlay_drag = None;
+            return;
+        }
         let visible = self.show_transform_overlay
             && self.browsing.is_none()
             && !self.is_timeline_playing()
@@ -2810,6 +2818,76 @@ impl VenturiApp {
             &new,
             &info.transform,
         );
+    }
+
+    /// The chroma key eyedropper, while active: `true` if it takes the
+    /// viewer over from the other overlays.
+    fn show_eyedropper(
+        &mut self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        area: egui::Rect,
+        video_targets: &[PanelTarget],
+        pending: &mut Vec<BoxedCommand>,
+    ) -> bool {
+        let Some(clip_id) = self.eyedropper else {
+            return false;
+        };
+        let target = video_targets
+            .first()
+            .copied()
+            .filter(|t| t.clip_id == clip_id && self.browsing.is_none());
+        let Some((timeline_id, info)) = self
+            .timeline_id
+            .zip(target)
+            .and_then(|(id, t)| Some((id, self.clip_panel_info(t)?)))
+        else {
+            self.eyedropper = None;
+            return false;
+        };
+        let target = video_targets[0];
+        let playhead = self.timeline_state.playhead;
+        let project = &self.session.project;
+        let frame = project.timelines[timeline_id]
+            .clip(target.track_index, target.clip_id)
+            .filter(|c| c.contains(playhead))
+            .zip(self.render_ahead.as_mut())
+            .and_then(|(clip, render_ahead)| {
+                frame_provider::FrameProvider::frame_for(render_ahead, project, clip, playhead)
+                    .ok()
+                    .flatten()
+            });
+        match eyedropper::show(
+            ui,
+            rect,
+            area,
+            info.timeline_size,
+            info.source_size,
+            &info.transform,
+            frame.as_deref(),
+        ) {
+            Some(eyedropper::Outcome::Picked(color)) => {
+                let tl = &self.session.project.timelines[timeline_id];
+                for t in video_targets {
+                    let Some(effects) = target_effects(Some(tl), t) else {
+                        continue;
+                    };
+                    let mut filters = effects.filters.clone();
+                    let Some(key) = filters
+                        .iter_mut()
+                        .find(|f| f.kind == vv_core::FilterKind::ChromaKey)
+                    else {
+                        continue;
+                    };
+                    key.color = color;
+                    pending.push(set_filters((t.timeline, t.track_index, t.clip_id), filters));
+                }
+                self.eyedropper = None;
+            }
+            Some(eyedropper::Outcome::Cancelled) => self.eyedropper = None,
+            None => {}
+        }
+        true
     }
 
     /// D: disables the selected clips, or re-enables them if they are all already disabled.
@@ -3590,6 +3668,7 @@ enum ToolbarIcon {
     Mixer,
     Color,
     Properties,
+    Eyedropper,
 }
 
 /// Panel toggle of the toolbar: hand-drawn icon and label, filled with the
@@ -3725,6 +3804,17 @@ fn paint_toolbar_icon(
                 painter.line_segment([egui::pos2(c.x - 6.0, y), egui::pos2(c.x + 6.0, y)], stroke);
                 painter.circle_filled(egui::pos2(c.x + knob, y), 1.8, color);
             }
+        }
+        // A pipette: bulb at the top right, tip at the bottom left.
+        ToolbarIcon::Eyedropper => {
+            let tip = c + egui::vec2(-6.0, 6.0);
+            let neck = c + egui::vec2(2.0, -2.0);
+            painter.line_segment([tip, neck], egui::Stroke::new(2.2, color));
+            painter.line_segment(
+                [c + egui::vec2(0.0, -4.5), c + egui::vec2(4.5, 0.0)],
+                stroke,
+            );
+            painter.circle_filled(c + egui::vec2(3.8, -3.8), 2.6, color);
         }
     }
 }

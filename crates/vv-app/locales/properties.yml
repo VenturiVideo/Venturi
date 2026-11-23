@@ -656,3 +656,27 @@ mask.feather:
 mask.expansion:
   en: "Expansion"
   it: "Espansione"
+
+key.color:
+  en: "Key color"
+  it: "Colore chiave"
+
+key.hex_hint:
+  en: "Hex value, e.g. #00FF00 or #00B140"
+  it: "Valore esadecimale, ad esempio #00FF00 o #00B140"
+
+key.eyedropper:
+  en: "Pick the key color from the viewer"
+  it: "Preleva il colore chiave dal visore"
+
+key.eyedropper_active:
+  en: "Click the viewer to pick the key color (Esc to cancel)"
+  it: "Fai clic sul visore per prelevare il colore chiave (Esc per annullare)"
+
+key.tolerance:
+  en: "Tolerance"
+  it: "Tolleranza"
+
+key.spill:
+  en: "Spill suppression"
+  it: "Soppressione spill"

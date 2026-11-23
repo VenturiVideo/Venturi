@@ -528,6 +528,78 @@ pub(crate) fn color_row(ui: &mut egui::Ui, label: &str, color: &mut vv_core::Rgb
     })
 }
 
+/// Swatch, hex field and eyedropper toggle of a key color: all three read
+/// and write `color`, so a pick shows up in the field and a typed value in
+/// the swatch.
+pub(crate) fn key_color_field(
+    ui: &mut egui::Ui,
+    clip: ClipId,
+    color: &mut vv_core::Rgba,
+    picking: &mut bool,
+) -> bool {
+    // The model holds sRGB values: the `_rgb` picker would take them as linear.
+    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let mut srgb = [byte(color.r), byte(color.g), byte(color.b)];
+    let mut changed = ui.color_edit_button_srgb(&mut srgb).changed();
+    if changed {
+        let [r, g, b] = srgb.map(|c| c as f32 / 255.0);
+        *color = vv_core::Rgba { r, g, b, a: 1.0 };
+    }
+    changed |= hex_field(ui, clip, color);
+    let hint = if *picking {
+        t!("key.eyedropper_active")
+    } else {
+        t!("key.eyedropper")
+    };
+    crate::icon_toggle(ui, picking, crate::ToolbarIcon::Eyedropper).on_hover_text(hint);
+    changed
+}
+
+/// `#RRGGBB` of `color`. A full `#RRGGBB` applies while typing; other
+/// forms once the field lets go of the focus, also when it left the frame
+/// with it (another tab); anything else reverts. The draft belongs to
+/// `clip`, so it never lands on another one.
+fn hex_field(ui: &mut egui::Ui, clip: ClipId, color: &mut vv_core::Rgba) -> bool {
+    let id = egui::Id::new(("key_color_hex", clip));
+    let draft = id.with("draft");
+    // Read even without focus: another widget can take it earlier in the
+    // frame, and the focus loss must still apply the draft. The draft keeps
+    // the color it was typed over: if that changed meanwhile (an Undo while
+    // the field was hidden), the draft is stale.
+    let saved = ui
+        .data(|d| d.get_temp::<(String, String)>(draft))
+        .filter(|(_, base)| *base == color.to_hex());
+    let had_draft = saved.is_some();
+    let mut text = saved.map_or_else(|| color.to_hex(), |(text, _)| text);
+    let response = ui
+        .add(
+            egui::TextEdit::singleline(&mut text)
+                .id(id)
+                .desired_width(64.0)
+                .char_limit(7)
+                .font(egui::TextStyle::Monospace),
+        )
+        .on_hover_text(t!("key.hex_hint"));
+    // `Response::has_focus` is also false while the window is in the
+    // background, where egui keeps the field focused.
+    let focused = ui.memory(|m| m.has_focus(id));
+    let complete = text.trim().strip_prefix('#').is_some_and(|d| d.len() == 6);
+    let commit = response.lost_focus() || (had_draft && !focused);
+    let typed = vv_core::Rgba::from_hex(&text)
+        .filter(|_| (response.changed() && complete) || commit)
+        .filter(|c| c.to_hex() != color.to_hex());
+    if let Some(typed) = typed {
+        *color = typed;
+    }
+    if focused {
+        let base = color.to_hex();
+        ui.data_mut(|d| d.insert_temp(draft, (text, base)));
+    } else {
+        ui.data_mut(|d| d.remove::<(String, String)>(draft));
+    }
+    typed.is_some()
+}
+
 /// Header of a toggleable section: switch and title, whose context menu
 /// resets the whole section (`true` if chosen).
 pub(crate) fn title_section_header(ui: &mut egui::Ui, title: &str, enabled: &mut bool) -> bool {
@@ -2445,6 +2517,35 @@ impl VenturiApp {
                                                         ] {
                                                             let mut value = value;
                                                             let row = param_row(ui, &label, Some(key), |ui| slider_field(ui, &mut value, 0.0..=max, 0.5, 1));
+                                                            let set = set(kind, value);
+                                                            let target = set.target();
+                                                            if row.changed {
+                                                                keyframes.push((KeyframeEdit::Set(set), target));
+                                                            }
+                                                            if row.toggled_keyframe {
+                                                                keyframes.push((KeyframeEdit::Toggle(key.on_keyframe), target));
+                                                            }
+                                                            *reset |= row.reset;
+                                                            goto = goto.or(row.goto);
+                                                        }
+                                                    }
+                                                    if kind == vv_core::FilterKind::ChromaKey {
+                                                        let mut color = filter.color;
+                                                        let mut picking = self.eyedropper == Some(primary.clip_id);
+                                                        let row = param_row(ui, &t!("key.color"), None, |ui| key_color_field(ui, primary.clip_id, &mut color, &mut picking));
+                                                        if row.changed {
+                                                            new_color = Some(color);
+                                                        }
+                                                        reset_color |= row.reset;
+                                                        self.eyedropper = picking.then_some(primary.clip_id);
+
+                                                        for (label, value, key, set, reset) in [
+                                                            (t!("key.tolerance"), filter.amount, filter.amount_key, vv_core::KeyframeValue::FilterAmount as fn(_, _) -> _, &mut reset_amount),
+                                                            (t!("props.softness"), filter.radius, filter.radius_key, vv_core::KeyframeValue::FilterRadius, &mut reset_radius),
+                                                            (t!("key.spill"), filter.grow, filter.grow_key, vv_core::KeyframeValue::FilterGrow, &mut reset_grow),
+                                                        ] {
+                                                            let mut value = value;
+                                                            let row = param_row(ui, &label, Some(key), |ui| slider_field(ui, &mut value, 0.0..=100.0, 0.5, 1));
                                                             let set = set(kind, value);
                                                             let target = set.target();
                                                             if row.changed {
