@@ -2335,7 +2335,7 @@ fn a_measure_keys_a_duplicated_plugin_like_the_live_pass() {
     let mut live = PluginSource::default();
     MixSnapshot::from_timeline(&project, &tl, RATE, 1, &mut live);
     assert_ne!(live.keys[0], live.keys[1]);
-    for track in 0..2 {
+    for (track, key) in live.keys.iter().enumerate() {
         let measured = Measured {
             channel: MixerChannel::Track(track),
             insert: 1,
@@ -2343,7 +2343,7 @@ fn a_measure_keys_a_duplicated_plugin_like_the_live_pass() {
         };
         let mut measuring = PluginSource::default();
         MixSnapshot::measured(&project, &tl, measured, RATE, 1, &mut measuring, None, 0);
-        assert_eq!(measuring.keys, [live.keys[track]]);
+        assert_eq!(measuring.keys, [*key]);
     }
 }
 
