@@ -561,10 +561,10 @@ pub(crate) fn key_color_field(
 fn hex_field(ui: &mut egui::Ui, clip: ClipId, color: &mut vv_core::Rgba) -> bool {
     let id = egui::Id::new(("key_color_hex", clip));
     let draft = id.with("draft");
+    // Read even without focus: another widget can take it earlier in the
+    // frame, and the focus loss must still apply the draft.
     let mut text = ui
-        .memory(|m| m.has_focus(id))
-        .then(|| ui.data(|d| d.get_temp::<String>(draft)))
-        .flatten()
+        .data(|d| d.get_temp::<String>(draft))
         .unwrap_or_else(|| color.to_hex());
     let response = ui
         .add(
