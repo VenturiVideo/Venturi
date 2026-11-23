@@ -563,10 +563,14 @@ fn hex_field(ui: &mut egui::Ui, clip: ClipId, color: &mut vv_core::Rgba) -> bool
     let id = egui::Id::new(("key_color_hex", clip));
     let draft = id.with("draft");
     // Read even without focus: another widget can take it earlier in the
-    // frame, and the focus loss must still apply the draft.
-    let saved = ui.data(|d| d.get_temp::<String>(draft));
+    // frame, and the focus loss must still apply the draft. The draft keeps
+    // the color it was typed over: if that changed meanwhile (an Undo while
+    // the field was hidden), the draft is stale.
+    let saved = ui
+        .data(|d| d.get_temp::<(String, String)>(draft))
+        .filter(|(_, base)| *base == color.to_hex());
     let had_draft = saved.is_some();
-    let mut text = saved.unwrap_or_else(|| color.to_hex());
+    let mut text = saved.map_or_else(|| color.to_hex(), |(text, _)| text);
     let response = ui
         .add(
             egui::TextEdit::singleline(&mut text)
@@ -584,13 +588,14 @@ fn hex_field(ui: &mut egui::Ui, clip: ClipId, color: &mut vv_core::Rgba) -> bool
     let typed = vv_core::Rgba::from_hex(&text)
         .filter(|_| (response.changed() && complete) || commit)
         .filter(|c| c.to_hex() != color.to_hex());
-    if focused {
-        ui.data_mut(|d| d.insert_temp(draft, text));
-    } else {
-        ui.data_mut(|d| d.remove::<String>(draft));
-    }
     if let Some(typed) = typed {
         *color = typed;
+    }
+    if focused {
+        let base = color.to_hex();
+        ui.data_mut(|d| d.insert_temp(draft, (text, base)));
+    } else {
+        ui.data_mut(|d| d.remove::<(String, String)>(draft));
     }
     typed.is_some()
 }
