@@ -8,7 +8,7 @@ use std::io::{Read, Write};
 use std::ops::{ControlFlow, Range};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
 use vv_audio::loudness::{LOOKAHEAD_FRAMES, LevelMeter, LevelParts};
@@ -38,6 +38,15 @@ const READER_QUEUE: usize = 64;
 /// Rendered before every segment of a measure: the loudness filters settle
 /// in it, the true peak interpolates from it.
 const WARM_UP_FRAMES: u64 = PROJECT_SAMPLE_RATE as u64 / 4;
+/// Levels kept in `$XDG_CACHE_HOME/venturi/levels` at most, oldest first.
+const MAX_ON_DISK_BYTES: u64 = 256 << 20;
+/// The same for the session, per `LevelCache`: each `on_disk()` builds its
+/// own state, so the preview and an export bound their parts separately.
+const MAX_IN_MEMORY_BYTES: usize = 64 << 20;
+/// A `.tmp` older than this is a write a crash cut short.
+const MAX_TMP_AGE_SECS: u64 = 60 * 60;
+/// Names each write's temp file, so two writes of one key never share it.
+static WRITE: AtomicU64 = AtomicU64::new(0);
 
 /// Hands `sink` the mix of the timeline audio frames `range`, in order, at
 /// `PROJECT_SAMPLE_RATE`/`PROJECT_CHANNELS`; `Break` stops the render.
@@ -58,18 +67,54 @@ pub fn measure_level(
     analysis: &LevelAnalysis,
     levels: &mut LevelCache,
 ) -> Result<f32, ExportError> {
-    let (mine, theirs) = levels.claim(&analysis.segments);
-    // Waiting while a measure this one is nested in holds claims can wait on
-    // itself, or on a thread waiting on it: render the others' segments too.
-    let (to_measure, to_wait) = if levels.holding {
+    let (mine, to_measure, to_wait) = claim_for_measure(levels, &analysis.segments);
+    let runs = runs(&to_measure, levels.threads);
+    measure_claimed(analysis, levels, &mine, runs)?;
+    levels.wait_for(&to_wait);
+    let parts = match collect_parts(analysis, levels) {
+        Some(parts) => parts,
+        // A part whose file another process' prune took is measured again.
+        None => measure_missing(analysis, levels)?,
+    };
+    Ok(LevelParts::merge(&parts))
+}
+
+/// The segments to render, the ones this call claims, and the keys another
+/// measure owns. Nested in a measure that holds those claims, they are
+/// rendered here too: waiting would wait on the nest, or on itself.
+fn claim_for_measure<'s>(
+    levels: &mut LevelCache,
+    segments: &'s [LevelSegment],
+) -> (Vec<&'s LevelSegment>, Vec<&'s LevelSegment>, Vec<u64>) {
+    let (mine, theirs) = levels.claim(segments);
+    if levels.holding {
         let mut all = mine.clone();
         all.extend(theirs.iter().copied());
         all.sort_by_key(|segment| segment.frames.start);
-        (all, Vec::new())
+        (mine, all, Vec::new())
     } else {
-        (mine.clone(), theirs)
-    };
-    let runs = runs(&to_measure, levels.threads);
+        let to_wait = theirs.iter().map(|segment| segment.key).collect();
+        (mine.clone(), mine, to_wait)
+    }
+}
+
+/// Every measured part of `analysis`, in segment order.
+fn collect_parts(analysis: &LevelAnalysis, levels: &mut LevelCache) -> Option<Vec<LevelParts>> {
+    analysis
+        .segments
+        .iter()
+        .map(|segment| levels.get(segment.key))
+        .collect()
+}
+
+/// Measures `runs`, releasing `claimed` if that fails so no thread is left
+/// waiting on a claim that will never be served.
+fn measure_claimed(
+    analysis: &LevelAnalysis,
+    levels: &mut LevelCache,
+    claimed: &[&LevelSegment],
+    runs: Vec<Vec<&LevelSegment>>,
+) -> Result<(), ExportError> {
     let holding = std::mem::replace(&mut levels.holding, true);
     let measured = if levels.threads <= 1 || runs.len() <= 1 {
         runs.iter()
@@ -79,18 +124,29 @@ pub fn measure_level(
     };
     levels.holding = holding;
     if measured.is_err() {
-        levels.release(&mine);
+        levels.release(claimed);
     }
-    measured?;
-    let to_wait: Vec<u64> = to_wait.iter().map(|segment| segment.key).collect();
-    levels.wait_for(&to_wait);
-    let parts: Option<Vec<LevelParts>> = analysis
+    measured
+}
+
+/// Measures the segments of `analysis` the cache no longer has, then collects
+/// all of them: the fallback for a file that vanished before the read back.
+fn measure_missing(
+    analysis: &LevelAnalysis,
+    levels: &mut LevelCache,
+) -> Result<Vec<LevelParts>, ExportError> {
+    let gone: Vec<LevelSegment> = analysis
         .segments
         .iter()
-        .map(|segment| levels.get(segment.key))
+        .filter(|segment| levels.get(segment.key).is_none())
+        .cloned()
         .collect();
-    let parts = parts.ok_or_else(|| ExportError::Failed("a segment was not measured".into()))?;
-    Ok(LevelParts::merge(&parts))
+    let (missing, to_measure, to_wait) = claim_for_measure(levels, &gone);
+    let runs = runs(&to_measure, levels.threads);
+    measure_claimed(analysis, levels, &missing, runs)?;
+    levels.wait_for(&to_wait);
+    collect_parts(analysis, levels)
+        .ok_or_else(|| ExportError::Failed("a segment was not measured".into()))
 }
 
 fn measure_in_parallel(
@@ -441,6 +497,8 @@ struct SharedLevels {
 #[derive(Default)]
 struct LevelsState {
     parts: HashMap<u64, CachedParts>,
+    /// `cached_bytes` of the parts in `parts`.
+    bytes: usize,
     /// Being measured by a thread: another one waits for them instead of
     /// rendering them too (two threads meeting the same compound clip).
     measuring: HashSet<u64>,
@@ -452,6 +510,11 @@ struct LevelsState {
 struct CachedParts {
     parts: LevelParts,
     sources: Option<Vec<Stamp>>,
+    /// The part has a file behind it, so the memory it holds can be given
+    /// back: a read from the file brings it again. A write that failed, or a
+    /// degraded measure, leaves it `false`, and only the measure that made
+    /// it reads it back.
+    on_disk: bool,
 }
 
 impl Default for LevelCache {
@@ -477,8 +540,17 @@ impl Default for LevelCache {
 impl LevelCache {
     /// In memory in this crate's tests: they would fill the user's cache.
     pub fn on_disk() -> Self {
+        let dir = (!cfg!(test)).then(|| vv_media::cache_dir("levels"));
+        // Once per process: the preview and an export share the directory,
+        // and a session is not re-pruned until the next start.
+        static PRUNED: std::sync::Once = std::sync::Once::new();
+        PRUNED.call_once(|| {
+            if let Some(dir) = &dir {
+                prune_levels(dir, MAX_ON_DISK_BYTES);
+            }
+        });
         Self {
-            dir: (!cfg!(test)).then(|| vv_media::cache_dir("levels")),
+            dir,
             ..Self::default()
         }
     }
@@ -574,12 +646,13 @@ impl LevelCache {
             if current {
                 return Some(cached.parts.clone());
             }
-            state.parts.remove(&key);
+            forget(state, key);
         }
         let mut bytes = Vec::new();
-        std::fs::File::open(self.path(key)?)
-            .and_then(|mut file| file.read_to_end(&mut bytes))
-            .ok()?;
+        let mut file = std::fs::File::open(self.path(key)?).ok()?;
+        file.read_to_end(&mut bytes).ok()?;
+        // A read keeps the file: the prune drops by last use.
+        let _ = file.set_modified(std::time::SystemTime::now());
         let (sources, part) = decode_parts(&bytes)?;
         if sources
             .iter()
@@ -587,11 +660,15 @@ impl LevelCache {
         {
             return None;
         }
-        state.parts.insert(
+        remember(
+            state,
+            MAX_IN_MEMORY_BYTES,
             key,
             CachedParts {
                 parts: part.clone(),
                 sources: Some(sources),
+                // Read back from the file, so the file is what backs it.
+                on_disk: true,
             },
         );
         Some(part)
@@ -640,35 +717,150 @@ impl LevelCache {
     /// when `degraded`.
     fn put(&mut self, key: u64, part: &LevelParts, sources: Option<&[Stamp]>, degraded: bool) {
         self.rendered += 1;
-        {
-            let mut state = self.shared.state.lock().unwrap();
-            if degraded {
-                state.degraded.insert(key);
-            } else {
-                state.degraded.remove(&key);
+        // Written before it is remembered: only a file makes a part droppable.
+        let on_disk = match (self.path(key), sources.filter(|_| !degraded)) {
+            (Some(path), Some(sources)) => {
+                // Unique per write: the preview and an export may write the
+                // same key at once.
+                let tmp = path.with_extension(format!(
+                    "{}.{}.tmp",
+                    std::process::id(),
+                    WRITE.fetch_add(1, Ordering::Relaxed)
+                ));
+                std::fs::create_dir_all(path.parent().unwrap_or(&path))
+                    .and_then(|()| {
+                        std::fs::File::create(&tmp)?.write_all(&encode_parts(sources, part))?;
+                        std::fs::rename(&tmp, &path)
+                    })
+                    .map(|()| true)
+                    .unwrap_or_else(|e| {
+                        // Best effort: without it the level is measured again.
+                        let _ = std::fs::remove_file(&tmp);
+                        eprintln!("[levels] {}: {e}", path.display());
+                        false
+                    })
             }
-            state.parts.insert(
-                key,
-                CachedParts {
-                    parts: part.clone(),
-                    sources: sources.map(<[Stamp]>::to_vec),
-                },
-            );
-            state.measuring.remove(&key);
-            self.shared.measured.notify_all();
-        }
-        let (Some(path), Some(sources)) = (self.path(key), sources.filter(|_| !degraded)) else {
-            return;
+            _ => false,
         };
-        // Best effort: without it the level is measured again next time.
-        let written = std::fs::create_dir_all(path.parent().unwrap_or(&path)).and_then(|()| {
-            // Per process: the preview and an export may write it at once.
-            let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
-            std::fs::File::create(&tmp)?.write_all(&encode_parts(sources, part))?;
-            std::fs::rename(&tmp, &path)
-        });
-        if let Err(e) = written {
-            eprintln!("[levels] {}: {e}", path.display());
+        let mut state = self.shared.state.lock().unwrap();
+        if degraded {
+            state.degraded.insert(key);
+        } else {
+            state.degraded.remove(&key);
+        }
+        remember(
+            &mut state,
+            MAX_IN_MEMORY_BYTES,
+            key,
+            CachedParts {
+                parts: part.clone(),
+                sources: sources.map(<[Stamp]>::to_vec),
+                on_disk,
+            },
+        );
+        state.measuring.remove(&key);
+        self.shared.measured.notify_all();
+    }
+}
+
+/// What a part costs besides its own buffers: its map entry.
+const ENTRY_BYTES: usize = std::mem::size_of::<CachedParts>();
+
+fn cached_bytes(cached: &CachedParts) -> usize {
+    let sources = cached
+        .sources
+        .as_ref()
+        .map_or(0, |sources| sources.len() * std::mem::size_of::<Stamp>());
+    let segments = match &cached.parts {
+        LevelParts::Peak(_) => 0,
+        LevelParts::Loudness { segments, .. } => segments.len() * std::mem::size_of::<f64>(),
+    };
+    sources + segments + ENTRY_BYTES
+}
+
+/// Keeps `cached` and drops the parts over the budget that a file backs.
+fn remember(state: &mut LevelsState, max_bytes: usize, key: u64, cached: CachedParts) {
+    let bytes = cached_bytes(&cached);
+    match state.parts.insert(key, cached) {
+        Some(old) => state.bytes = state.bytes + bytes - cached_bytes(&old),
+        None => state.bytes += bytes,
+    }
+    drop_on_disk_parts(state, max_bytes);
+}
+
+/// Drops a part with its bytes.
+fn forget(state: &mut LevelsState, key: u64) {
+    if let Some(old) = state.parts.remove(&key) {
+        state.bytes -= cached_bytes(&old);
+    }
+}
+
+/// Drops parts that are also on disk, until the state holds `max_bytes`.
+/// With the budget a backstop, one pass is enough: order hardly matters, and
+/// a part without a file is never dropped — the measure that made it reads
+/// it back.
+fn drop_on_disk_parts(state: &mut LevelsState, max_bytes: usize) {
+    if state.bytes <= max_bytes {
+        return;
+    }
+    let mut bytes = state.bytes;
+    state.parts.retain(|_, cached| {
+        if bytes > max_bytes && cached.on_disk {
+            bytes -= cached_bytes(cached);
+            return false;
+        }
+        true
+    });
+    state.bytes = bytes;
+}
+
+/// Drops the `.level` files least recently used until `dir` holds `max_bytes`,
+/// and the `.tmp` files a crashed write left behind.
+fn prune_levels(dir: &Path, max_bytes: u64) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(extension) = path.extension() else {
+            continue;
+        };
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        if extension == "tmp" {
+            if now.duration_since(modified).unwrap_or_default()
+                > std::time::Duration::from_secs(MAX_TMP_AGE_SECS)
+            {
+                let _ = std::fs::remove_file(&path);
+            }
+            continue;
+        }
+        if extension == "level" {
+            files.push((modified, meta.len(), path));
+        }
+    }
+    let mut total: u64 = files.iter().map(|(_, len, _)| len).sum();
+    if total <= max_bytes {
+        return;
+    }
+    files.sort_by_key(|(modified, _, _)| *modified);
+    for (_, len, path) in files {
+        if total <= max_bytes {
+            break;
+        }
+        match std::fs::remove_file(&path) {
+            // Already gone, by another process' prune: its bytes are free.
+            Ok(()) => total = total.saturating_sub(len),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                total = total.saturating_sub(len);
+            }
+            Err(_) => {}
         }
     }
 }
