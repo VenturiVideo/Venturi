@@ -533,15 +533,19 @@ pub(crate) fn color_row(ui: &mut egui::Ui, label: &str, color: &mut vv_core::Rgb
 /// the swatch.
 pub(crate) fn key_color_field(
     ui: &mut egui::Ui,
+    clip: ClipId,
     color: &mut vv_core::Rgba,
     picking: &mut bool,
 ) -> bool {
-    let mut rgb = [color.r, color.g, color.b];
-    let mut changed = ui.color_edit_button_rgb(&mut rgb).changed();
+    // The model holds sRGB values: the `_rgb` picker would take them as linear.
+    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let mut srgb = [byte(color.r), byte(color.g), byte(color.b)];
+    let mut changed = ui.color_edit_button_srgb(&mut srgb).changed();
     if changed {
-        *color = vv_core::Rgba::from([rgb[0], rgb[1], rgb[2], 1.0]);
+        let [r, g, b] = srgb.map(|c| c as f32 / 255.0);
+        *color = vv_core::Rgba { r, g, b, a: 1.0 };
     }
-    changed |= hex_field(ui, color);
+    changed |= hex_field(ui, clip, color);
     let hint = if *picking {
         t!("key.eyedropper_active")
     } else {
@@ -551,13 +555,16 @@ pub(crate) fn key_color_field(
     changed
 }
 
-/// `#RRGGBB` of `color`. A full six-digit value applies while typing; a
-/// short one on Enter or when leaving the field; anything else reverts.
-fn hex_field(ui: &mut egui::Ui, color: &mut vv_core::Rgba) -> bool {
-    let id = egui::Id::new("key_color_hex");
+/// `#RRGGBB` of `color`. A full `#RRGGBB` applies while typing; other
+/// forms on Enter or when leaving the field; anything else reverts. The
+/// draft belongs to `clip`, so it never lands on another one.
+fn hex_field(ui: &mut egui::Ui, clip: ClipId, color: &mut vv_core::Rgba) -> bool {
+    let id = egui::Id::new(("key_color_hex", clip));
     let draft = id.with("draft");
     let mut text = ui
-        .data(|d| d.get_temp::<String>(draft))
+        .memory(|m| m.has_focus(id))
+        .then(|| ui.data(|d| d.get_temp::<String>(draft)))
+        .flatten()
         .unwrap_or_else(|| color.to_hex());
     let response = ui
         .add(
@@ -568,9 +575,9 @@ fn hex_field(ui: &mut egui::Ui, color: &mut vv_core::Rgba) -> bool {
                 .font(egui::TextStyle::Monospace),
         )
         .on_hover_text(t!("key.hex_hint"));
-    let digits = text.trim().trim_start_matches('#').len();
+    let complete = text.trim().strip_prefix('#').is_some_and(|d| d.len() == 6);
     let typed = vv_core::Rgba::from_hex(&text)
-        .filter(|_| (response.changed() && digits == 6) || response.lost_focus())
+        .filter(|_| (response.changed() && complete) || response.lost_focus())
         .filter(|c| c.to_hex() != color.to_hex());
     if response.has_focus() {
         ui.data_mut(|d| d.insert_temp(draft, text));
@@ -2515,7 +2522,7 @@ impl VenturiApp {
                                                     if kind == vv_core::FilterKind::ChromaKey {
                                                         let mut color = filter.color;
                                                         let mut picking = self.eyedropper == Some(primary.clip_id);
-                                                        let row = param_row(ui, &t!("key.color"), None, |ui| key_color_field(ui, &mut color, &mut picking));
+                                                        let row = param_row(ui, &t!("key.color"), None, |ui| key_color_field(ui, primary.clip_id, &mut color, &mut picking));
                                                         if row.changed {
                                                             new_color = Some(color);
                                                         }
