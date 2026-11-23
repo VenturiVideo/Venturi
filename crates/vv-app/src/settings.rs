@@ -568,6 +568,9 @@ const MAX_RECENT_PROJECTS: usize = 10;
 /// as it was left on reopening.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PanelLayout {
+    pub floating_windows: [crate::panel_window::Placement; 3],
+    pub inspector_window: crate::panel_window::Placement,
+    pub docked_windows: [crate::panel_window::Placement; 4],
     pub media_pool_open: bool,
     pub effects_open: bool,
     pub inspector_open: bool,
@@ -589,6 +592,9 @@ pub struct PanelLayout {
 impl Default for PanelLayout {
     fn default() -> Self {
         Self {
+            floating_windows: Default::default(),
+            inspector_window: Default::default(),
+            docked_windows: Default::default(),
             media_pool_open: true,
             effects_open: false,
             inspector_open: true,
@@ -821,6 +827,12 @@ struct SettingsFile {
 #[derive(Serialize, Deserialize, Default)]
 struct PanelLayoutFile {
     #[serde(default)]
+    floating_windows: Option<[crate::panel_window::Placement; 3]>,
+    #[serde(default)]
+    inspector_window: Option<crate::panel_window::Placement>,
+    #[serde(default)]
+    docked_windows: Option<[crate::panel_window::Placement; 4]>,
+    #[serde(default)]
     media_pool_open: Option<bool>,
     #[serde(default)]
     effects_open: Option<bool>,
@@ -1010,6 +1022,9 @@ impl Settings {
         settings.mcp_enabled = file.mcp_enabled.unwrap_or(false);
         let defaults = PanelLayout::default();
         settings.panels = PanelLayout {
+            floating_windows: file.panels.floating_windows.unwrap_or_default(),
+            inspector_window: file.panels.inspector_window.unwrap_or_default(),
+            docked_windows: file.panels.docked_windows.unwrap_or_default(),
             media_pool_open: file
                 .panels
                 .media_pool_open
@@ -1108,6 +1123,9 @@ impl Settings {
             intel_experimental_decode: self.intel_experimental_decode,
             recent_projects: self.recent_projects.clone(),
             panels: PanelLayoutFile {
+                floating_windows: Some(self.panels.floating_windows),
+                inspector_window: Some(self.panels.inspector_window),
+                docked_windows: Some(self.panels.docked_windows),
                 media_pool_open: Some(self.panels.media_pool_open),
                 effects_open: Some(self.panels.effects_open),
                 inspector_open: Some(self.panels.inspector_open),

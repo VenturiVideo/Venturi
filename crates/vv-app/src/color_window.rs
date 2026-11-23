@@ -49,18 +49,21 @@ const SCOPE_HEIGHT: f32 = 240.0;
 pub(crate) fn show_color_window(
     ctx: &egui::Context,
     open: &mut bool,
+    placement: &mut crate::panel_window::Placement,
     kinds: &mut [ScopeKind; 2],
     view: &mut ScopeView,
     grade: Option<Option<GradeInfo>>,
     can_balance: bool,
 ) -> ColorWindowResponse {
     let mut response = ColorWindowResponse::default();
-    egui::Window::new(t!("color.title"))
-        .id(egui::Id::new("color_window"))
-        .open(open)
-        .default_size([760.0, 640.0])
-        .resizable(true)
-        .show(ctx, |ui| {
+    crate::panel_window::show(
+        ctx,
+        "color_window",
+        &t!("color.title"),
+        [760.0, 640.0],
+        open,
+        placement,
+        |ui| {
             let spacing = ui.spacing().item_spacing.x;
             let width = ui.available_width();
             let slots = if width >= 2.0 * MIN_SCOPE_WIDTH + spacing {
@@ -122,7 +125,7 @@ pub(crate) fn show_color_window(
             ui.separator();
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
-                .show(ui, |ui| match grade {
+                .show(ui, |ui| match grade.as_ref() {
                     None => {
                         ui.label(egui::RichText::new(t!("color.no_clip")).weak());
                     }
@@ -132,12 +135,13 @@ pub(crate) fn show_color_window(
                         }
                     }
                     Some(Some(info)) => {
-                        let section = crate::grade_panel::grade_section(ui, &info, can_balance);
+                        let section = crate::grade_panel::grade_section(ui, info, can_balance);
                         response.goto = section.goto;
                         response.grade = Some(section);
                     }
                 });
-        });
+        },
+    );
     response
 }
 
