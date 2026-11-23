@@ -556,16 +556,17 @@ pub(crate) fn key_color_field(
 }
 
 /// `#RRGGBB` of `color`. A full `#RRGGBB` applies while typing; other
-/// forms on Enter or when leaving the field; anything else reverts. The
-/// draft belongs to `clip`, so it never lands on another one.
+/// forms once the field lets go of the focus, also when it left the frame
+/// with it (another tab); anything else reverts. The draft belongs to
+/// `clip`, so it never lands on another one.
 fn hex_field(ui: &mut egui::Ui, clip: ClipId, color: &mut vv_core::Rgba) -> bool {
     let id = egui::Id::new(("key_color_hex", clip));
     let draft = id.with("draft");
     // Read even without focus: another widget can take it earlier in the
     // frame, and the focus loss must still apply the draft.
-    let mut text = ui
-        .data(|d| d.get_temp::<String>(draft))
-        .unwrap_or_else(|| color.to_hex());
+    let saved = ui.data(|d| d.get_temp::<String>(draft));
+    let had_draft = saved.is_some();
+    let mut text = saved.unwrap_or_else(|| color.to_hex());
     let response = ui
         .add(
             egui::TextEdit::singleline(&mut text)
@@ -575,11 +576,15 @@ fn hex_field(ui: &mut egui::Ui, clip: ClipId, color: &mut vv_core::Rgba) -> bool
                 .font(egui::TextStyle::Monospace),
         )
         .on_hover_text(t!("key.hex_hint"));
+    // `Response::has_focus` is also false while the window is in the
+    // background, where egui keeps the field focused.
+    let focused = ui.memory(|m| m.has_focus(id));
     let complete = text.trim().strip_prefix('#').is_some_and(|d| d.len() == 6);
+    let commit = response.lost_focus() || (had_draft && !focused);
     let typed = vv_core::Rgba::from_hex(&text)
-        .filter(|_| (response.changed() && complete) || response.lost_focus())
+        .filter(|_| (response.changed() && complete) || commit)
         .filter(|c| c.to_hex() != color.to_hex());
-    if response.has_focus() {
+    if focused {
         ui.data_mut(|d| d.insert_temp(draft, text));
     } else {
         ui.data_mut(|d| d.remove::<String>(draft));
