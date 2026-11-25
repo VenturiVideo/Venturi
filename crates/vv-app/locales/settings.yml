@@ -129,6 +129,12 @@ settings.hw_decode_off:
 settings.hw_decode_nvdec:
   en: "NVIDIA (NVDEC)"
   it: "NVIDIA (NVDEC)"
+settings.hw_decode_d3d11va:
+  en: "Direct3D 11 (D3D11VA)"
+  it: "Direct3D 11 (D3D11VA)"
+settings.hw_decode_d3d11va_hint:
+  en: "The Windows video decoder of any GPU (Intel, AMD, NVIDIA)."
+  it: "Il decoder video di Windows di qualsiasi GPU (Intel, AMD, NVIDIA)."
 settings.hw_decode_vulkan:
   en: "Vulkan video"
   it: "Vulkan video"

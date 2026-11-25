@@ -44,11 +44,7 @@ fn proxy_path_for_is_deterministic_and_keyed_by_content_hash_and_quality() {
         proxy_path_for(42, medium),
         proxy_path_for(42, ProxyQuality::High)
     );
-    assert!(
-        proxy_path_for(42, medium)
-            .to_string_lossy()
-            .ends_with("venturi/proxies/000000000000002a.mp4")
-    );
+    assert!(proxy_path_for(42, medium).ends_with("venturi/proxies/000000000000002a.mp4"));
 }
 
 #[test]

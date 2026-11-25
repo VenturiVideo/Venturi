@@ -22,7 +22,8 @@ fn probe_from(media: Vec<(&'static str, MediaMeta)>) -> impl FnMut(&Path) -> Pro
     move |path| {
         media
             .iter()
-            .find(|(p, _)| Path::new(p) == path)
+            // An exported path comes back with the drive Windows resolves it on.
+            .find(|(p, _)| Path::new(p) == path || std::path::absolute(p).is_ok_and(|a| a == path))
             .map(|(_, m)| (m.clone(), 42))
             .ok_or_else(|| "file not found".to_owned())
     }
@@ -1319,4 +1320,19 @@ fn a_reverse_speed_still_warns() {
     );
     let clip = &imported.project.timelines.values().next().unwrap().tracks[0].clips[0];
     assert_eq!(clip.freeze, None);
+}
+
+#[cfg(windows)]
+#[test]
+fn file_urls_become_windows_paths_with_the_drive_or_the_server() {
+    let path = |url| url_to_path(url, Path::new("/")).unwrap();
+    assert_eq!(
+        path("file:///C:/clips/a%20b.mp4"),
+        Path::new(r"C:\clips\a b.mp4")
+    );
+    assert_eq!(
+        path("file://nas/media/a.mp4"),
+        Path::new(r"\\nas\media\a.mp4")
+    );
+    assert_eq!(path("file:///media/a.mp4"), Path::new("/media/a.mp4"));
 }

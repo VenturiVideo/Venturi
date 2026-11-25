@@ -1,5 +1,6 @@
 pub mod clipboard;
 pub mod command;
+pub mod dirs;
 pub mod edit;
 pub mod grade;
 pub mod id_map;

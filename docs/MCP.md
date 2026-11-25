@@ -56,9 +56,12 @@ candidates. While a client is connected, the toolbar shows an orange
 
 The window listens on a Unix socket,
 `$XDG_RUNTIME_DIR/venturi/mcp-<pid>.sock` (in the temporary folder when
-`XDG_RUNTIME_DIR` is not set), that only your user can open.
-Venturi opens no network port. Windows and the Flatpak build do not support
-attaching yet.
+`XDG_RUNTIME_DIR` is not set), that only your user can open. On Windows it
+is a named pipe instead, `\\.\pipe\venturi-<user>-mcp-<pid>.sock`, that only
+your user can open and that refuses remote clients; `--attach` checks that
+the pipe is served by that Venturi process, run by your user.
+Venturi opens no network port. The Flatpak build does not support attaching
+yet.
 
 While attached, the agent shares the window with you:
 

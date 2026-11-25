@@ -76,7 +76,14 @@ fn exports_tracks_in_compositing_order_with_gaps_between_clips() {
     assert_eq!(clip["source_range"]["start_time"]["rate"], 30.0);
     assert_eq!(clip["source_range"]["duration"]["value"], 300.0);
     let reference = &clip["media_references"]["DEFAULT_MEDIA"];
-    assert_eq!(reference["target_url"], "file:///tmp/a%20video.mp4");
+    let url = if cfg!(windows) {
+        let root = std::path::absolute("/").unwrap();
+        let drive = &root.to_string_lossy()[..2];
+        format!("file:///{drive}/tmp/a%20video.mp4")
+    } else {
+        "file:///tmp/a%20video.mp4".to_owned()
+    };
+    assert_eq!(reference["target_url"], url.as_str());
     assert_eq!(reference["available_range"]["duration"]["value"], 1000.0);
 
     let generator = &tracks[1]["children"][0]["media_references"]["DEFAULT_MEDIA"];
@@ -466,4 +473,17 @@ fn keeps_what_otio_cannot_represent_in_metadata() {
     assert_eq!(meta["linked_group"], 7);
     assert_eq!(meta["effects"]["gain_db"]["default"], -6.0);
     assert_eq!(meta["display_color"], "Indigo");
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_paths_become_file_urls_with_the_drive_or_the_server() {
+    assert_eq!(
+        file_url(Path::new(r"C:\clips\a b.mp4")),
+        "file:///C:/clips/a%20b.mp4"
+    );
+    assert_eq!(
+        file_url(Path::new(r"\\nas\media\a.mp4")),
+        "file://nas/media/a.mp4"
+    );
 }

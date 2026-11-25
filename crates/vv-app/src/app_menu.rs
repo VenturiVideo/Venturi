@@ -729,7 +729,7 @@ impl VenturiApp {
     pub(crate) fn show_project_settings(&mut self, ctx: &egui::Context) {
         use vv_core::ProcessingPrecision::{High, Standard};
         let current = self.session.project.precision;
-        let float_work = self.compositor.float_work_supported();
+        let float_work = self.compositor.get().float_work_supported();
         let mut chosen = None;
         egui::Window::new(t!("project.settings_title"))
             .open(&mut self.project_settings_open)

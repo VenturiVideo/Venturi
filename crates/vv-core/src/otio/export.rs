@@ -281,15 +281,32 @@ fn time_range(start: FrameIdx, duration: FrameIdx, fps: Rational) -> Value {
 fn file_url(path: &Path) -> String {
     let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     let mut url = String::from("file://");
-    for byte in absolute.to_string_lossy().bytes() {
+    let path = absolute.to_string_lossy();
+    #[cfg(windows)]
+    let path = windows_url_path(&path);
+    for byte in path.bytes() {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
                 url.push(byte as char)
             }
+            // The drive letter's.
+            b':' if cfg!(windows) => url.push(':'),
             _ => url.push_str(&format!("%{byte:02X}")),
         }
     }
     url
+}
+
+/// `C:\dir\f` as `/C:/dir/f`, and `\server\share\f` as `server/share/f`: the
+/// server is the URL's host.
+#[cfg(windows)]
+fn windows_url_path(path: &str) -> String {
+    let path = path.replace('\\', "/");
+    match path.strip_prefix("//") {
+        Some(unc) => unc.to_owned(),
+        None if path.starts_with('/') => path,
+        None => format!("/{path}"),
+    }
 }
 
 #[cfg(test)]

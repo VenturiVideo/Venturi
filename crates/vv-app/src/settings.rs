@@ -931,11 +931,11 @@ impl Settings {
     }
 
     pub fn default_path() -> Option<PathBuf> {
-        let config = std::env::var_os("XDG_CONFIG_HOME")
-            .filter(|d| !d.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-        Some(config.join("venturi").join("settings.json"))
+        Some(
+            vv_core::dirs::config_dir()?
+                .join("venturi")
+                .join("settings.json"),
+        )
     }
 
     /// Missing or unreadable file = default settings; actions absent from
