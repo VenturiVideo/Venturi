@@ -154,16 +154,16 @@ fn chroma_key(rgb: vec3<f32>, tolerance: f32, extra: vec4<f32>) -> vec4<f32> {
     // two, and the luma it loses goes back to all three.
     let key_rgb = vec3<f32>(0.5 + 1.5748 * key.y, 0.0, 0.5 + 1.8556 * key.x);
     let key_g = (0.5 - 0.2126 * key_rgb.r - 0.0722 * key_rgb.b) / 0.7152;
-    var dominant = 1;
+    // A one-hot mask, not a dynamic vector index: FXC (DX12) fails with
+    // X3511 unrolling the filter loop around a dynamically indexed write.
+    var dominant = vec3<f32>(0.0, 1.0, 0.0);
     if (key_rgb.r > key_g && key_rgb.r >= key_rgb.b) {
-        dominant = 0;
+        dominant = vec3<f32>(1.0, 0.0, 0.0);
     } else if (key_rgb.b > key_g) {
-        dominant = 2;
+        dominant = vec3<f32>(0.0, 0.0, 1.0);
     }
-    var despilled = rgb;
-    let excess = max(rgb[dominant] - 0.5 * (rgb[(dominant + 1) % 3] + rgb[(dominant + 2) % 3]), 0.0)
-        * extra.w;
-    despilled[dominant] = despilled[dominant] - excess;
+    let excess = max(dot(rgb, dominant) - 0.5 * dot(rgb, vec3<f32>(1.0) - dominant), 0.0) * extra.w;
+    var despilled = rgb - dominant * excess;
     despilled = despilled + vec3<f32>(luma - dot(despilled, vec3<f32>(0.2126, 0.7152, 0.0722)));
     return vec4<f32>(clamp(despilled, vec3<f32>(0.0), vec3<f32>(1.0)), alpha);
 }
