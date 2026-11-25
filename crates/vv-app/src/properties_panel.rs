@@ -528,6 +528,78 @@ pub(crate) fn color_row(ui: &mut egui::Ui, label: &str, color: &mut vv_core::Rgb
     })
 }
 
+/// Swatch, hex field and eyedropper toggle of a key color: all three read
+/// and write `color`, so a pick shows up in the field and a typed value in
+/// the swatch.
+pub(crate) fn key_color_field(
+    ui: &mut egui::Ui,
+    clip: ClipId,
+    color: &mut vv_core::Rgba,
+    picking: &mut bool,
+) -> bool {
+    // The model holds sRGB values: the `_rgb` picker would take them as linear.
+    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let mut srgb = [byte(color.r), byte(color.g), byte(color.b)];
+    let mut changed = ui.color_edit_button_srgb(&mut srgb).changed();
+    if changed {
+        let [r, g, b] = srgb.map(|c| c as f32 / 255.0);
+        *color = vv_core::Rgba { r, g, b, a: 1.0 };
+    }
+    changed |= hex_field(ui, clip, color);
+    let hint = if *picking {
+        t!("key.eyedropper_active")
+    } else {
+        t!("key.eyedropper")
+    };
+    crate::icon_toggle(ui, picking, crate::ToolbarIcon::Eyedropper).on_hover_text(hint);
+    changed
+}
+
+/// `#RRGGBB` of `color`. A full `#RRGGBB` applies while typing; other
+/// forms once the field lets go of the focus, also when it left the frame
+/// with it (another tab); anything else reverts. The draft belongs to
+/// `clip`, so it never lands on another one.
+fn hex_field(ui: &mut egui::Ui, clip: ClipId, color: &mut vv_core::Rgba) -> bool {
+    let id = egui::Id::new(("key_color_hex", clip));
+    let draft = id.with("draft");
+    // Read even without focus: another widget can take it earlier in the
+    // frame, and the focus loss must still apply the draft. The draft keeps
+    // the color it was typed over: if that changed meanwhile (an Undo while
+    // the field was hidden), the draft is stale.
+    let saved = ui
+        .data(|d| d.get_temp::<(String, String)>(draft))
+        .filter(|(_, base)| *base == color.to_hex());
+    let had_draft = saved.is_some();
+    let mut text = saved.map_or_else(|| color.to_hex(), |(text, _)| text);
+    let response = ui
+        .add(
+            egui::TextEdit::singleline(&mut text)
+                .id(id)
+                .desired_width(64.0)
+                .char_limit(7)
+                .font(egui::TextStyle::Monospace),
+        )
+        .on_hover_text(t!("key.hex_hint"));
+    // `Response::has_focus` is also false while the window is in the
+    // background, where egui keeps the field focused.
+    let focused = ui.memory(|m| m.has_focus(id));
+    let complete = text.trim().strip_prefix('#').is_some_and(|d| d.len() == 6);
+    let commit = response.lost_focus() || (had_draft && !focused);
+    let typed = vv_core::Rgba::from_hex(&text)
+        .filter(|_| (response.changed() && complete) || commit)
+        .filter(|c| c.to_hex() != color.to_hex());
+    if let Some(typed) = typed {
+        *color = typed;
+    }
+    if focused {
+        let base = color.to_hex();
+        ui.data_mut(|d| d.insert_temp(draft, (text, base)));
+    } else {
+        ui.data_mut(|d| d.remove::<(String, String)>(draft));
+    }
+    typed.is_some()
+}
+
 /// Header of a toggleable section: switch and title, whose context menu
 /// resets the whole section (`true` if chosen).
 pub(crate) fn title_section_header(ui: &mut egui::Ui, title: &str, enabled: &mut bool) -> bool {
@@ -791,6 +863,98 @@ pub(crate) fn toggle_filter_commands(
             Some(set_filters((t.timeline, t.track_index, t.clip_id), filters))
         })
         .collect()
+}
+
+/// Sets the `edge` fade of the `targets` to `frames`, shortened to fit each
+/// clip; the clips already there get no command.
+pub(crate) fn fade_commands(
+    tl: Option<&vv_core::Timeline>,
+    targets: &[PanelTarget],
+    edge: vv_core::FadeEdge,
+    frames: FrameIdx,
+) -> Vec<BoxedCommand> {
+    targets
+        .iter()
+        .filter_map(|t| {
+            let clip = tl?.clip(t.track_index, t.clip_id)?;
+            let current = match edge {
+                vv_core::FadeEdge::In => clip.fade_in,
+                vv_core::FadeEdge::Out => clip.fade_out,
+            };
+            let frames = frames.clamp(0, clip.timeline_len);
+            (frames != current).then(|| {
+                Box::new(vv_core::SetClipFade::new(
+                    t.timeline,
+                    t.track_index,
+                    t.clip_id,
+                    edge,
+                    frames,
+                )) as BoxedCommand
+            })
+        })
+        .collect()
+}
+
+/// Fade in/out rows of the audio tab: the commands of a change, for every
+/// target.
+fn fade_rows(
+    ui: &mut egui::Ui,
+    tl: Option<&vv_core::Timeline>,
+    targets: &[PanelTarget],
+) -> Vec<BoxedCommand> {
+    let mut commands = Vec::new();
+    let clips: Vec<&vv_core::Clip> = targets
+        .iter()
+        .filter_map(|t| tl?.clip(t.track_index, t.clip_id))
+        .collect();
+    let (Some(timeline), Some(first)) = (tl, clips.first()) else {
+        return commands;
+    };
+    let fps = timeline.fps.as_f64().max(1e-9);
+    let longest = clips.iter().map(|c| c.timeline_len).max().unwrap_or(0);
+    let fades = [
+        (
+            vv_core::FadeEdge::In,
+            "in",
+            t!("props.fade_in"),
+            first.fade_in,
+        ),
+        (
+            vv_core::FadeEdge::Out,
+            "out",
+            t!("props.fade_out"),
+            first.fade_out,
+        ),
+    ];
+    let dragging = ui.input(|i| i.pointer.any_down());
+    for (edge, edge_key, label, current) in fades {
+        // Unrounded while dragging: reseeded from the whole frames each
+        // frame, a slow drag would round back to where it started.
+        let drag_id = egui::Id::new(("props_fade_secs", edge_key));
+        let mut secs = ui
+            .data(|d| d.get_temp::<f64>(drag_id))
+            .filter(|_| dragging)
+            .unwrap_or(current as f64 / fps);
+        let row = param_row(ui, &label, None, |ui| {
+            drag_field(ui, &mut secs, 0.02, 0.0..=longest as f64 / fps, 2, " s")
+        });
+        ui.data_mut(|d| {
+            if dragging && row.changed {
+                d.insert_temp(drag_id, secs);
+            } else if !dragging {
+                d.remove::<f64>(drag_id);
+            }
+        });
+        let frames = if row.reset {
+            Some(0)
+        } else {
+            row.changed.then(|| (secs * fps).round() as FrameIdx)
+        };
+        if let Some(frames) = frames {
+            commands.extend(fade_commands(tl, targets, edge, frames));
+        }
+    }
+    commands
 }
 
 /// The effects of a clip targeted by the panel.
@@ -2365,6 +2529,35 @@ impl VenturiApp {
                                                             goto = goto.or(row.goto);
                                                         }
                                                     }
+                                                    if kind == vv_core::FilterKind::ChromaKey {
+                                                        let mut color = filter.color;
+                                                        let mut picking = self.eyedropper == Some(primary.clip_id);
+                                                        let row = param_row(ui, &t!("key.color"), None, |ui| key_color_field(ui, primary.clip_id, &mut color, &mut picking));
+                                                        if row.changed {
+                                                            new_color = Some(color);
+                                                        }
+                                                        reset_color |= row.reset;
+                                                        self.eyedropper = picking.then_some(primary.clip_id);
+
+                                                        for (label, value, key, set, reset) in [
+                                                            (t!("key.tolerance"), filter.amount, filter.amount_key, vv_core::KeyframeValue::FilterAmount as fn(_, _) -> _, &mut reset_amount),
+                                                            (t!("props.softness"), filter.radius, filter.radius_key, vv_core::KeyframeValue::FilterRadius, &mut reset_radius),
+                                                            (t!("key.spill"), filter.grow, filter.grow_key, vv_core::KeyframeValue::FilterGrow, &mut reset_grow),
+                                                        ] {
+                                                            let mut value = value;
+                                                            let row = param_row(ui, &label, Some(key), |ui| slider_field(ui, &mut value, 0.0..=100.0, 0.5, 1));
+                                                            let set = set(kind, value);
+                                                            let target = set.target();
+                                                            if row.changed {
+                                                                keyframes.push((KeyframeEdit::Set(set), target));
+                                                            }
+                                                            if row.toggled_keyframe {
+                                                                keyframes.push((KeyframeEdit::Toggle(key.on_keyframe), target));
+                                                            }
+                                                            *reset |= row.reset;
+                                                            goto = goto.or(row.goto);
+                                                        }
+                                                    }
                                                     if kind.has_grade() {
                                                         if self.settings.panels.color_window_open {
                                                             ui.label(egui::RichText::new(t!("color.in_window")).weak());
@@ -2627,6 +2820,8 @@ impl VenturiApp {
                                                     })
                                                     .map(|c| c.timeline_frame_at(source_frame));
                                             }
+
+                                            pending_effects.extend(fade_rows(ui, tl, targets));
                                         }
                                     }
                                 }

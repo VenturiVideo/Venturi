@@ -71,6 +71,38 @@ impl FrameYuv420 {
             Chroma::Interleaved(uv) => (uv[2 * i], uv[2 * i + 1]),
         }
     }
+
+    /// RGB of the pixel at `(x, y)`, clamped into the frame.
+    pub fn rgb_at(&self, x: u32, y: u32) -> [u8; 3] {
+        let x = x.min(self.width.saturating_sub(1)) as usize;
+        let y = y.min(self.height.saturating_sub(1)) as usize;
+        let cx = (x * self.chroma_width as usize / self.width.max(1) as usize)
+            .min(self.chroma_width.saturating_sub(1) as usize);
+        let cy = (y * self.chroma_height as usize / self.height.max(1) as usize)
+            .min(self.chroma_height.saturating_sub(1) as usize);
+        let (kr, kb) = match self.matrix {
+            ColorMatrix::Bt601 => (0.299, 0.114),
+            ColorMatrix::Bt709 => (0.2126, 0.0722),
+            ColorMatrix::Bt2020 => (0.2627, 0.0593),
+        };
+        let kg = 1.0 - kr - kb;
+        let luma = self.y[y * self.width as usize + x] as f32;
+        let (u, v) = self.chroma_at(cx, cy);
+        let (u, v) = (u as f32 - 128.0, v as f32 - 128.0);
+        let (luma, u, v) = if self.full_range {
+            (luma, u, v)
+        } else {
+            (
+                (luma - 16.0) * 255.0 / 219.0,
+                u * 255.0 / 224.0,
+                v * 255.0 / 224.0,
+            )
+        };
+        let r = luma + 2.0 * (1.0 - kr) * v;
+        let b = luma + 2.0 * (1.0 - kb) * u;
+        let g = (luma - kr * r - kb * b) / kg;
+        [r, g, b].map(|c| c.clamp(0.0, 255.0) as u8)
+    }
 }
 
 /// Bytes of an 8-bit YUV420 `width`x`height` frame, to estimate cache
@@ -160,6 +192,17 @@ impl Decoder {
         hw: &[crate::hw::HwDevice],
         priority: crate::hw::HwPriority,
     ) -> Result<Self, crate::MediaError> {
+        Self::open_with_threads(path, hw, priority, 0)
+    }
+
+    /// `software_threads`: 0 = one per core. Tests pin it so that what
+    /// depends on the thread count does not depend on the machine.
+    fn open_with_threads(
+        path: &Path,
+        hw: &[crate::hw::HwDevice],
+        priority: crate::hw::HwPriority,
+        software_threads: usize,
+    ) -> Result<Self, crate::MediaError> {
         crate::probe::ensure_init();
 
         let ictx = ffmpeg::format::input(&path)?;
@@ -190,7 +233,7 @@ impl Decoder {
         // the target, in parallel it is much faster.
         decoder_ctx.set_threading(ffmpeg::threading::Config {
             kind: ffmpeg::threading::Type::Frame,
-            count: if hw.is_some() { 1 } else { 0 },
+            count: if hw.is_some() { 1 } else { software_threads },
         });
         let decoder = decoder_ctx.video()?;
 
@@ -588,6 +631,12 @@ impl Decoder {
         }
 
         loop {
+            // Frames already decoded go out before the next packet goes in:
+            // a decoder holding more than one (dav1d with several threads)
+            // refuses packets with EAGAIN until they are read.
+            if self.decoder.receive_frame(&mut decoded).is_ok() {
+                return Ok(Some(self.raw_frame(decoded)));
+            }
             // `Packet::read` does not unref the previous packet: reusing one
             // would leak every packet read.
             let mut packet = ffmpeg::Packet::empty();
@@ -610,9 +659,6 @@ impl Decoder {
                     });
                     self.set_skip_nonref(skip);
                     self.decoder.send_packet(&packet)?;
-                    if self.decoder.receive_frame(&mut decoded).is_ok() {
-                        return Ok(Some(self.raw_frame(decoded)));
-                    }
                 }
                 Err(ffmpeg::Error::Eof) => {
                     self.decoder.send_eof()?;

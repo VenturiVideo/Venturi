@@ -169,6 +169,7 @@ fn filter_shader_id(kind: vv_core::FilterKind) -> f32 {
     match kind {
         vv_core::FilterKind::ColorCorrection => 1.0,
         vv_core::FilterKind::Exposure => 2.0,
+        vv_core::FilterKind::ChromaKey => 3.0,
         vv_core::FilterKind::BoxBlur
         | vv_core::FilterKind::GaussianBlur
         | vv_core::FilterKind::DropShadow => 0.0,
@@ -449,6 +450,8 @@ struct TransformUniform {
     filters: [[f32; 4]; MAX_LAYER_FILTERS / 4],
     /// The scalar parameter of each slot of `filters` (`FilterValue::amount`).
     filter_params: [[f32; 4]; MAX_LAYER_FILTERS / 4],
+    /// More parameters per slot, see `filter_extra`.
+    filter_extra: [[f32; 4]; MAX_LAYER_FILTERS],
 }
 
 impl TransformUniform {
@@ -526,8 +529,22 @@ impl TransformUniform {
             planes: [0.0; 4],
             filters: pack_filter_slots(filters, |f| filter_shader_id(f.kind)),
             filter_params: pack_filter_slots(filters, |f| f.amount),
+            filter_extra: filter_extra(filters),
         }
     }
+}
+
+/// Chroma key: Cb and Cr of the key (`vv_core::chroma_of`), softness and
+/// spill suppression as fractions.
+fn filter_extra(filters: &[vv_core::FilterValue]) -> [[f32; 4]; MAX_LAYER_FILTERS] {
+    let mut slots = [[0.0; 4]; MAX_LAYER_FILTERS];
+    for (slot, filter) in slots.iter_mut().zip(filters.iter().take(MAX_LAYER_FILTERS)) {
+        if filter.kind == vv_core::FilterKind::ChromaKey {
+            let [cb, cr] = vv_core::chroma_of(filter.color);
+            *slot = [cb, cr, filter.radius / 100.0, filter.grow / 100.0];
+        }
+    }
+    slots
 }
 
 fn pack_filter_slots(

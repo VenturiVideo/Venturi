@@ -101,6 +101,9 @@ filter.exposure:
 filter.drop_shadow:
   en: "Drop Shadow"
   it: "Drop Shadow"
+filter.chroma_key:
+  en: "Chroma Key"
+  it: "Chroma Key"
 
 pool.drag_to_clip:
   en: "Drag onto a video clip"

@@ -542,8 +542,8 @@ fn graph(
             label,
         );
     }
-    for k in 0..2 {
-        let x = x_of(params.crossovers_hz[k]);
+    for (k, &crossover_hz) in params.crossovers_hz.iter().enumerate() {
+        let x = x_of(crossover_hz);
         let lit = active_crossover == Some(k);
         let color = if lit {
             egui::Color32::from_gray(230)

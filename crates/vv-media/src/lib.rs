@@ -14,7 +14,8 @@ pub mod thumbnail;
 pub mod waveform;
 
 pub use audio::{
-    AudioBuffer, decode_audio_streams_from, decode_audio_streams_streaming, decode_audio_track,
+    AudioBuffer, decode_audio_streams_from, decode_audio_streams_streaming,
+    decode_audio_streams_tracked, decode_audio_track,
 };
 pub use cache::{Served, SharedFrameCache, WantedRange};
 pub use decode::{Chroma, ColorMatrix, Decoder, FrameYuv420, yuv420_frame_bytes};

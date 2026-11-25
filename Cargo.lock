@@ -4695,7 +4695,7 @@ dependencies = [
 
 [[package]]
 name = "vv-app"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "arboard",
  "eframe",
@@ -4726,7 +4726,7 @@ dependencies = [
 
 [[package]]
 name = "vv-audio"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "cpal",
  "ffmpeg-next",
@@ -4735,7 +4735,7 @@ dependencies = [
 
 [[package]]
 name = "vv-core"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "base64 0.22.1",
  "ron",
@@ -4746,7 +4746,7 @@ dependencies = [
 
 [[package]]
 name = "vv-mcp"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "base64 0.22.1",
  "libc",
@@ -4766,7 +4766,7 @@ dependencies = [
 
 [[package]]
 name = "vv-media"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "ffmpeg-next",
  "thiserror 2.0.20",
@@ -4775,7 +4775,7 @@ dependencies = [
 
 [[package]]
 name = "vv-plugin"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "libc",
  "libloading",
@@ -4794,14 +4794,14 @@ dependencies = [
 
 [[package]]
 name = "vv-plugin-fixture"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "vst3",
 ]
 
 [[package]]
 name = "vv-render"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "bytemuck",
  "cosmic-text",
@@ -4813,7 +4813,7 @@ dependencies = [
 
 [[package]]
 name = "vv-session"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "serde_json",
  "vv-audio",
@@ -4826,7 +4826,7 @@ dependencies = [
 
 [[package]]
 name = "vv-vad"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "tract-onnx",
 ]

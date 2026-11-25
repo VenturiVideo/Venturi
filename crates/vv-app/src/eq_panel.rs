@@ -143,8 +143,8 @@ pub(crate) fn show(
     ui.weak(t!("mixer.eq_graph_hint"));
     ui.add_space(6.0);
     ui.horizontal_top(|ui| {
-        for band in 0..BANDS {
-            changed |= band_strip(ui, band, &mut params.bands[band]);
+        for (index, band) in params.bands.iter_mut().enumerate() {
+            changed |= band_strip(ui, index, band);
         }
     });
     changed.then_some(AudioEffectKind::Equalizer(params))

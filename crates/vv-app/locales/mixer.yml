@@ -93,8 +93,8 @@ mixer.normalize_hint_loudness:
   it: "Misurata come la percepisce l'orecchio, non sui picchi: un guadagno alto può far clippare i picchi."
 
 mixer.normalize_failed:
-  en: "The level cannot be measured: it plays without normalization; retrying.\n%{error}"
-  it: "Impossibile misurare il livello: suona senza normalizzazione; nuovo tentativo in corso.\n%{error}"
+  en: "The level cannot be measured; retrying.\n%{error}"
+  it: "Impossibile misurare il livello; nuovo tentativo in corso.\n%{error}"
 
 mixer.effect_multiband:
   en: "Multiband compressor"

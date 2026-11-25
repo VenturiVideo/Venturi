@@ -314,7 +314,9 @@ pub fn waveform_similarity(a: &[f32], b: &[f32]) -> f32 {
 }
 
 /// All the regular files under `base_dir`, breadth-first. Unreadable
-/// directories are skipped; symlinks are not followed.
+/// directories are skipped; symlinks are not followed. Hidden directories
+/// below `base_dir` are skipped too, so a trashed copy
+/// (`~/.local/share/Trash`) never wins a relink.
 pub fn files_under(base_dir: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     let mut dirs = std::collections::VecDeque::from([base_dir.to_path_buf()]);
@@ -327,7 +329,9 @@ pub fn files_under(base_dir: &Path) -> Vec<PathBuf> {
                 continue;
             };
             if file_type.is_dir() {
-                dirs.push_back(entry.path());
+                if !entry.file_name().as_encoded_bytes().starts_with(b".") {
+                    dirs.push_back(entry.path());
+                }
             } else if file_type.is_file() {
                 files.push(entry.path());
             }

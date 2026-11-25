@@ -938,3 +938,76 @@ fn keyframe_before_decodes_the_keyframe_alone_and_a_seek_resumes_after_it() {
         "usable again after a seek"
     );
 }
+
+/// dav1d with several threads holds more than one decoded frame, and FFmpeg
+/// refuses the next packet with EAGAIN until they are read: decoding (and
+/// exporting) AV1 failed after a few frames with "Resource temporarily
+/// unavailable" on machines with 6 or more cores.
+#[test]
+fn av1_decodes_to_the_end_with_many_decoder_threads() {
+    let dir = crate::test_support::TempDir::new("vv-media-decode-test");
+    let path = dir.join("av1.mkv");
+    crate::test_support::ffmpeg(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=320x240:rate=25:duration=2",
+            "-c:v",
+            "libaom-av1",
+            "-cpu-used",
+            "8",
+            "-pix_fmt",
+            "yuv420p",
+        ],
+        &path,
+    );
+    let mut decoder =
+        Decoder::open_with_threads(&path, &[], crate::hw::HwPriority::Normal, 16).unwrap();
+
+    let mut frames = 0;
+    while decoder.next_frame().unwrap().is_some() {
+        frames += 1;
+    }
+    assert_eq!(frames, 50);
+}
+
+fn uniform_frame(y: u8, u: u8, v: u8, full_range: bool) -> FrameYuv420 {
+    FrameYuv420 {
+        width: 4,
+        height: 2,
+        y: vec![y; 8],
+        chroma: Chroma::Interleaved([u, v].repeat(2)),
+        chroma_width: 2,
+        chroma_height: 1,
+        matrix: ColorMatrix::Bt709,
+        full_range,
+        alpha: None,
+    }
+}
+
+#[test]
+fn rgb_at_converts_with_the_frame_matrix_and_range() {
+    let close = |got: [u8; 3], expected: [u8; 3]| {
+        assert!(
+            got.iter().zip(expected).all(|(g, e)| g.abs_diff(e) <= 2),
+            "got={got:?} expected={expected:?}"
+        );
+    };
+    // BT.709 limited-range pure green.
+    close(uniform_frame(173, 42, 26, false).rgb_at(1, 1), [0, 255, 0]);
+    close(
+        uniform_frame(235, 128, 128, false).rgb_at(0, 0),
+        [255, 255, 255],
+    );
+    close(
+        uniform_frame(128, 128, 128, true).rgb_at(3, 0),
+        [128, 128, 128],
+    );
+}
+
+#[test]
+fn rgb_at_clamps_points_past_the_edges() {
+    let frame = uniform_frame(173, 42, 26, false);
+    assert_eq!(frame.rgb_at(100, 100), frame.rgb_at(3, 1));
+}
